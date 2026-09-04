@@ -1,95 +1,43 @@
 import Link from "next/link";
-import type { CSSProperties } from "react";
 
-type ModelType = "castle" | "ship" | "pizza" | "astronaut" | "treehouse" | "tv";
-
-type Creation = {
-  title: string;
-  creator: string;
-  likes: string;
-  views: string;
-  type: ModelType;
-  tag: string;
-};
+type ModelType = "castle" | "manor" | "ship" | "pizzeria" | "treehouse" | "spaceport";
+type Creation = { title: string; creator: string; likes: string; views: string; type: ModelType; tag: string; pieces: string };
 
 const creations: Creation[] = [
-  { title: "Medieval Castle", creator: "@brick_king", type: "castle", tag: "ARCHITECTURE", likes: "2.3K", views: "14.8K" },
-  { title: "Black Sea Raider", creator: "@oceanbuilder", type: "ship", tag: "VEHICLES", likes: "1.8K", views: "10.4K" },
-  { title: "City Pizza Shop", creator: "@citybrick", type: "pizza", tag: "CITY", likes: "1.2K", views: "8.7K" },
-  { title: "Space Explorer", creator: "@galaxybuilder", type: "astronaut", tag: "CHARACTERS", likes: "3.1K", views: "18.9K" },
-  { title: "Tree House", creator: "@naturebrick", type: "treehouse", tag: "NATURE", likes: "1.6K", views: "11.2K" },
-  { title: "Retro TV", creator: "@vintagebrick", type: "tv", tag: "OBJECTS", likes: "987", views: "6.3K" }
+  { title: "Ravenhold Castle", creator: "BrickMaster", type: "castle", tag: "ARCHITECTURE", pieces: "4,820", likes: "2.8K", views: "18.4K" },
+  { title: "Harbor House", creator: "StudioBricks", type: "manor", tag: "ARCHITECTURE", pieces: "3,460", likes: "2.1K", views: "13.2K" },
+  { title: "Black Tide Raider", creator: "OceanBuilder", type: "ship", tag: "VEHICLES", pieces: "2,960", likes: "3.4K", views: "21.7K" },
+  { title: "Downtown Pizzeria", creator: "CityBrick", type: "pizzeria", tag: "CITY", pieces: "1,840", likes: "1.9K", views: "12.8K" },
+  { title: "Canopy Observatory", creator: "NatureBrick", type: "treehouse", tag: "NATURE", pieces: "2,240", likes: "2.6K", views: "16.1K" },
+  { title: "Orbital Outpost", creator: "GalaxyBuilder", type: "spaceport", tag: "SCI-FI", pieces: "5,120", likes: "4.2K", views: "28.6K" }
 ];
 
-function Brick({ className = "", style }: { className?: string; style?: CSSProperties }) {
-  return <span className={`mockBrick ${className}`} style={style}><i /><i /><i /><i /></span>;
-}
+const Studs = ({ count = 4 }: { count?: number }) => <span className="modelStuds">{Array.from({ length: count }).map((_, i) => <i key={i} />)}</span>;
+const Part = ({ className = "", color = "red", studs = 4 }: { className?: string; color?: string; studs?: number }) => <div className={`mPart ${color} ${className}`}><Studs count={studs} /></div>;
 
-function MockupScene({ type }: { type: ModelType }) {
-  if (type === "castle") return <div className="mockupScene castleScene">
-    <div className="castleGround" />
-    <div className="castleWall" />
-    <div className="castleTower towerLeft"><b /><em /></div>
-    <div className="castleTower towerRight"><b /><em /></div>
-    <div className="castleGate" />
-    <div className="castleFlag">◆</div>
-    <Brick className="castleBrickOne" /><Brick className="castleBrickTwo" />
-  </div>;
-  if (type === "ship") return <div className="mockupScene shipScene">
-    <div className="sea" /><div className="shipHull" /><div className="shipDeck" />
-    <div className="mast mastOne" /><div className="mast mastTwo" />
-    <div className="sail sailOne">◆</div><div className="sail sailTwo">◆</div>
-    <div className="shipFlag" />
-  </div>;
-  if (type === "pizza") return <div className="mockupScene pizzaScene">
-    <div className="shopShadow" /><div className="shopBody" /><div className="shopRoof" />
-    <div className="shopAwning"><span /><span /><span /><span /><span /></div>
-    <div className="shopWindow windowOne" /><div className="shopWindow windowTwo" /><div className="shopDoor" />
-    <div className="pizzaSign">PIZZA</div><div className="street" />
-  </div>;
-  if (type === "astronaut") return <div className="mockupScene astronautScene">
-    <div className="planet" /><div className="astronautHelmet"><b /></div><div className="astronautBody" />
-    <div className="astronautArm armLeft" /><div className="astronautArm armRight" />
-    <div className="astronautLeg legLeft" /><div className="astronautLeg legRight" />
-    <div className="backpack" /><span className="star starOne">✦</span><span className="star starTwo">✦</span><span className="star starThree">✦</span>
-  </div>;
-  if (type === "treehouse") return <div className="mockupScene treeScene">
-    <div className="treeGround" /><div className="treeTrunk" /><div className="treeBranch branchOne" /><div className="treeBranch branchTwo" />
-    <div className="treeCanopy canopyOne" /><div className="treeCanopy canopyTwo" /><div className="treeCanopy canopyThree" />
-    <div className="treeHouseBody" /><div className="treeHouseRoof" /><div className="treeHouseWindow" /><div className="treeHouseLadder" />
-  </div>;
-  return <div className="mockupScene tvScene">
-    <div className="tvCabinet" /><div className="tvScreen"><span>BRICK</span></div><div className="tvDial dialOne" /><div className="tvDial dialTwo" />
-    <div className="tvAntenna antennaLeft" /><div className="tvAntenna antennaRight" /><div className="tvLeg legA" /><div className="tvLeg legB" />
-  </div>;
+function Castle() { return <div className="proScene castlePro"><div className="basePlate green" /><div className="castleCourtyard" /><div className="castleKeep"><div className="keepRoof" /><div className="keepWindow w1" /><div className="keepWindow w2" /><div className="keepDoor" /></div><div className="castleTowerPro left"><div className="towerRoof" /><div className="towerWindow" /></div><div className="castleTowerPro right"><div className="towerRoof" /><div className="towerWindow" /></div><div className="castleWallPro" /><div className="castleGatePro" /><div className="castleFlagPro" /><Part className="castleLoose c1" color="gray" studs={4} /><Part className="castleLoose c2" color="darkred" studs={4} /></div>; }
+function Manor() { return <div className="proScene manorPro"><div className="basePlate green" /><div className="manorBody" /><div className="manorRoof" /><div className="manorRoof2" /><div className="manorWindow mw1" /><div className="manorWindow mw2" /><div className="manorDoor" /><div className="manorBalcony" /><div className="manorTree mt1" /><div className="manorTree mt2" /><Part className="manorCar" color="yellow" studs={4} /></div>; }
+function Ship() { return <div className="proScene shipPro"><div className="ocean" /><div className="shipHullPro" /><div className="shipDeckPro" /><div className="shipCabin" /><div className="mastPro m1" /><div className="mastPro m2" /><div className="sailPro s1" /><div className="sailPro s2" /><div className="shipRail" /><Part className="crate cr1" color="brown" studs={4} /><Part className="crate cr2" color="yellow" studs={4} /></div>; }
+function Pizzeria() { return <div className="proScene pizzaPro"><div className="streetPlate" /><div className="shopBuilding" /><div className="shopRoof" /><div className="pizzaAwning" /><div className="pizzaSign">PIZZERIA</div><div className="shopWindow sw1" /><div className="shopWindow sw2" /><div className="shopDoor" /><div className="streetTable" /><div className="streetPlant" /><Part className="pizzaBox pb1" color="yellow" studs={4} /></div>; }
+function Treehouse() { return <div className="proScene treePro"><div className="forestPlate" /><div className="treeTrunkPro" /><div className="treeBranchPro b1" /><div className="treeBranchPro b2" /><div className="treeHousePro" /><div className="treeRoofPro" /><div className="treeWindowPro" /><div className="treeLadderPro" /><div className="leaf l1" /><div className="leaf l2" /><div className="leaf l3" /><div className="leaf l4" /><Part className="bench" color="brown" studs={3} /></div>; }
+function Spaceport() { return <div className="proScene spacePro"><div className="planetPlate" /><div className="hangar" /><div className="hangarRoof" /><div className="controlTower" /><div className="towerGlass" /><div className="launchPad" /><div className="rocket"><div className="nose" /><div className="rocketBody" /><div className="fin f1" /><div className="fin f2" /><div className="flame" /></div><div className="antennaPro" /><Part className="rover" color="white" studs={4} /></div>; }
+
+function Mockup({ type }: { type: ModelType }) {
+  if (type === "castle") return <Castle />;
+  if (type === "manor") return <Manor />;
+  if (type === "ship") return <Ship />;
+  if (type === "pizzeria") return <Pizzeria />;
+  if (type === "treehouse") return <Treehouse />;
+  return <Spaceport />;
 }
 
 export default function GalleryPage() {
-  return <main>
-    <header className="siteHeader">
-      <Link href="/" className="brand"><span className="brandMark">◆</span> BRICK BUILDER</Link>
-      <nav>
-        <Link href="/build">BUILD</Link>
-        <Link className="activeNav" href="/gallery">GALLERY</Link>
-        <a href="/#about">ABOUT</a>
-        <button className="walletButton">CONNECT WALLET</button>
-      </nav>
-    </header>
+  return <main className="galleryRoot">
+    <header className="siteHeader"><Link href="/" className="brand"><span className="brandMark">◆</span> BRICK</Link><nav><Link href="/build">BUILDER</Link><Link className="activeNav" href="/gallery">GALLERY</Link><Link href="/#about">ABOUT</Link><button className="walletButton">CONNECT WALLET</button></nav></header>
     <section className="galleryPage">
-      <div className="sectionHeading">
-        <div><p className="eyebrow">THE SHOWCASE</p><h1>EXPLORE CREATIONS</h1><p className="galleryIntro">A curated wall of brick-built worlds, vehicles, characters and architectural models.</p></div>
-        <Link href="/build" className="primaryButton">CREATE YOURS →</Link>
-      </div>
-      <div className="filterBar">
-        <button className="filterActive">TRENDING</button><button>LATEST</button><button>MOST LIKED</button>
-        <span className="filterSpacer" /><input placeholder="Search creations..." /><button>ALL CATEGORIES</button>
-      </div>
-      <div className="creationGrid large">
-        {creations.map((creation) => <article className="creationCard mockupCard" key={creation.title}>
-          <Link href="/creation/demo" className="mockupLink"><MockupScene type={creation.type} /><span className="modelTag">{creation.tag}</span><span className="viewModel">VIEW MODEL ↗</span></Link>
-          <div className="cardMeta"><div><h3>{creation.title}</h3><p>{creation.creator}</p></div><span>♥ {creation.likes} · ◉ {creation.views}</span></div>
-        </article>)}
-      </div>
+      <div className="sectionHeading"><div><p className="eyebrow">THE SHOWCASE</p><h1>PRO BUILDS</h1><p className="galleryIntro">A curated gallery of detailed brick-built worlds. Every model is presented like a finished collector display.</p></div><Link href="/build" className="primaryButton">START BUILDING →</Link></div>
+      <div className="filterBar"><button className="filterActive">FEATURED</button><button>LATEST</button><button>MOST LIKED</button><span className="filterSpacer" /><input placeholder="Search models..." /><button>ALL CATEGORIES</button></div>
+      <div className="creationGrid large">{creations.map((creation) => <article className="creationCard proCard" key={creation.title}><Link href="/creation/demo" className="mockupLink"><div className="modelViewport"><Mockup type={creation.type} /></div><span className="modelTag">{creation.tag}</span><span className="viewModel">VIEW MODEL ↗</span></Link><div className="cardMeta"><div><h3>{creation.title}</h3><p>{creation.creator}</p></div><div className="cardStats"><span>{creation.pieces} pcs</span><span>♥ {creation.likes}</span><span>◉ {creation.views}</span></div></div></article>)}</div>
     </section>
   </main>;
 }
