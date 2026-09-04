@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Canvas, ThreeEvent, useThree } from "@react-three/fiber";
-import { Grid, GizmoHelper, GizmoViewport, OrbitControls } from "@react-three/drei";
+import { Grid, GizmoHelper, GizmoViewport, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
 import {
   ChevronLeft, ChevronRight, Pencil, MousePointer2, Move, RotateCw, Trash2,
@@ -112,27 +112,63 @@ function buildCandidate(kind: BrickKind, color: string, point: THREE.Vector3, br
 
 // Geometria condivisa fra i brick reali e il ghost di anteprima, in modo che
 // i pezzi "SPECIAL" (cono, tondo) si vedano identici in entrambi i casi.
-function BrickGeometry({ shape, size }: { shape: BrickShape; size: [number, number, number] }) {
+function Studs({ size, color }: { size: [number, number, number]; color: string }) {
+  const cols = Math.max(1, Math.round(size[0] / 0.9));
+  const rows = Math.max(1, Math.round(size[2] / 0.9));
+  const xs = Array.from({ length: cols }, (_, i) => (i - (cols - 1) / 2) * 0.9);
+  const zs = Array.from({ length: rows }, (_, i) => (i - (rows - 1) / 2) * 0.9);
+  return <group position={[0, size[1] / 2 + 0.065, 0]}>
+    {xs.flatMap((x) => zs.map((z) => (
+      <group key={`${x}-${z}`} position={[x, 0, z]}>
+        <mesh castShadow>
+          <cylinderGeometry args={[0.145, 0.145, 0.11, 20]} />
+          <meshStandardMaterial color={color} roughness={0.34} metalness={0.02} />
+        </mesh>
+        <mesh position={[0, 0.057, 0]}>
+          <torusGeometry args={[0.112, 0.024, 8, 20]} />
+          <meshStandardMaterial color={color} roughness={0.28} metalness={0.01} />
+        </mesh>
+      </group>
+    ))) }
+  </group>;
+}
+
+function BrickGeometry({ shape, size, color, ghost = false }: { shape: BrickShape; size: [number, number, number]; color: string; ghost?: boolean }) {
   if (shape === "cone") return <coneGeometry args={[size[0] * 0.42, size[1], 20]} />;
   if (shape === "cylinder") return <cylinderGeometry args={[size[0] * 0.42, size[0] * 0.42, size[1], 24]} />;
-  return <boxGeometry args={size} />;
+  return <RoundedBox args={size} radius={0.075} smoothness={3} castShadow={!ghost} receiveShadow={!ghost} />;
 }
 
+function BrickModel({ size, shape, color, ghost = false }: { size: [number, number, number]; shape: BrickShape; color: string; ghost?: boolean }) {
+  if (shape !== "box") {
+    return <mesh castShadow={!ghost} receiveShadow={!ghost}>
+      <BrickGeometry shape={shape} size={size} color={color} ghost={ghost} />
+      <meshStandardMaterial color={color} roughness={0.38} metalness={0.01} transparent={ghost} opacity={ghost ? 0.3 : 1} depthWrite={!ghost} />
+    </mesh>;
+  }
+  return <group>
+    <mesh castShadow={!ghost} receiveShadow={!ghost}>
+      <BrickGeometry shape={shape} size={size} color={color} ghost={ghost} />
+      <meshStandardMaterial color={ghost ? "#4ade80" : color} roughness={0.34} metalness={0.01} transparent={ghost} opacity={ghost ? 0.28 : 1} depthWrite={!ghost} />
+    </mesh>
+    <Studs size={size} color={ghost ? "#86efac" : color} />
+    {!ghost && <mesh position={[0, -size[1] / 2 + 0.012, 0]}>
+      <boxGeometry args={[Math.max(0.05, size[0] - 0.08), 0.025, Math.max(0.05, size[2] - 0.08)]} />
+      <meshStandardMaterial color={color} roughness={0.5} />
+    </mesh>}
+  </group>;
+}
 function GhostBrick({ position, size, shape, color, valid }: { position: [number, number, number]; size: [number, number, number]; shape: BrickShape; color: string; valid: boolean }) {
-  return <mesh position={position}>
-    <BrickGeometry shape={shape} size={size} />
-    <meshStandardMaterial color={valid ? color : "#ef4444"} transparent opacity={0.28} depthWrite={false} />
-  </mesh>;
+  const ghostColor = valid ? color : "#ef4444";
+  return <group position={position}>
+    <BrickModel size={size} shape={shape} color={ghostColor} ghost />
+  </group>;
 }
-
 function BrickMesh({ brick, selected, onSelect, onHover, onPlace }: { brick: Brick; selected: boolean; onSelect: (id: number) => void; onHover: (point: THREE.Vector3) => void; onPlace: (point: THREE.Vector3) => void }) {
   return <group position={brick.position}
     onClick={(e) => { e.stopPropagation(); if (e.shiftKey) onPlace(e.point); else onSelect(brick.id); }}
     onPointerMove={(e) => { e.stopPropagation(); onHover(e.point); }}>
-    <mesh castShadow receiveShadow>
-      <BrickGeometry shape={brick.shape} size={brick.size} />
-      <meshStandardMaterial color={brick.color} roughness={0.48} metalness={0.02} />
-    </mesh>
+    <BrickModel size={brick.size} shape={brick.shape} color={brick.color} />
     {selected && <mesh position={[0, 0.26, 0]}>
       <boxGeometry args={[brick.size[0] + 0.08, 0.04, brick.size[2] + 0.08]} />
       <meshBasicMaterial color="#c084fc" wireframe />
