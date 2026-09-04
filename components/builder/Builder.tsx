@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Canvas, ThreeEvent, useThree } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
+import type { ThreeEvent } from "@react-three/fiber";
 import { GizmoHelper, GizmoViewport, Grid, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
 import {
