@@ -128,21 +128,23 @@ function CameraCapture({ onReady }: { onReady: (capture: () => string) => void }
   return null;
 }
 
-function Scene({ bricks, selectedId, ghost, ghostValid, onSelect, onPointer, onCaptureReady, onPlace, viewMode }: {
+function Scene({ bricks, selectedId, ghost, ghostValid, onSelect, onPointer, onCaptureReady, onPlace, viewMode, gridVisible }: {
   bricks: Brick[]; selectedId: number | null; ghost: Brick | null; ghostValid: boolean;
   onSelect: (id: number) => void; onPointer: (point: THREE.Vector3) => void;
   onCaptureReady: (capture: () => string) => void;
   onPlace: (point: THREE.Vector3) => void;
   viewMode: "iso" | "top";
+  gridVisible: boolean;
 }) {
-  const groundPointer = (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onPointer(e.point); };
+  const groundHover = (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onPointer(e.point); };
+  const groundClick = (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onPlace(e.point); };
   return <Canvas shadows camera={{ position: [8, 7, 9], fov: 45 }} gl={{ preserveDrawingBuffer: true }}>
     <color attach="background" args={["#080b14"]} />
     <ambientLight intensity={1.1} />
     <directionalLight position={[5, 9, 4]} intensity={3.1} castShadow shadow-mapSize={[2048, 2048]} />
     <hemisphereLight intensity={0.42} />
-    <Grid args={[30, 30]} cellSize={1} cellThickness={0.5} cellColor="#252b3a" sectionSize={5} sectionThickness={1} sectionColor="#3d4660" fadeDistance={30} />
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.03, 0]} onPointerMove={groundPointer} onClick={groundPointer} receiveShadow>
+    {gridVisible && <Grid args={[30, 30]} cellSize={1} cellThickness={0.5} cellColor="#252b3a" sectionSize={5} sectionThickness={1} sectionColor="#3d4660" fadeDistance={30} />}
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.03, 0]} onPointerMove={groundHover} onClick={groundClick} receiveShadow>
       <planeGeometry args={[30, 30]} />
       <shadowMaterial opacity={0.18} />
     </mesh>
@@ -150,7 +152,7 @@ function Scene({ bricks, selectedId, ghost, ghostValid, onSelect, onPointer, onC
     {ghost && <GhostBrick position={ghost.position} size={ghost.size} color={ghost.color} valid={ghostValid} />}
     <CameraController viewMode={viewMode} />
     <CameraCapture onReady={onCaptureReady} />
-    <OrbitControls makeDefault enableDamping dampingFactor={0.08} />
+    <OrbitControls makeDefault enableDamping dampingFactor={0.08} target={[0, 0.8, 0]} />
   </Canvas>;
 }
 
@@ -170,10 +172,12 @@ export default function Builder() {
   const [title, setTitle] = useState("");
   const [creator, setCreator] = useState("");
   const [saved, setSaved] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [future, setFuture] = useState<HistoryState[]>([]);
   const [ghostPoint, setGhostPoint] = useState<THREE.Vector3 | null>(null);
   const [viewMode, setViewMode] = useState<"iso" | "top">("iso");
+  const [gridVisible, setGridVisible] = useState(true);
 
   const available = 100 - bricks.length;
   const selected = useMemo(() => bricks.find((b) => b.id === selectedId) ?? null, [bricks, selectedId]);
@@ -204,7 +208,7 @@ export default function Builder() {
     if (selectedId === null) return;
     const next = bricks.map((b) => b.id === selectedId ? { ...b, size: [b.size[2], b.size[1], b.size[0]] as [number, number, number], footprint: [b.footprint[1], b.footprint[0]] as [number, number] } : b);
     const changed = next.find((b) => b.id === selectedId)!;
-    if (!validPlacement(changed, next.filter((b) => b.id !== selectedId))) commit(next);
+    if (validPlacement(changed, next.filter((b) => b.id !== selectedId))) commit(next);
   }, [bricks, commit, selectedId]);
 
   const moveSelected = useCallback((dx: number, dz: number) => {
@@ -258,11 +262,14 @@ export default function Builder() {
     localStorage.setItem("brick-builder-draft-state", JSON.stringify(bricks));
   }, [bricks]);
 
-  const openSave = () => { setSaved(false); setShowSave(true); };
+  const openSave = () => {
+    setSaved(false);
+    setPreviewSrc(capture ? capture() : null);
+    setShowSave(true);
+  };
   const confirmSave = () => {
-    if (!title.trim() || !capture) return;
-    const preview = capture();
-    localStorage.setItem("brick-builder-draft", JSON.stringify({ title: title.trim(), creator: creator.trim() || "Anonymous", bricks, preview, savedAt: Date.now() }));
+    if (!title.trim() || !previewSrc) return;
+    localStorage.setItem("brick-builder-draft", JSON.stringify({ title: title.trim(), creator: creator.trim() || "Anonymous", bricks, preview: previewSrc, savedAt: Date.now() }));
     setSaved(true);
   };
 
@@ -279,19 +286,19 @@ export default function Builder() {
         <div className="brickPalette">{(Object.keys(sizes) as BrickKind[]).map((k) => <button key={k} className={`brickOption ${kind === k ? "selectedOption" : ""}`} onClick={() => setKind(k)}>{k}</button>)}</div>
         <p className="category">COLORS</p><div className="colorPalette">{palette.map((c) => <button key={c} aria-label={`Color ${c}`} className={`colorDot ${color === c ? "selectedColor" : ""}`} style={{ background: c }} onClick={() => setColor(c)} />)}</div>
         <p className="category">STARTER SET</p><div className="available"><span>AVAILABLE</span><b>{available} / 100</b></div><div className="progress"><i style={{ width: `${available}%` }} /></div>
-        <p className="panelHelp">Move the cursor over the grid or a brick to preview placement. Green is valid, red is blocked. Click to place.</p>
+        <p className="panelHelp">Hover the grid to preview placement — green is valid, red is blocked. Click empty grid to place. Click a brick to select it, Shift+Click a brick to stack on top.</p>
       </aside>
 
       <section className="scene">
-        <Scene bricks={bricks} selectedId={selectedId} ghost={ghost} ghostValid={ghostValid} onSelect={setSelectedId} onPointer={setGhostPoint} onPlace={addAt} onCaptureReady={setCapture} viewMode={viewMode} />
+        <Scene bricks={bricks} selectedId={selectedId} ghost={ghost} ghostValid={ghostValid} onSelect={setSelectedId} onPointer={setGhostPoint} onPlace={addAt} onCaptureReady={setCapture} viewMode={viewMode} gridVisible={gridVisible} />
         <div className="sceneHud"><span>{bricks.length} PIECES</span><span>GRID 1×1</span><span>{ghost ? (ghostValid ? "PLACEMENT READY" : "BLOCKED") : selected ? "BRICK SELECTED" : "READY TO BUILD"}</span></div>
         <div className="sceneHint">HOVER TO PREVIEW · CLICK TO PLACE · CLICK BRICK TO SELECT · ARROWS MOVE · R ROTATE · CTRL/CMD+Z UNDO</div>
-        <div className="bottomTools"><button onClick={() => addAt(new THREE.Vector3(0, 0, 0))}>＋ ADD BRICK</button><button onClick={removeSelected}>⌫ REMOVE</button><span /><button onClick={() => moveSelected(-1, 0)}>←</button><button onClick={() => moveSelected(1, 0)}>→</button><button onClick={() => moveSelected(0, -1)}>↑</button><button onClick={() => moveSelected(0, 1)}>↓</button><button onClick={rotateSelected}>↻ ROTATE</button></div>
+        <div className="bottomTools"><button onClick={() => addAt(ghostPoint ?? new THREE.Vector3(0, 0, 0))}>＋ ADD BRICK</button><button onClick={removeSelected}>⌫ REMOVE</button><span /><button onClick={() => moveSelected(-1, 0)}>←</button><button onClick={() => moveSelected(1, 0)}>→</button><button onClick={() => moveSelected(0, -1)}>↑</button><button onClick={() => moveSelected(0, 1)}>↓</button><button onClick={rotateSelected}>↻ ROTATE</button></div>
       </section>
 
       <aside className="toolsPanel">
         <p className="panelLabel">TOOLS</p><button className="toolActive">◈ SELECT / PLACE</button><button onClick={() => moveSelected(-1, 0)}>✣ MOVE</button><button onClick={rotateSelected}>⟳ ROTATE</button><button onClick={removeSelected}>⌫ DELETE</button>
-        <p className="category">VIEW</p><label><span>GRID</span><input type="checkbox" defaultChecked /></label><label><span>SNAP</span><input type="checkbox" defaultChecked /></label>
+        <p className="category">VIEW</p><label><span>GRID</span><input type="checkbox" checked={gridVisible} onChange={(e) => setGridVisible(e.target.checked)} /></label><label title="Snapping alla griglia sempre attivo: necessario per l'incastro e lo stacking dei brick."><span>SNAP</span><input type="checkbox" checked readOnly disabled /></label>
         <button className={`viewButton ${viewMode === "iso" ? "viewSelected" : ""}`} onClick={() => setViewMode("iso")}>ISOMETRIC</button><button className={`viewButton ${viewMode === "top" ? "viewSelected" : ""}`} onClick={() => setViewMode("top")}>TOP VIEW</button>
         <div className="pieceCount"><span>PIECE COUNT</span><b>{bricks.length} / 100</b></div><div className="selectedInfo"><span>SELECTED</span><b>{selected ? selected.id : "—"}</b></div>
       </aside>
@@ -300,7 +307,7 @@ export default function Builder() {
     {showSave && <div className="modalBackdrop" onClick={() => setShowSave(false)}><div className="saveModal" onClick={(e) => e.stopPropagation()}>
       {!saved ? <><p className="eyebrow">FINALIZE CREATION</p><h2>SAVE YOUR MASTERPIECE</h2><p className="modalText">The current camera view becomes the public thumbnail. Adjust the camera before saving.</p>
         <label>CREATION NAME<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="My masterpiece" /></label><label>CREATOR NAME<input value={creator} onChange={(e) => setCreator(e.target.value)} placeholder="Your name or handle" /></label>
-        <div className="modalPreview">{capture ? <img src={capture()} alt="Current preview" /> : <span>PREVIEW</span>}</div><div className="modalActions"><button className="secondaryButton" onClick={() => setShowSave(false)}>CANCEL</button><button className="primaryButton" disabled={!title.trim()} onClick={confirmSave}>SAVE CREATION →</button></div>
+        <div className="modalPreview">{previewSrc ? <img src={previewSrc} alt="Current preview" /> : <span>PREVIEW</span>}</div><div className="modalActions"><button className="secondaryButton" onClick={() => setShowSave(false)}>CANCEL</button><button className="primaryButton" disabled={!title.trim() || !previewSrc} onClick={confirmSave}>SAVE CREATION →</button></div>
       </> : <><div className="saveSuccess">✓</div><p className="eyebrow">CREATION SAVED</p><h2>READY FOR THE SHOWCASE</h2><p className="modalText">Saved locally for this prototype. PostgreSQL, permanent thumbnails and public gallery publishing come next.</p><div className="modalActions"><Link href="/gallery" className="primaryButton">OPEN GALLERY →</Link><button className="secondaryButton" onClick={() => setShowSave(false)}>KEEP BUILDING</button></div></>}
     </div></div>}
   </main>;
