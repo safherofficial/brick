@@ -3,290 +3,295 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Canvas, ThreeEvent, useThree } from "@react-three/fiber";
-import { Grid, GizmoHelper, GizmoViewport, OrbitControls, RoundedBox } from "@react-three/drei";
+import { GizmoHelper, GizmoViewport, Grid, OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
 import {
-  ChevronLeft, ChevronRight, Pencil, MousePointer2, Move, RotateCw, Trash2,
-  Undo2, Redo2, Plus, Eraser, ArrowLeft, ArrowRight, ArrowUp, ArrowDown
+  ChevronLeft, ChevronRight, MousePointer2, Move, RotateCw, Trash2,
+  Undo2, Redo2, Plus, Eraser, ArrowLeft, ArrowRight, ArrowUp, ArrowDown,
+  Layers3, Grid3X3, Box, Eye, EyeOff, Maximize2
 } from "lucide-react";
 
-type BrickShape = "box" | "cone" | "cylinder";
+type BrickKind = "1x1" | "1x2" | "2x2" | "2x4" | "2x6" | "round" | "cone";
+type BrickShape = "box" | "cylinder" | "cone";
+type ViewMode = "iso" | "top" | "front" | "side";
+type Vec3 = [number, number, number];
+type Footprint = [number, number];
 
 type Brick = {
   id: number;
-  size: [number, number, number];
-  footprint: [number, number];
-  position: [number, number, number];
-  color: string;
+  kind: BrickKind;
   shape: BrickShape;
+  footprint: Footprint;
+  size: Vec3;
+  position: Vec3;
+  rotation: 0 | 90 | 180 | 270;
+  color: string;
+  layer: number;
 };
 
-type BrickKind = "1x1" | "2x2" | "2x4" | "cone" | "round";
+type Snapshot = Brick[];
 
-type HistoryState = Brick[];
+const BRICK_HEIGHT = 0.44;
+const STUD_SPACING = 0.92;
+const STUD_RADIUS = 0.145;
+const STUD_HEIGHT = 0.105;
+const STARTER_LIMIT = 100;
 
-const palette = ["#ef4444", "#f59e0b", "#facc15", "#22c55e", "#3b82f6", "#8b5cf6", "#ec4899", "#e5e7eb"];
-const heights = 0.45;
+const palette = [
+  "#C91F2D", "#E35B19", "#F6B800", "#F2D64B", "#168B4B", "#53B84A",
+  "#0877B9", "#2E58B8", "#6B42A8", "#D84C9B", "#111827", "#F2F0E8"
+];
 
-const shapeOf: Record<BrickKind, BrickShape> = {
-  "1x1": "box", "2x2": "box", "2x4": "box", cone: "cone", round: "cylinder"
+const brickDefs: Record<BrickKind, { footprint: Footprint; shape: BrickShape; label: string }> = {
+  "1x1": { footprint: [1, 1], shape: "box", label: "1×1" },
+  "1x2": { footprint: [2, 1], shape: "box", label: "1×2" },
+  "2x2": { footprint: [2, 2], shape: "box", label: "2×2" },
+  "2x4": { footprint: [4, 2], shape: "box", label: "2×4" },
+  "2x6": { footprint: [6, 2], shape: "box", label: "2×6" },
+  round: { footprint: [1, 1], shape: "cylinder", label: "ROUND" },
+  cone: { footprint: [1, 1], shape: "cone", label: "CONE" }
 };
-const kindLabel: Record<BrickKind, string> = {
-  "1x1": "1×1", "2x2": "2×2", "2x4": "2×4", cone: "CONE", round: "ROUND"
-};
-const sizes: Record<BrickKind, [number, number, number]> = {
-  "1x1": [0.9, heights, 0.9],
-  "2x2": [1.8, heights, 1.8],
-  "2x4": [3.6, heights, 1.8],
-  cone: [0.9, heights, 0.9],
-  round: [0.9, heights, 0.9]
-};
-const footprints: Record<BrickKind, [number, number]> = {
-  "1x1": [1, 1],
-  "2x2": [2, 2],
-  "2x4": [4, 2],
-  cone: [1, 1],
-  round: [1, 1]
-};
-const basicKinds: BrickKind[] = ["1x1", "2x2", "2x4"];
-const specialKinds: BrickKind[] = ["cone", "round"];
 
-function getFootprint(brick: Brick) {
-  return brick.footprint;
+const basicKinds: BrickKind[] = ["1x1", "1x2", "2x2", "2x4", "2x6"];
+const specialKinds: BrickKind[] = ["round", "cone"];
+
+function sizeFor(footprint: Footprint): Vec3 {
+  return [footprint[0] * STUD_SPACING, BRICK_HEIGHT, footprint[1] * STUD_SPACING];
 }
 
-function overlaps(a: Brick, b: Brick) {
-  const [aw, ad] = getFootprint(a);
-  const [bw, bd] = getFootprint(b);
-  const ax = Math.abs(a.position[0] - b.position[0]);
-  const az = Math.abs(a.position[2] - b.position[2]);
-  return ax < (aw + bw) / 2 && az < (ad + bd) / 2;
+function effectiveFootprint(kind: BrickKind, rotation: 0 | 90 | 180 | 270): Footprint {
+  const [w, d] = brickDefs[kind].footprint;
+  return rotation % 180 === 0 ? [w, d] : [d, w];
 }
 
-function sameLayer(a: Brick, b: Brick) {
-  return Math.abs(a.position[1] - b.position[1]) < 0.01;
+function cellAnchor(position: Vec3, footprint: Footprint): [number, number] {
+  return [Math.round(position[0] - (footprint[0] - 1) / 2), Math.round(position[2] - (footprint[1] - 1) / 2)];
 }
 
-function validPlacement(candidate: Brick, bricks: Brick[]) {
-  return !bricks.some((brick) => sameLayer(candidate, brick) && overlaps(candidate, brick));
+function cellsFor(brick: Brick): string[] {
+  const [w, d] = brick.footprint;
+  const [ax, az] = cellAnchor(brick.position, brick.footprint);
+  const cells: string[] = [];
+  for (let x = ax; x < ax + w; x++) for (let z = az; z < az + d; z++) cells.push(`${x}:${z}`);
+  return cells;
 }
 
-function supportedLayer(candidate: Brick, bricks: Brick[]) {
-  const [cw, cd] = candidate.footprint;
-  const minX = candidate.position[0] - cw / 2 + 0.5;
-  const maxX = candidate.position[0] + cw / 2 - 0.5;
-  const minZ = candidate.position[2] - cd / 2 + 0.5;
-  const maxZ = candidate.position[2] + cd / 2 - 0.5;
-  const cells: Array<[number, number]> = [];
-  for (let x = minX; x <= maxX; x += 1) for (let z = minZ; z <= maxZ; z += 1) cells.push([x, z]);
-  if (!cells.length) return 0;
+function layerFromY(y: number) {
+  return Math.max(0, Math.round((y - BRICK_HEIGHT / 2) / BRICK_HEIGHT));
+}
 
-  let bestLayer = 0;
+function occupied(bricks: Brick[], ignoreId?: number) {
+  const map = new Map<string, number>();
   for (const brick of bricks) {
-    const layer = Math.round((brick.position[1] - heights / 2) / heights);
-    if (layer < 0) continue;
-    const [bw, bd] = brick.footprint;
-    const bMinX = brick.position[0] - bw / 2 + 0.5;
-    const bMaxX = brick.position[0] + bw / 2 - 0.5;
-    const bMinZ = brick.position[2] - bd / 2 + 0.5;
-    const bMaxZ = brick.position[2] + bd / 2 - 0.5;
-    const covers = cells.every(([x, z]) => x >= bMinX && x <= bMaxX && z >= bMinZ && z <= bMaxZ);
-    if (covers) bestLayer = Math.max(bestLayer, layer + 1);
+    if (brick.id === ignoreId) continue;
+    for (const cell of cellsFor(brick)) map.set(`${brick.layer}:${cell}`, brick.id);
   }
-  return bestLayer;
+  return map;
 }
 
-function buildCandidate(kind: BrickKind, color: string, point: THREE.Vector3, bricks: Brick[], forcedLayer?: number): Brick {
-  const x = Math.round(point.x);
-  const z = Math.round(point.z);
-  const layer = forcedLayer ?? supportedLayer({ id: -1, size: sizes[kind], footprint: footprints[kind], position: [x, 0, z], color, shape: shapeOf[kind] }, bricks);
-  return {
-    id: Date.now() + Math.floor(Math.random() * 1000),
-    size: sizes[kind],
-    footprint: footprints[kind],
-    position: [x, heights / 2 + layer * heights, z],
-    color,
-    shape: shapeOf[kind]
+function highestSupportedLayer(candidate: Brick, bricks: Brick[]) {
+  const cells = cellsFor(candidate);
+  let layer = 0;
+  const map = occupied(bricks, candidate.id);
+  for (let test = 0; test < 60; test++) {
+    const supported = test === 0 || cells.every((cell) => map.has(`${test - 1}:${cell}`));
+    const clear = cells.every((cell) => !map.has(`${test}:${cell}`));
+    if (supported && clear) layer = test;
+    else if (test > layer + 1) break;
+  }
+  return layer;
+}
+
+function isValid(candidate: Brick, bricks: Brick[]) {
+  const map = occupied(bricks, candidate.id);
+  return cellsFor(candidate).every((cell) => !map.has(`${candidate.layer}:${cell}`)) &&
+    (candidate.layer === 0 || cellsFor(candidate).every((cell) => map.has(`${candidate.layer - 1}:${cell}`)));
+}
+
+function id() {
+  return Date.now() + Math.floor(Math.random() * 100000);
+}
+
+function makeBrick(kind: BrickKind, color: string, point: THREE.Vector3, bricks: Brick[], rotation: 0 | 90 | 180 | 270 = 0, forcedLayer?: number): Brick {
+  const footprint = effectiveFootprint(kind, rotation);
+  const [w, d] = footprint;
+  const ax = Math.round(point.x - (w - 1) / 2);
+  const az = Math.round(point.z - (d - 1) / 2);
+  const center: Vec3 = [ax + (w - 1) / 2, 0, az + (d - 1) / 2];
+  const provisional: Brick = {
+    id: id(), kind, shape: brickDefs[kind].shape, footprint, size: sizeFor(footprint),
+    position: center, rotation, color, layer: 0
   };
+  const layer = forcedLayer ?? highestSupportedLayer(provisional, bricks);
+  provisional.layer = layer;
+  provisional.position = [center[0], layer * BRICK_HEIGHT + BRICK_HEIGHT / 2, center[2]];
+  return provisional;
 }
 
-// Geometria condivisa fra i brick reali e il ghost di anteprima, in modo che
-// i pezzi "SPECIAL" (cono, tondo) si vedano identici in entrambi i casi.
-function Studs({ size, color }: { size: [number, number, number]; color: string }) {
-  const cols = Math.max(1, Math.round(size[0] / 0.9));
-  const rows = Math.max(1, Math.round(size[2] / 0.9));
-  const xs = Array.from({ length: cols }, (_, i) => (i - (cols - 1) / 2) * 0.9);
-  const zs = Array.from({ length: rows }, (_, i) => (i - (rows - 1) / 2) * 0.9);
-  return <group position={[0, size[1] / 2 + 0.065, 0]}>
+function cloneBricks(bricks: Brick[]): Brick[] {
+  return bricks.map((b) => ({ ...b, position: [...b.position] as Vec3, footprint: [...b.footprint] as Footprint, size: [...b.size] as Vec3 }));
+}
+
+function initialScene(): Brick[] {
+  const add = (kind: BrickKind, color: string, x: number, z: number, layer: number, rotation: 0 | 90 | 180 | 270 = 0, idValue = id()): Brick => {
+    const footprint = effectiveFootprint(kind, rotation);
+    return { id: idValue, kind, shape: brickDefs[kind].shape, footprint, size: sizeFor(footprint), position: [x, layer * BRICK_HEIGHT + BRICK_HEIGHT / 2, z], rotation, color, layer };
+  };
+  return [
+    add("2x4", "#168B4B", -1.5, 0, 0, 0, 101),
+    add("2x4", "#168B4B", 2.5, 0, 0, 0, 102),
+    add("2x2", "#0877B9", 0, 0, 1, 0, 103),
+    add("2x2", "#0877B9", 2, 0, 1, 0, 104),
+    add("2x2", "#F6B800", 1, 0, 2, 0, 105),
+    add("1x2", "#D84C9B", 1, 1, 3, 90, 106)
+  ];
+}
+
+function Studs({ footprint, color, ghost = false }: { footprint: Footprint; color: string; ghost?: boolean }) {
+  const [w, d] = footprint;
+  const xs = Array.from({ length: w }, (_, i) => (i - (w - 1) / 2) * STUD_SPACING);
+  const zs = Array.from({ length: d }, (_, i) => (i - (d - 1) / 2) * STUD_SPACING);
+  return <group position={[0, BRICK_HEIGHT / 2 + STUD_HEIGHT / 2 - 0.008, 0]}>
     {xs.flatMap((x) => zs.map((z) => (
       <group key={`${x}-${z}`} position={[x, 0, z]}>
-        <mesh castShadow>
-          <cylinderGeometry args={[0.145, 0.145, 0.11, 20]} />
-          <meshStandardMaterial color={color} roughness={0.34} metalness={0.02} />
+        <mesh castShadow={!ghost}>
+          <cylinderGeometry args={[STUD_RADIUS, STUD_RADIUS * 1.04, STUD_HEIGHT, 24]} />
+          <meshStandardMaterial color={color} roughness={0.28} metalness={0.01} transparent={ghost} opacity={ghost ? 0.55 : 1} />
         </mesh>
-        <mesh position={[0, 0.057, 0]}>
-          <torusGeometry args={[0.112, 0.024, 8, 20]} />
-          <meshStandardMaterial color={color} roughness={0.28} metalness={0.01} />
+        <mesh position={[0, STUD_HEIGHT / 2 + 0.002, 0]}>
+          <torusGeometry args={[0.111, 0.021, 8, 20]} />
+          <meshStandardMaterial color={ghost ? "#ffffff" : color} roughness={0.3} metalness={0.02} transparent={ghost} opacity={ghost ? 0.35 : 0.72} />
         </mesh>
       </group>
-    ))) }
+    )))}
   </group>;
 }
 
-function BrickGeometry({ shape, size, color, ghost = false }: { shape: BrickShape; size: [number, number, number]; color: string; ghost?: boolean }) {
-  if (shape === "cone") return <coneGeometry args={[size[0] * 0.42, size[1], 20]} />;
-  if (shape === "cylinder") return <cylinderGeometry args={[size[0] * 0.42, size[0] * 0.42, size[1], 24]} />;
-  return <RoundedBox args={size} radius={0.075} smoothness={3} castShadow={!ghost} receiveShadow={!ghost} />;
-}
-
-function BrickModel({ size, shape, color, ghost = false }: { size: [number, number, number]; shape: BrickShape; color: string; ghost?: boolean }) {
-  if (shape !== "box") {
-    return <mesh castShadow={!ghost} receiveShadow={!ghost}>
-      <BrickGeometry shape={shape} size={size} color={color} ghost={ghost} />
-      <meshStandardMaterial color={color} roughness={0.38} metalness={0.01} transparent={ghost} opacity={ghost ? 0.3 : 1} depthWrite={!ghost} />
-    </mesh>;
-  }
-  return <group>
-    <mesh castShadow={!ghost} receiveShadow={!ghost}>
-      <BrickGeometry shape={shape} size={size} color={color} ghost={ghost} />
-      <meshStandardMaterial color={ghost ? "#4ade80" : color} roughness={0.34} metalness={0.01} transparent={ghost} opacity={ghost ? 0.28 : 1} depthWrite={!ghost} />
-    </mesh>
-    <Studs size={size} color={ghost ? "#86efac" : color} />
-    {!ghost && <mesh position={[0, -size[1] / 2 + 0.012, 0]}>
-      <boxGeometry args={[Math.max(0.05, size[0] - 0.08), 0.025, Math.max(0.05, size[2] - 0.08)]} />
-      <meshStandardMaterial color={color} roughness={0.5} />
+function BrickModel({ brick, ghost = false }: { brick: Brick; ghost?: boolean }) {
+  const color = ghost ? brick.color : brick.color;
+  const size: Vec3 = [brick.footprint[0] * STUD_SPACING - 0.035, BRICK_HEIGHT, brick.footprint[1] * STUD_SPACING - 0.035];
+  const materialColor = ghost ? color : color;
+  return <group rotation-y={THREE.MathUtils.degToRad(brick.rotation)}>
+    <RoundedBox args={size} radius={0.075} smoothness={4} castShadow={!ghost} receiveShadow={!ghost}>
+      <meshStandardMaterial color={materialColor} roughness={0.31} metalness={0.015} transparent={ghost} opacity={ghost ? 0.42 : 1} depthWrite={!ghost} />
+    </RoundedBox>
+    <Studs footprint={brickDefs[brick.kind].footprint} color={materialColor} ghost={ghost} />
+    {!ghost && <mesh position={[0, -BRICK_HEIGHT / 2 + 0.012, 0]} receiveShadow>
+      <boxGeometry args={[Math.max(0.08, size[0] - 0.09), 0.024, Math.max(0.08, size[2] - 0.09)]} />
+      <meshStandardMaterial color={color} roughness={0.42} />
     </mesh>}
   </group>;
 }
-function GhostBrick({ position, size, shape, color, valid }: { position: [number, number, number]; size: [number, number, number]; shape: BrickShape; color: string; valid: boolean }) {
-  const ghostColor = valid ? color : "#ef4444";
-  return <group position={position}>
-    <BrickModel size={size} shape={shape} color={ghostColor} ghost />
-  </group>;
-}
-function BrickMesh({ brick, selected, onSelect, onHover, onPlace }: { brick: Brick; selected: boolean; onSelect: (id: number) => void; onHover: (point: THREE.Vector3) => void; onPlace: (point: THREE.Vector3) => void }) {
+
+function BrickMesh({ brick, selected, onSelect, onHover, onPlace }: {
+  brick: Brick; selected: boolean; onSelect: (id: number) => void;
+  onHover: (point: THREE.Vector3) => void; onPlace: (point: THREE.Vector3) => void;
+}) {
+  const size = sizeFor(brick.footprint);
   return <group position={brick.position}
     onClick={(e) => { e.stopPropagation(); if (e.shiftKey) onPlace(e.point); else onSelect(brick.id); }}
     onPointerMove={(e) => { e.stopPropagation(); onHover(e.point); }}>
-    <BrickModel size={brick.size} shape={brick.shape} color={brick.color} />
-    {selected && <mesh position={[0, 0.26, 0]}>
-      <boxGeometry args={[brick.size[0] + 0.08, 0.04, brick.size[2] + 0.08]} />
-      <meshBasicMaterial color="#c084fc" wireframe />
+    <BrickModel brick={brick} />
+    {selected && <mesh position={[0, BRICK_HEIGHT / 2 + STUD_HEIGHT + 0.01, 0]} rotation-y={THREE.MathUtils.degToRad(brick.rotation)}>
+      <boxGeometry args={[size[0] + 0.11, 0.025, size[2] + 0.11]} />
+      <meshBasicMaterial color="#8b5cf6" wireframe />
     </mesh>}
   </group>;
 }
 
-function CameraController({ viewMode }: { viewMode: "iso" | "top" }) {
-  const { camera } = useThree();
-  useEffect(() => {
-    const target = new THREE.Vector3(0, 0.8, 0);
-    if (viewMode === "top") camera.position.set(0.01, 11, 0.01);
-    else camera.position.set(8, 7, 9);
-    camera.lookAt(target);
-  }, [camera, viewMode]);
-  return null;
+function GhostBrick({ brick, valid }: { brick: Brick; valid: boolean }) {
+  const ghost = { ...brick, color: valid ? "#37E38B" : "#FF3347" };
+  return <group position={brick.position}><BrickModel brick={ghost} ghost /></group>;
 }
 
-function CameraCapture({ onReady }: { onReady: (capture: () => string) => void }) {
-  const { gl } = useThree();
-  useEffect(() => { onReady(() => gl.domElement.toDataURL("image/png")); }, [gl, onReady]);
+function CameraController({ viewMode }: { viewMode: ViewMode }) {
+  const { camera } = useThree();
+  useEffect(() => {
+    const target = new THREE.Vector3(0, 0.9, 0);
+    if (viewMode === "top") camera.position.set(0, 12, 0.01);
+    else if (viewMode === "front") camera.position.set(0, 4.5, 11);
+    else if (viewMode === "side") camera.position.set(11, 4.5, 0);
+    else camera.position.set(8.5, 6.5, 9);
+    camera.lookAt(target);
+  }, [camera, viewMode]);
   return null;
 }
 
 function Scene({ bricks, selectedId, ghost, ghostValid, onSelect, onPointer, onCaptureReady, onPlace, viewMode, gridVisible }: {
   bricks: Brick[]; selectedId: number | null; ghost: Brick | null; ghostValid: boolean;
   onSelect: (id: number) => void; onPointer: (point: THREE.Vector3) => void;
-  onCaptureReady: (capture: () => string) => void;
-  onPlace: (point: THREE.Vector3) => void;
-  viewMode: "iso" | "top";
-  gridVisible: boolean;
+  onCaptureReady: (capture: () => string) => void; onPlace: (point: THREE.Vector3) => void;
+  viewMode: ViewMode; gridVisible: boolean;
 }) {
   const groundHover = (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onPointer(e.point); };
   const groundClick = (e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onPlace(e.point); };
-  return <Canvas shadows camera={{ position: [8, 7, 9], fov: 45 }} gl={{ preserveDrawingBuffer: true }}>
-    <color attach="background" args={["#080b14"]} />
-    <ambientLight intensity={1.1} />
-    <directionalLight position={[5, 9, 4]} intensity={3.1} castShadow shadow-mapSize={[2048, 2048]} />
-    <hemisphereLight intensity={0.42} />
-    {gridVisible && <Grid args={[30, 30]} cellSize={1} cellThickness={0.5} cellColor="#252b3a" sectionSize={5} sectionThickness={1} sectionColor="#3d4660" fadeDistance={30} />}
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.03, 0]} onPointerMove={groundHover} onClick={groundClick} receiveShadow>
-      <planeGeometry args={[30, 30]} />
-      <shadowMaterial opacity={0.18} />
+  return <Canvas shadows camera={{ position: [8.5, 6.5, 9], fov: 42 }} gl={{ preserveDrawingBuffer: true }}>
+    <color attach="background" args={["#070a11"]} />
+    <ambientLight intensity={0.7} />
+    <hemisphereLight intensity={0.48} groundColor="#05070c" />
+    <directionalLight position={[6, 10, 5]} intensity={3.2} castShadow shadow-mapSize={[2048, 2048]} shadow-camera-left={-12} shadow-camera-right={12} shadow-camera-top={12} shadow-camera-bottom={-12} />
+    <pointLight position={[-6, 5, -5]} intensity={0.55} color="#5b7cff" />
+    {gridVisible && <Grid args={[32, 32]} cellSize={1} cellThickness={0.55} cellColor="#273044" sectionSize={5} sectionThickness={1.1} sectionColor="#46516b" fadeDistance={30} />}
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.035, 0]} onPointerMove={groundHover} onClick={groundClick} receiveShadow>
+      <planeGeometry args={[32, 32]} />
+      <shadowMaterial opacity={0.24} />
     </mesh>
     {bricks.map((brick) => <BrickMesh key={brick.id} brick={brick} selected={selectedId === brick.id} onSelect={onSelect} onHover={onPointer} onPlace={onPlace} />)}
-    {ghost && <GhostBrick position={ghost.position} size={ghost.size} shape={ghost.shape} color={ghost.color} valid={ghostValid} />}
+    {ghost && <GhostBrick brick={ghost} valid={ghostValid} />}
     <CameraController viewMode={viewMode} />
-    <CameraCapture onReady={onCaptureReady} />
-    <OrbitControls makeDefault enableDamping dampingFactor={0.08} target={[0, 0.8, 0]} />
-    <GizmoHelper alignment="bottom-right" margin={[64, 64]}>
-      <GizmoViewport axisColors={["#f87171", "#4ade80", "#60a5fa"]} labelColor="#0a0e18" hideNegativeAxes />
+    <CaptureBridge onReady={onCaptureReady} />
+    <OrbitControls makeDefault enableDamping dampingFactor={0.075} target={[0, 0.9, 0]} minDistance={4} maxDistance={25} />
+    <GizmoHelper alignment="bottom-right" margin={[60, 60]}>
+      <GizmoViewport axisColors={["#f87171", "#4ade80", "#60a5fa"]} labelColor="#dbe4ff" hideNegativeAxes />
     </GizmoHelper>
   </Canvas>;
 }
 
-// Miniatura CSS del brick per la palette: niente immagini, solo un piccolo
-// "pezzo" con studs proporzionati all'impronta reale (footprint) del brick.
-function BrickThumb({ footprint, shape }: { footprint: [number, number]; shape: BrickShape }) {
-  if (shape === "cone") return <div className="brickThumbCone" />;
-  if (shape === "cylinder") return <div className="brickThumbRound" />;
+function CaptureBridge({ onReady }: { onReady: (capture: () => string) => void }) {
+  const { gl } = useThree();
+  useEffect(() => { onReady(() => gl.domElement.toDataURL("image/png")); }, [gl, onReady]);
+  return null;
+}
+
+function BrickThumb({ footprint, color }: { footprint: Footprint; color: string }) {
   const [w, d] = footprint;
-  const studs = Array.from({ length: w * d });
-  return (
-    <div className="brickThumbBox" style={{ aspectRatio: `${w} / ${d}` }}>
-      <div className="brickThumbStuds" style={{ gridTemplateColumns: `repeat(${w}, 1fr)` }}>
-        {studs.map((_, i) => <span key={i} />)}
-      </div>
+  return <div className="brickThumbPro" style={{ aspectRatio: `${w}/${d}`, background: color }}>
+    <div className="thumbStuds" style={{ gridTemplateColumns: `repeat(${w},1fr)` }}>
+      {Array.from({ length: w * d }).map((_, i) => <i key={i} />)}
     </div>
-  );
+  </div>;
 }
 
-// Interruttore a scorrimento reale (non una checkbox nativa) per coerenza
-// visiva con il resto della UI.
 function Switch({ checked, onChange, disabled, title }: { checked: boolean; onChange?: (value: boolean) => void; disabled?: boolean; title?: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      title={title}
-      className={`switchTrack ${checked ? "switchOn" : ""}`}
-      onClick={() => onChange?.(!checked)}
-    >
-      <span className="switchThumb" />
-    </button>
-  );
+  return <button type="button" role="switch" aria-checked={checked} disabled={disabled} title={title} className={`switchTrack ${checked ? "switchOn" : ""}`} onClick={() => onChange?.(!checked)}><span className="switchThumb" /></button>;
 }
-
-const cloneBricks = (bricks: Brick[]): Brick[] => bricks.map((b) => ({ ...b, position: [...b.position] as [number, number, number], size: [...b.size] as [number, number, number], footprint: [...b.footprint] as [number, number] }));
 
 export default function Builder() {
-  const [color, setColor] = useState(palette[3]);
+  const [color, setColor] = useState(palette[0]);
   const [kind, setKind] = useState<BrickKind>("2x2");
-  const [bricks, setBricks] = useState<Brick[]>([
-    { id: 1, size: sizes["2x4"], footprint: footprints["2x4"], position: [0, 0.225, 0], color: "#22c55e", shape: "box" },
-    { id: 2, size: sizes["2x2"], footprint: footprints["2x2"], position: [0, 0.675, 0], color: "#3b82f6", shape: "box" },
-    { id: 3, size: sizes["1x1"], footprint: footprints["1x1"], position: [0, 1.125, 0], color: "#facc15", shape: "box" }
-  ]);
+  const [bricks, setBricks] = useState<Brick[]>(initialScene);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [capture, setCapture] = useState<(() => string) | null>(null);
-  const [showSave, setShowSave] = useState(false);
-  const [title, setTitle] = useState("");
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [creator, setCreator] = useState("");
-  const [saved, setSaved] = useState(false);
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-  const [history, setHistory] = useState<HistoryState[]>([]);
-  const [future, setFuture] = useState<HistoryState[]>([]);
+  const [history, setHistory] = useState<Snapshot[]>([]);
+  const [future, setFuture] = useState<Snapshot[]>([]);
   const [ghostPoint, setGhostPoint] = useState<THREE.Vector3 | null>(null);
-  const [viewMode, setViewMode] = useState<"iso" | "top">("iso");
+  const [viewMode, setViewMode] = useState<ViewMode>("iso");
   const [gridVisible, setGridVisible] = useState(true);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [capture, setCapture] = useState<(() => string) | null>(null);
+  const [showSave, setShowSave] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [creator, setCreator] = useState("");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [toast, setToast] = useState("");
 
-  const available = 100 - bricks.length;
+  const available = Math.max(0, STARTER_LIMIT - bricks.length);
   const selected = useMemo(() => bricks.find((b) => b.id === selectedId) ?? null, [bricks, selectedId]);
-  const ghost = useMemo(() => ghostPoint ? buildCandidate(kind, color, ghostPoint, bricks) : null, [ghostPoint, kind, color, bricks]);
-  const ghostValid = !!ghost && validPlacement(ghost, bricks);
+  const ghost = useMemo(() => ghostPoint ? makeBrick(kind, color, ghostPoint, bricks) : null, [ghostPoint, kind, color, bricks]);
+  const ghostValid = !!ghost && isValid(ghost, bricks);
+
+  const notify = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(""), 1400); }, []);
 
   const commit = useCallback((next: Brick[]) => {
     setHistory((h) => [...h.slice(-39), cloneBricks(bricks)]);
@@ -295,12 +300,12 @@ export default function Builder() {
   }, [bricks]);
 
   const addAt = useCallback((point: THREE.Vector3) => {
-    if (available <= 0) return;
-    const next = buildCandidate(kind, color, point, bricks);
-    if (!validPlacement(next, bricks)) return;
+    if (available <= 0) { notify("STARTER SET EMPTY"); return; }
+    const next = makeBrick(kind, color, point, bricks);
+    if (!isValid(next, bricks)) { notify("NO STUD SUPPORT HERE"); return; }
     commit([...bricks, next]);
     setSelectedId(next.id);
-  }, [available, bricks, color, commit, kind]);
+  }, [available, bricks, color, commit, kind, notify]);
 
   const removeSelected = useCallback(() => {
     if (selectedId === null) return;
@@ -309,40 +314,52 @@ export default function Builder() {
   }, [bricks, commit, selectedId]);
 
   const rotateSelected = useCallback(() => {
-    if (selectedId === null) return;
-    const next = bricks.map((b) => b.id === selectedId ? { ...b, size: [b.size[2], b.size[1], b.size[0]] as [number, number, number], footprint: [b.footprint[1], b.footprint[0]] as [number, number] } : b);
-    const changed = next.find((b) => b.id === selectedId)!;
-    if (validPlacement(changed, next.filter((b) => b.id !== selectedId))) commit(next);
-  }, [bricks, commit, selectedId]);
+    if (!selected) return;
+    const nextRotation = ((selected.rotation + 90) % 360) as 0 | 90 | 180 | 270;
+    const footprint = effectiveFootprint(selected.kind, nextRotation);
+    const rotated: Brick = { ...selected, rotation: nextRotation, footprint, size: sizeFor(footprint) };
+    const others = bricks.filter((b) => b.id !== selected.id);
+    const layer = highestSupportedLayer(rotated, others);
+    const anchor = cellAnchor(selected.position, selected.footprint);
+    const center: Vec3 = [anchor[0] + (footprint[0] - 1) / 2, layer * BRICK_HEIGHT + BRICK_HEIGHT / 2, anchor[1] + (footprint[1] - 1) / 2];
+    const candidate = { ...rotated, position: center, layer };
+    if (!isValid(candidate, others)) { notify("ROTATION BLOCKED"); return; }
+    commit([...others, candidate]);
+  }, [bricks, commit, notify, selected]);
 
   const moveSelected = useCallback((dx: number, dz: number) => {
-    if (selectedId === null) return;
-    const next = bricks.map((b) => b.id === selectedId ? { ...b, position: [b.position[0] + dx, b.position[1], b.position[2] + dz] as [number, number, number] } : b);
-    const moved = next.find((b) => b.id === selectedId)!;
-    if (validPlacement(moved, next.filter((b) => b.id !== selectedId))) commit(next);
-  }, [bricks, commit, selectedId]);
+    if (!selected) return;
+    const others = bricks.filter((b) => b.id !== selected.id);
+    const candidate = { ...selected, position: [selected.position[0] + dx, selected.position[1], selected.position[2] + dz] as Vec3 };
+    if (!isValid(candidate, others)) { notify("MOVE BLOCKED"); return; }
+    commit([...others, candidate]);
+  }, [bricks, commit, notify, selected]);
 
   const undo = useCallback(() => {
-    const previous = history.at(-1);
-    if (!previous) return;
-    setFuture((f) => [...f, cloneBricks(bricks)]);
-    setHistory((h) => h.slice(0, -1));
-    setBricks(cloneBricks(previous));
-    setSelectedId(null);
+    const previous = history.at(-1); if (!previous) return;
+    setFuture((f) => [...f, cloneBricks(bricks)]); setHistory((h) => h.slice(0, -1)); setBricks(cloneBricks(previous));
   }, [bricks, history]);
 
   const redo = useCallback(() => {
-    const next = future.at(-1);
-    if (!next) return;
-    setHistory((h) => [...h, cloneBricks(bricks)]);
-    setFuture((f) => f.slice(0, -1));
-    setBricks(cloneBricks(next));
-    setSelectedId(null);
+    const next = future.at(-1); if (!next) return;
+    setHistory((h) => [...h, cloneBricks(bricks)]); setFuture((f) => f.slice(0, -1)); setBricks(cloneBricks(next));
   }, [bricks, future]);
 
   useEffect(() => {
+    const raw = localStorage.getItem("brick-builder-draft-state");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as Brick[];
+      if (Array.isArray(parsed) && parsed.length) setBricks(parsed);
+    } catch { /* ignore malformed local draft */ }
+  }, []);
+
+  useEffect(() => { localStorage.setItem("brick-builder-draft-state", JSON.stringify(bricks)); }, [bricks]);
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
       if (e.key === "Delete" || e.key === "Backspace") removeSelected();
       if (e.key.toLowerCase() === "r") rotateSelected();
       if (e.key === "ArrowLeft") moveSelected(-1, 0);
@@ -352,25 +369,10 @@ export default function Builder() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler);
   }, [moveSelected, redo, removeSelected, rotateSelected, undo]);
 
-  useEffect(() => {
-    const savedDraft = localStorage.getItem("brick-builder-draft-state");
-    if (!savedDraft) return;
-    try { setBricks(JSON.parse(savedDraft)); } catch { /* ignore malformed local draft */ }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem("brick-builder-draft-state", JSON.stringify(bricks));
-  }, [bricks]);
-
-  const openSave = () => {
-    setSaved(false);
-    setPreviewSrc(capture ? capture() : null);
-    setShowSave(true);
-  };
+  const openSave = () => { setSaved(false); setPreviewSrc(capture ? capture() : null); setShowSave(true); };
   const confirmSave = () => {
     if (!title.trim() || !previewSrc) return;
     localStorage.setItem("brick-builder-draft", JSON.stringify({ title: title.trim(), creator: creator.trim() || "Anonymous", bricks, preview: previewSrc, savedAt: Date.now() }));
@@ -380,121 +382,54 @@ export default function Builder() {
   return <main className="builderShell">
     <header className="builderHeader">
       <div className="headerLeft">
-        <Link href="/" className="brand"><span className="brandMark">◆</span> BRICK BUILDER</Link>
-        <Link href="/gallery" className="backLink"><ChevronLeft size={14} /> BACK TO GALLERY</Link>
+        <Link href="/" className="brand"><span className="brandMark">◆</span> BRICK</Link>
+        <Link href="/gallery" className="backLink"><ChevronLeft size={14} /> GALLERY</Link>
       </div>
       <div className="creationTitle">
-        {editingTitle ? (
-          <input
-            autoFocus
-            className="titleInput"
-            value={title}
-            placeholder="UNTITLED CREATION"
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => setEditingTitle(false)}
-            onKeyDown={(e) => { if (e.key === "Enter") setEditingTitle(false); }}
-          />
-        ) : (
-          <>
-            <span>{title.trim() || "UNTITLED CREATION"}</span>
-            <button className="titleEditBtn" aria-label="Rename creation" onClick={() => setEditingTitle(true)}><Pencil size={12} /></button>
-          </>
-        )}
+        {editingTitle ? <input autoFocus className="titleInput" value={title} placeholder="UNTITLED CREATION" onChange={(e) => setTitle(e.target.value)} onBlur={() => setEditingTitle(false)} onKeyDown={(e) => { if (e.key === "Enter") setEditingTitle(false); }} /> : <><span>{title.trim() || "UNTITLED CREATION"}</span><button className="titleEditBtn" onClick={() => setEditingTitle(true)}>EDIT</button></>}
       </div>
-      <div className="builderActions">
-        <button aria-label="undo" onClick={undo} disabled={!history.length}><Undo2 size={15} /></button>
-        <button aria-label="redo" onClick={redo} disabled={!future.length}><Redo2 size={15} /></button>
-        <button className="primaryButton" onClick={openSave}>SAVE</button>
-      </div>
+      <div className="builderActions"><button onClick={undo} disabled={!history.length}><Undo2 size={15} /></button><button onClick={redo} disabled={!future.length}><Redo2 size={15} /></button><button className="primaryButton" onClick={openSave}>SAVE</button></div>
     </header>
 
-    <div className="builderBody" style={{ gridTemplateColumns: `${panelOpen ? 230 : 64}px 1fr 220px` }}>
+    <div className="builderBody" style={{ gridTemplateColumns: `${panelOpen ? 246 : 58}px 1fr 232px` }}>
       <aside className={`brickPanel ${panelOpen ? "" : "panelCollapsed"}`}>
-        <div className="panelHeaderRow">
-          {panelOpen && <p className="panelLabel">BRICKS</p>}
-          <button className="collapseBtn" aria-label="Toggle bricks panel" onClick={() => setPanelOpen((v) => !v)}>
-            {panelOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
-          </button>
-        </div>
+        <div className="panelHeaderRow">{panelOpen && <p className="panelLabel">PARTS LIBRARY</p>}<button className="collapseBtn" onClick={() => setPanelOpen((v) => !v)}>{panelOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}</button></div>
         {panelOpen && <>
-          <p className="category">BASIC</p>
-          <div className="brickPalette">
-            {basicKinds.map((k) => (
-              <button key={k} className={`brickOption ${kind === k ? "selectedOption" : ""}`} onClick={() => setKind(k)} title={kindLabel[k]}>
-                <BrickThumb footprint={footprints[k]} shape={shapeOf[k]} />
-                <span className="brickOptionLabel">{kindLabel[k]}</span>
-              </button>
-            ))}
-          </div>
-          <p className="category">SPECIAL</p>
-          <div className="brickPalette">
-            {specialKinds.map((k) => (
-              <button key={k} className={`brickOption ${kind === k ? "selectedOption" : ""}`} onClick={() => setKind(k)} title={kindLabel[k]}>
-                <BrickThumb footprint={footprints[k]} shape={shapeOf[k]} />
-                <span className="brickOptionLabel">{kindLabel[k]}</span>
-              </button>
-            ))}
-          </div>
-          <p className="category">COLORS</p>
-          <div className="colorPalette">{palette.map((c) => <button key={c} aria-label={`Color ${c}`} className={`colorDot ${color === c ? "selectedColor" : ""}`} style={{ background: c }} onClick={() => setColor(c)} />)}</div>
-          <p className="category">STARTER SET</p>
-          <div className="available"><span>AVAILABLE</span><b>{available} / 100</b></div>
-          <div className="progress"><i style={{ width: `${available}%` }} /></div>
-          <p className="panelHelp">Hover the grid to preview placement — green is valid, red is blocked. Click empty grid to place. Click a brick to select it, Shift+Click a brick to stack on top.</p>
+          <p className="category">BRICKS</p>
+          <div className="brickPalette proPalette">{basicKinds.map((k) => <button key={k} className={`brickOption ${kind === k ? "selectedOption" : ""}`} onClick={() => setKind(k)}><BrickThumb footprint={brickDefs[k].footprint} color={color} /><span>{brickDefs[k].label}</span></button>)}</div>
+          <p className="category">SPECIAL PARTS</p>
+          <div className="brickPalette proPalette">{specialKinds.map((k) => <button key={k} className={`brickOption ${kind === k ? "selectedOption" : ""}`} onClick={() => setKind(k)}><BrickThumb footprint={brickDefs[k].footprint} color={color} /><span>{brickDefs[k].label}</span></button>)}</div>
+          <p className="category">COLOR / PLASTIC</p>
+          <div className="colorPalette proColors">{palette.map((c) => <button key={c} aria-label={`Color ${c}`} className={`colorDot ${color === c ? "selectedColor" : ""}`} style={{ background: c }} onClick={() => setColor(c)} />)}</div>
+          <div className="materialNote"><span className="materialSwatch" style={{ background: color }} /><div><b>ABS PLASTIC</b><small>Gloss · molded color</small></div></div>
+          <p className="category">STARTER SET</p><div className="available"><span>PIECES LEFT</span><b>{available} / {STARTER_LIMIT}</b></div><div className="progress"><i style={{ width: `${(available / STARTER_LIMIT) * 100}%` }} /></div>
+          <p className="panelHelp">Click an empty cell to place. Hovering a brick previews a compatible stack on its stud surface. Shift+Click places directly on the hovered structure.</p>
         </>}
       </aside>
 
       <section className="scene">
         <Scene bricks={bricks} selectedId={selectedId} ghost={ghost} ghostValid={ghostValid} onSelect={setSelectedId} onPointer={setGhostPoint} onPlace={addAt} onCaptureReady={setCapture} viewMode={viewMode} gridVisible={gridVisible} />
-        <div className="sceneHud"><span>{bricks.length} PIECES</span><span>GRID 1×1</span><span>{ghost ? (ghostValid ? "PLACEMENT READY" : "BLOCKED") : selected ? "BRICK SELECTED" : "READY TO BUILD"}</span></div>
-        <div className="sceneHint">HOVER TO PREVIEW · CLICK TO PLACE · CLICK BRICK TO SELECT · ARROWS MOVE · R ROTATE · CTRL/CMD+Z UNDO</div>
+        <div className="sceneHud"><span><Box size={12} /> {bricks.length} PIECES</span><span><Grid3X3 size={12} /> 1 STUD SNAP</span><span>{ghost ? (ghostValid ? "PLACEMENT READY" : "BLOCKED") : selected ? `SELECTED #${selected.id}` : "READY TO BUILD"}</span></div>
+        <div className="sceneHint">HOVER = LIVE GHOST · CLICK = PLACE · CLICK BRICK = SELECT · SHIFT+CLICK = STACK · R = ROTATE · ARROWS = MOVE</div>
         <div className="bottomTools">
-          <button onClick={() => addAt(ghostPoint ?? new THREE.Vector3(0, 0, 0))}><Plus size={14} /> ADD BRICK</button>
-          <button onClick={removeSelected}><Eraser size={14} /> REMOVE</button>
-          <span className="toolbarDivider" />
-          <button aria-label="move left" onClick={() => moveSelected(-1, 0)}><ArrowLeft size={14} /></button>
-          <button aria-label="move right" onClick={() => moveSelected(1, 0)}><ArrowRight size={14} /></button>
-          <button aria-label="move up" onClick={() => moveSelected(0, -1)}><ArrowUp size={14} /></button>
-          <button aria-label="move down" onClick={() => moveSelected(0, 1)}><ArrowDown size={14} /></button>
-          <button onClick={rotateSelected}><RotateCw size={14} /> ROTATE</button>
-          <span className="toolbarDivider" />
-          <div className="bottomColors">
-            {palette.map((c) => <button key={c} aria-label={`Color ${c}`} className={`colorDot small ${color === c ? "selectedColor" : ""}`} style={{ background: c }} onClick={() => setColor(c)} />)}
-          </div>
+          <button onClick={() => addAt(ghostPoint ?? new THREE.Vector3(0, 0, 0))}><Plus size={14} /> ADD</button><button onClick={removeSelected}><Eraser size={14} /> DELETE</button><span className="toolbarDivider" />
+          <button onClick={() => moveSelected(-1, 0)} aria-label="move left"><ArrowLeft size={14} /></button><button onClick={() => moveSelected(1, 0)} aria-label="move right"><ArrowRight size={14} /></button><button onClick={() => moveSelected(0, -1)} aria-label="move forward"><ArrowUp size={14} /></button><button onClick={() => moveSelected(0, 1)} aria-label="move backward"><ArrowDown size={14} /></button><button onClick={rotateSelected}><RotateCw size={14} /> ROTATE</button>
+          <span className="toolbarDivider" /><div className="bottomColors">{palette.map((c) => <button key={c} aria-label={`Color ${c}`} className={`colorDot small ${color === c ? "selectedColor" : ""}`} style={{ background: c }} onClick={() => setColor(c)} />)}</div>
         </div>
       </section>
 
       <aside className="toolsPanel">
-        <p className="panelLabel">TOOLS</p>
-        <div className="toolRow toolActive"><MousePointer2 size={15} /><span>SELECT</span></div>
-        <button className="toolRow" onClick={() => moveSelected(-1, 0)}><Move size={15} /><span>MOVE</span></button>
-        <button className="toolRow" onClick={rotateSelected}><RotateCw size={15} /><span>ROTATE</span></button>
-        <button className="toolRow" onClick={removeSelected}><Trash2 size={15} /><span>DELETE</span></button>
-
-        <p className="category">ACTIONS</p>
-        <div className="actionsGrid">
-          <button onClick={undo} disabled={!history.length}><Undo2 size={16} /><span>UNDO</span></button>
-          <button onClick={redo} disabled={!future.length}><Redo2 size={16} /><span>REDO</span></button>
-        </div>
-
-        <p className="category">DISPLAY</p>
-        <label><span>GRID</span><Switch checked={gridVisible} onChange={setGridVisible} /></label>
-        <label title="Snapping alla griglia sempre attivo: necessario per l'incastro e lo stacking dei brick."><span>SNAP</span><Switch checked disabled /></label>
-
-        <p className="category">VIEW</p>
-        <button className={`viewButton ${viewMode === "iso" ? "viewSelected" : ""}`} onClick={() => setViewMode("iso")}>ISOMETRIC</button>
-        <button className={`viewButton ${viewMode === "top" ? "viewSelected" : ""}`} onClick={() => setViewMode("top")}>TOP VIEW</button>
-
-        <div className="pieceCount"><span>PIECE COUNT</span><b>{bricks.length} / 100</b></div>
-        <div className="selectedInfo"><span>SELECTED</span><b>{selected ? selected.id : "—"}</b></div>
+        <p className="panelLabel">INSPECTOR</p>
+        <div className="toolRow toolActive"><MousePointer2 size={15} /><span>SELECT</span></div><button className="toolRow" onClick={() => moveSelected(-1, 0)}><Move size={15} /><span>MOVE</span></button><button className="toolRow" onClick={rotateSelected}><RotateCw size={15} /><span>ROTATE 90°</span></button><button className="toolRow" onClick={removeSelected}><Trash2 size={15} /><span>DELETE</span></button>
+        <p className="category">DISPLAY</p><label><span>GRID</span><Switch checked={gridVisible} onChange={setGridVisible} /></label><label><span>SNAP</span><Switch checked disabled /></label>
+        <p className="category">CAMERA</p><div className="viewGrid">{(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => <button key={mode} className={viewMode === mode ? "viewSelected" : ""} onClick={() => setViewMode(mode)}>{mode.toUpperCase()}</button>)}</div>
+        <p className="category">SELECTED PART</p>
+        {selected ? <div className="inspectorCard"><div className="inspectorSwatch" style={{ background: selected.color }}><BrickThumb footprint={selected.footprint} color={selected.color} /></div><b>{brickDefs[selected.kind].label}</b><span>LAYER {selected.layer + 1}</span><span>ROTATION {selected.rotation}°</span><span>COLOR {selected.color.toUpperCase()}</span><span>STUDS {selected.footprint[0]} × {selected.footprint[1]}</span></div> : <div className="emptyInspector"><Layers3 size={18} /><span>Select a brick to inspect it.</span></div>}
+        <div className="pieceCount"><span>PIECE COUNT</span><b>{bricks.length} / {STARTER_LIMIT}</b></div>
       </aside>
     </div>
 
-    {showSave && <div className="modalBackdrop" onClick={() => setShowSave(false)}><div className="saveModal" onClick={(e) => e.stopPropagation()}>
-      {!saved ? <><p className="eyebrow">FINALIZE CREATION</p><h2>SAVE YOUR MASTERPIECE</h2><p className="modalText">The current camera view becomes the public thumbnail. Adjust the camera before saving.</p>
-        <label>CREATION NAME<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="My masterpiece" /></label><label>CREATOR NAME<input value={creator} onChange={(e) => setCreator(e.target.value)} placeholder="Your name or handle" /></label>
-        <div className="modalPreview">{previewSrc ? <img src={previewSrc} alt="Current preview" /> : <span>PREVIEW</span>}</div><div className="modalActions"><button className="secondaryButton" onClick={() => setShowSave(false)}>CANCEL</button><button className="primaryButton" disabled={!title.trim() || !previewSrc} onClick={confirmSave}>SAVE CREATION →</button></div>
-      </> : <><div className="saveSuccess">✓</div><p className="eyebrow">CREATION SAVED</p><h2>READY FOR THE SHOWCASE</h2><p className="modalText">Saved locally for this prototype. PostgreSQL, permanent thumbnails and public gallery publishing come next.</p><div className="modalActions"><Link href="/gallery" className="primaryButton">OPEN GALLERY →</Link><button className="secondaryButton" onClick={() => setShowSave(false)}>KEEP BUILDING</button></div></>}
-    </div></div>}
+    {toast && <div className="builderToast">{toast}</div>}
+    {showSave && <div className="modalBackdrop" onClick={() => setShowSave(false)}><div className="saveModal" onClick={(e) => e.stopPropagation()}>{!saved ? <><p className="eyebrow">PUBLISH BUILD</p><h2>SAVE TO SHOWCASE</h2><p className="modalText">Your current camera becomes the gallery thumbnail.</p><label>CREATION NAME<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="My masterpiece" /></label><label>CREATOR<input value={creator} onChange={(e) => setCreator(e.target.value)} placeholder="Your handle" /></label><div className="modalPreview">{previewSrc ? <img src={previewSrc} alt="Build preview" /> : <span>PREVIEW</span>}</div><div className="modalActions"><button className="secondaryButton" onClick={() => setShowSave(false)}>CANCEL</button><button className="primaryButton" disabled={!title.trim() || !previewSrc} onClick={confirmSave}>SAVE CREATION →</button></div></> : <><div className="saveSuccess">✓</div><p className="eyebrow">SAVED</p><h2>READY FOR THE SHOWCASE</h2><p className="modalText">Prototype save stored locally. Permanent publishing can be connected to PostgreSQL later.</p><div className="modalActions"><Link href="/gallery" className="primaryButton">OPEN GALLERY →</Link><button className="secondaryButton" onClick={() => setShowSave(false)}>KEEP BUILDING</button></div></>}</div></div>}
   </main>;
 }
