@@ -10,6 +10,7 @@
   "dependencies": {
     "@react-three/drei": "latest",
     "@react-three/fiber": "latest",
+    "lucide-react": "^1.41.0",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest",
