@@ -26,7 +26,8 @@
         "./*"
       ]
     },
-    "allowJs": true
+    "allowJs": true,
+    "baseUrl": "."
   },
   "include": [
     "next-env.d.ts",
