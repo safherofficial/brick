@@ -58,7 +58,18 @@ type BrickKind =
   | "2x2"
   | "2x4"
   | "cone"
-  | "round";
+  | "round"
+  | "micro";
+
+// Numero massimo di pezzi piazzabili in una creazione. Alzato rispetto al
+// vecchio limite di 100: un modello "professionale" in stile vetrina (vedi
+// il T-Rex di riferimento) richiede facilmente qualche centinaio di pezzi,
+// specialmente usando il pezzo MICRO per i dettagli fini.
+const STARTER_LIMIT = 4000;
+
+// Passo reale della griglia di piazzamento: 1/3 di uno STUD. Vedi il
+// commento sopra la tabella "sizes" per il perché.
+const CELL = STUD / 3;
 
 type HistoryState = Brick[];
 
@@ -81,7 +92,8 @@ const shapeOf: Record<
   "2x2": "box",
   "2x4": "box",
   cone: "cone",
-  round: "cylinder"
+  round: "cylinder",
+  micro: "box"
 };
 
 const kindLabel: Record<
@@ -92,9 +104,17 @@ const kindLabel: Record<
   "2x2": "2×2",
   "2x4": "2×4",
   cone: "CONE",
-  round: "ROUND"
+  round: "ROUND",
+  micro: "MICRO"
 };
 
+// CELL è il vero passo della griglia di piazzamento: 1/3 di STUD. Tutti i
+// brick "storici" (1x1/2x2/2x4/cone/round) restano fisicamente della stessa
+// dimensione di sempre (in world units), ma il loro footprint viene ora
+// espresso in celle CELL (quindi ×3) invece che in STUD. Questo apre lo
+// spazio per il pezzo MICRO, che occupa 1 sola cella: 1/3×1/3 di un 1x1,
+// la vera unità per scolpire dettagli fini (curve, texture, piccoli rilievi)
+// come nel modello di riferimento caricato dall'utente.
 const sizes: Record<
   BrickKind,
   [number, number, number]
@@ -123,6 +143,11 @@ const sizes: Record<
     STUD,
     BRICK_HEIGHT,
     STUD
+  ],
+  micro: [
+    CELL,
+    BRICK_HEIGHT / 3,
+    CELL
   ]
 };
 
@@ -130,11 +155,12 @@ const footprints: Record<
   BrickKind,
   [number, number]
 > = {
-  "1x1": [1, 1],
-  "2x2": [2, 2],
-  "2x4": [4, 2],
-  cone: [1, 1],
-  round: [1, 1]
+  "1x1": [3, 3],
+  "2x2": [6, 6],
+  "2x4": [12, 6],
+  cone: [3, 3],
+  round: [3, 3],
+  micro: [1, 1]
 };
 
 const basicKinds: BrickKind[] = [
@@ -145,7 +171,8 @@ const basicKinds: BrickKind[] = [
 
 const specialKinds: BrickKind[] = [
   "cone",
-  "round"
+  "round",
+  "micro"
 ];
 
 /*
@@ -153,19 +180,22 @@ const specialKinds: BrickKind[] = [
  * GRID / SNAPPING
  * ---------------------------------------------------------
  *
- * I brick vengono allineati sulle celle reali della griglia.
+ * I brick vengono allineati sulle celle reali della griglia, il cui
+ * passo è CELL (1/3 di STUD) — non STUD stesso: questo è ciò che rende
+ * possibile il pezzo MICRO, che occupa una singola cella.
  *
- * Il centro può trovarsi anche a mezzo STUD:
+ * Il centro può trovarsi anche a mezza CELL:
  *
  * 1x1 -> centro su 0, 1 STUD, 2 STUD...
  * 2x2 -> centro su 0, 1 STUD, 2 STUD...
  * 2x4 -> centro su 0, 1 STUD, 2 STUD...
+ * MICRO -> centro su 0, 1 CELL, 2 CELL...
  *
  * Per l'adiacenza usiamo invece il footprint reale.
  */
 
 const CENTER_SNAP =
-  STUD / 2;
+  CELL / 2;
 
 function snapCenter(
   value: number
@@ -181,8 +211,8 @@ function footprintSize(
   footprint: [number, number]
 ): [number, number] {
   return [
-    footprint[0] * STUD,
-    footprint[1] * STUD
+    footprint[0] * CELL,
+    footprint[1] * CELL
   ];
 }
 
@@ -330,11 +360,11 @@ function getCoveredCells(
 
   const centerX =
     brick.position[0] /
-    STUD;
+    CELL;
 
   const centerZ =
     brick.position[2] /
-    STUD;
+    CELL;
 
   const startX =
     centerX -
@@ -376,12 +406,17 @@ function cellKey(
 }
 
 /*
- * Trova il layer superiore supportato.
+ * Trova la quota (Y) della superficie di appoggio superiore.
  *
- * Un brick viene impilato solo quando
- * tutte le sue celle hanno un supporto.
+ * A differenza del vecchio sistema "a livelli interi" (che assumeva
+ * un'unica altezza fissa uguale per ogni brick), questo calcolo usa
+ * l'altezza REALE di ciascun brick coprente. È necessario da quando
+ * esiste il pezzo MICRO, alto solo 1/3 di un brick standard: un
+ * indice di layer fisso non saprebbe più dire dove finisce la sua
+ * superficie. Un brick viene impilato solo quando tutte le sue celle
+ * hanno un supporto.
  */
-function supportedLayer(
+function supportedTop(
   candidate: Brick,
   bricks: Brick[]
 ): number {
@@ -400,21 +435,12 @@ function supportedLayer(
     return 0;
   }
 
-  let bestLayer = 0;
+  let bestTop = 0;
 
   for (const brick of bricks) {
-    const layer =
-      Math.round(
-        (
-          brick.position[1] -
-          BRICK_HEIGHT / 2
-        ) /
-          BRICK_HEIGHT
-      );
-
-    if (layer < 0) {
-      continue;
-    }
+    const top =
+      brick.position[1] +
+      brick.size[1] / 2;
 
     const supportCells =
       new Set(
@@ -435,15 +461,15 @@ function supportedLayer(
       );
 
     if (covers) {
-      bestLayer =
+      bestTop =
         Math.max(
-          bestLayer,
-          layer + 1
+          bestTop,
+          top
         );
     }
   }
 
-  return bestLayer;
+  return bestTop;
 }
 
 /*
@@ -461,7 +487,7 @@ function buildCandidate(
   color: string,
   point: THREE.Vector3,
   bricks: Brick[],
-  forcedLayer?: number,
+  forcedTop?: number,
   forcedRotation = 0
 ): Brick {
   const x =
@@ -469,6 +495,9 @@ function buildCandidate(
 
   const z =
     snapCenter(point.z);
+
+  const height =
+    sizes[kind][1];
 
   const base: Brick = {
     id:
@@ -482,7 +511,7 @@ function buildCandidate(
       footprints[kind],
     position: [
       x,
-      BRICK_HEIGHT / 2,
+      height / 2,
       z
     ],
     color,
@@ -492,9 +521,9 @@ function buildCandidate(
       forcedRotation
   };
 
-  const layer =
-    forcedLayer ??
-    supportedLayer(
+  const top =
+    forcedTop ??
+    supportedTop(
       base,
       bricks
     );
@@ -503,9 +532,8 @@ function buildCandidate(
     ...base,
     position: [
       x,
-      BRICK_HEIGHT / 2 +
-        layer *
-          BRICK_HEIGHT,
+      top +
+        height / 2,
       z
     ]
   };
@@ -1348,7 +1376,7 @@ export default function Builder() {
     useState(true);
 
   const available =
-    100 -
+    STARTER_LIMIT -
     bricks.length;
 
   const selected =
@@ -1588,43 +1616,43 @@ export default function Builder() {
          * metà larghezza A +
          * metà larghezza B
          *
-         * quindi NON usiamo più
-         * (width + 1) * STUD.
+         * Dato che il duplicato ha lo stesso
+         * footprint dell'originale, questo è
+         * semplicemente width * CELL (non
+         * (width + 1) * STUD / 2: quella
+         * formula, rimasta da una versione
+         * precedente, spaziava i duplicati in
+         * modo scorretto — troppo vicini per i
+         * pezzi più grandi di 1x1, causando
+         * sovrapposizioni e duplicati "silenti"
+         * che fallivano il validPlacement).
          */
         const candidates: Array<
           [number, number]
         > = [
           [
             localX *
-              ((width + 1) *
-                STUD / 2),
+              (width * CELL),
             localZ *
-              ((width + 1) *
-                STUD / 2)
+              (width * CELL)
           ],
           [
             -localX *
-              ((width + 1) *
-                STUD / 2),
+              (width * CELL),
             -localZ *
-              ((width + 1) *
-                STUD / 2)
+              (width * CELL)
           ],
           [
             -localZ *
-              ((depth + 1) *
-                STUD / 2),
+              (depth * CELL),
             localX *
-              ((depth + 1) *
-                STUD / 2)
+              (depth * CELL)
           ],
           [
             localZ *
-              ((depth + 1) *
-                STUD / 2),
+              (depth * CELL),
             -localX *
-              ((depth + 1) *
-                STUD / 2)
+              (depth * CELL)
           ]
         ];
 
@@ -2119,7 +2147,7 @@ export default function Builder() {
         "ArrowLeft"
       ) {
         moveSelected(
-          -STUD,
+          -CELL,
           0
         );
       }
@@ -2129,7 +2157,7 @@ export default function Builder() {
         "ArrowRight"
       ) {
         moveSelected(
-          STUD,
+          CELL,
           0
         );
       }
@@ -2140,7 +2168,7 @@ export default function Builder() {
       ) {
         moveSelected(
           0,
-          -STUD
+          -CELL
         );
       }
 
@@ -2150,7 +2178,7 @@ export default function Builder() {
       ) {
         moveSelected(
           0,
-          STUD
+          CELL
         );
       }
 
@@ -2561,14 +2589,14 @@ export default function Builder() {
                 </span>
 
                 <b>
-                  {available} / 100
+                  {available} / {STARTER_LIMIT}
                 </b>
               </div>
 
               <div className="progress">
                 <i
                   style={{
-                    width: `${available}%`
+                    width: `${(available / STARTER_LIMIT) * 100}%`
                   }}
                 />
               </div>
@@ -2715,7 +2743,7 @@ export default function Builder() {
               aria-label="move left"
               onClick={() =>
                 moveSelected(
-                  -STUD,
+                  -CELL,
                   0
                 )
               }
@@ -2733,7 +2761,7 @@ export default function Builder() {
               aria-label="move right"
               onClick={() =>
                 moveSelected(
-                  STUD,
+                  CELL,
                   0
                 )
               }
@@ -2752,7 +2780,7 @@ export default function Builder() {
               onClick={() =>
                 moveSelected(
                   0,
-                  -STUD
+                  -CELL
                 )
               }
               disabled={
@@ -2770,7 +2798,7 @@ export default function Builder() {
               onClick={() =>
                 moveSelected(
                   0,
-                  STUD
+                  CELL
                 )
               }
               disabled={
@@ -2846,7 +2874,7 @@ export default function Builder() {
             className="toolRow"
             onClick={() =>
               moveSelected(
-                -STUD,
+                -CELL,
                 0
               )
             }
@@ -3032,7 +3060,7 @@ export default function Builder() {
             </span>
 
             <b>
-              {bricks.length} / 100
+              {bricks.length} / {STARTER_LIMIT}
             </b>
           </div>
 
