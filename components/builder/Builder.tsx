@@ -1,28 +1,20 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Canvas, useThree } from "@react-three/fiber";
+import type { ThreeEvent } from "@react-three/fiber";
 import {
-  Canvas,
-  ThreeEvent,
-  useThree
-} from "@react-three/fiber";
-import {
-  Grid,
   GizmoHelper,
   GizmoViewport,
-  OrbitControls
+  Grid,
+  OrbitControls,
+  RoundedBox
 } from "@react-three/drei";
 import * as THREE from "three";
 import {
   ChevronLeft,
   ChevronRight,
-  Pencil,
   MousePointer2,
   Move,
   RotateCw,
@@ -34,552 +26,822 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Layers3,
+  Grid3X3,
+  Box,
+  Eye,
+  EyeOff,
+  Maximize2
 } from "lucide-react";
-import {
-  BrickVisual,
-  type BrickShape,
-  STUD,
-  BRICK_HEIGHT
-} from "./BrickVisual";
-
-type Brick = {
-  id: number;
-  size: [number, number, number];
-  footprint: [number, number];
-  position: [number, number, number];
-  color: string;
-  shape: BrickShape;
-  rotationY: number;
-};
 
 type BrickKind =
   | "1x1"
+  | "1x2"
   | "2x2"
   | "2x4"
-  | "cone"
+  | "2x6"
   | "round"
-  | "micro";
+  | "cone";
 
-// Numero massimo di pezzi piazzabili in una creazione. Alzato rispetto al
-// vecchio limite di 100: un modello "professionale" in stile vetrina (vedi
-// il T-Rex di riferimento) richiede facilmente qualche centinaio di pezzi,
-// specialmente usando il pezzo MICRO per i dettagli fini.
-const STARTER_LIMIT = 4000;
+type BrickShape =
+  | "box"
+  | "cylinder"
+  | "cone";
 
-// Passo reale della griglia di piazzamento: 1/3 di uno STUD. Vedi il
-// commento sopra la tabella "sizes" per il perché.
-const CELL = STUD / 3;
+type ViewMode =
+  | "iso"
+  | "top"
+  | "front"
+  | "side";
 
-type HistoryState = Brick[];
-
-const palette = [
-  "#ef4444",
-  "#f59e0b",
-  "#facc15",
-  "#22c55e",
-  "#3b82f6",
-  "#8b5cf6",
-  "#ec4899",
-  "#e5e7eb"
+type Vec3 = [
+  number,
+  number,
+  number
 ];
 
-const shapeOf: Record<
-  BrickKind,
-  BrickShape
-> = {
-  "1x1": "box",
-  "2x2": "box",
-  "2x4": "box",
-  cone: "cone",
-  round: "cylinder",
-  micro: "box"
+type Footprint = [
+  number,
+  number
+];
+
+type Brick = {
+  id: number;
+  kind: BrickKind;
+  shape: BrickShape;
+  footprint: Footprint;
+  size: Vec3;
+  position: Vec3;
+  rotation: 0 | 90 | 180 | 270;
+  color: string;
+  layer: number;
 };
 
-const kindLabel: Record<
-  BrickKind,
-  string
-> = {
-  "1x1": "1×1",
-  "2x2": "2×2",
-  "2x4": "2×4",
-  cone: "CONE",
-  round: "ROUND",
-  micro: "MICRO"
-};
+type Snapshot = Brick[];
 
-// CELL è il vero passo della griglia di piazzamento: 1/3 di STUD. Tutti i
-// brick "storici" (1x1/2x2/2x4/cone/round) restano fisicamente della stessa
-// dimensione di sempre (in world units), ma il loro footprint viene ora
-// espresso in celle CELL (quindi ×3) invece che in STUD. Questo apre lo
-// spazio per il pezzo MICRO, che occupa 1 sola cella: 1/3×1/3 di un 1x1,
-// la vera unità per scolpire dettagli fini (curve, texture, piccoli rilievi)
-// come nel modello di riferimento caricato dall'utente.
-const sizes: Record<
-  BrickKind,
-  [number, number, number]
-> = {
-  "1x1": [
-    STUD,
-    BRICK_HEIGHT,
-    STUD
-  ],
-  "2x2": [
-    STUD * 2,
-    BRICK_HEIGHT,
-    STUD * 2
-  ],
-  "2x4": [
-    STUD * 4,
-    BRICK_HEIGHT,
-    STUD * 2
-  ],
-  cone: [
-    STUD,
-    BRICK_HEIGHT,
-    STUD
-  ],
-  round: [
-    STUD,
-    BRICK_HEIGHT,
-    STUD
-  ],
-  micro: [
-    CELL,
-    BRICK_HEIGHT / 3,
-    CELL
-  ]
-};
+const BRICK_HEIGHT = 0.44;
+const STUD_SPACING = 0.92;
+const STUD_RADIUS = 0.145;
+const STUD_HEIGHT = 0.105;
+const STARTER_LIMIT = 100;
 
-const footprints: Record<
+const palette = [
+  "#C91F2D",
+  "#E35B19",
+  "#F6B800",
+  "#F2D64B",
+  "#168B4B",
+  "#53B84A",
+  "#0877B9",
+  "#2E58B8",
+  "#6B42A8",
+  "#D84C9B",
+  "#111827",
+  "#F2F0E8"
+];
+
+const brickDefs: Record<
   BrickKind,
-  [number, number]
+  {
+    footprint: Footprint;
+    shape: BrickShape;
+    label: string;
+  }
 > = {
-  "1x1": [3, 3],
-  "2x2": [6, 6],
-  "2x4": [12, 6],
-  cone: [3, 3],
-  round: [3, 3],
-  micro: [1, 1]
+  "1x1": {
+    footprint: [1, 1],
+    shape: "box",
+    label: "1×1"
+  },
+
+  "1x2": {
+    footprint: [2, 1],
+    shape: "box",
+    label: "1×2"
+  },
+
+  "2x2": {
+    footprint: [2, 2],
+    shape: "box",
+    label: "2×2"
+  },
+
+  "2x4": {
+    footprint: [4, 2],
+    shape: "box",
+    label: "2×4"
+  },
+
+  "2x6": {
+    footprint: [6, 2],
+    shape: "box",
+    label: "2×6"
+  },
+
+  round: {
+    footprint: [1, 1],
+    shape: "cylinder",
+    label: "ROUND"
+  },
+
+  cone: {
+    footprint: [1, 1],
+    shape: "cone",
+    label: "CONE"
+  }
 };
 
 const basicKinds: BrickKind[] = [
   "1x1",
+  "1x2",
   "2x2",
-  "2x4"
+  "2x4",
+  "2x6"
 ];
 
 const specialKinds: BrickKind[] = [
-  "cone",
   "round",
-  "micro"
+  "cone"
 ];
 
-/*
- * ---------------------------------------------------------
- * GRID / SNAPPING
- * ---------------------------------------------------------
- *
- * I brick vengono allineati sulle celle reali della griglia, il cui
- * passo è CELL (1/3 di STUD) — non STUD stesso: questo è ciò che rende
- * possibile il pezzo MICRO, che occupa una singola cella.
- *
- * Il centro può trovarsi anche a mezza CELL:
- *
- * 1x1 -> centro su 0, 1 STUD, 2 STUD...
- * 2x2 -> centro su 0, 1 STUD, 2 STUD...
- * 2x4 -> centro su 0, 1 STUD, 2 STUD...
- * MICRO -> centro su 0, 1 CELL, 2 CELL...
- *
- * Per l'adiacenza usiamo invece il footprint reale.
- */
-
-const CENTER_SNAP =
-  CELL / 2;
-
-function snapCenter(
-  value: number
-): number {
-  return (
-    Math.round(
-      value / CENTER_SNAP
-    ) * CENTER_SNAP
-  );
-}
-
-function footprintSize(
-  footprint: [number, number]
-): [number, number] {
+function sizeFor(
+  footprint: Footprint
+): Vec3 {
   return [
-    footprint[0] * CELL,
-    footprint[1] * CELL
+    footprint[0] * STUD_SPACING,
+    BRICK_HEIGHT,
+    footprint[1] * STUD_SPACING
   ];
 }
 
-function getRotatedFootprint(
-  brick: Brick
+function effectiveFootprint(
+  kind: BrickKind,
+  rotation: 0 | 90 | 180 | 270
+): Footprint {
+  const [w, d] =
+    brickDefs[kind].footprint;
+
+  return rotation % 180 === 0
+    ? [w, d]
+    : [d, w];
+}
+
+function cellAnchor(
+  position: Vec3,
+  footprint: Footprint
 ): [number, number] {
-  const quarterTurns =
+  return [
     Math.round(
-      (brick.rotationY ?? 0) /
-        (Math.PI / 2)
-    );
-
-  return Math.abs(
-    quarterTurns
-  ) % 2 === 0
-    ? [
-        brick.footprint[0],
-        brick.footprint[1]
-      ]
-    : [
-        brick.footprint[1],
-        brick.footprint[0]
-      ];
+      position[0] -
+        (footprint[0] - 1) / 2
+    ),
+    Math.round(
+      position[2] -
+        (footprint[1] - 1) / 2
+    )
+  ];
 }
 
-function getFootprint(
+function cellsFor(
   brick: Brick
-): [number, number] {
-  return getRotatedFootprint(
-    brick
-  );
-}
-
-/*
- * Restituisce i limiti occupati dal brick
- * sul piano X/Z.
- */
-function getBounds(
-  brick: Brick
-) {
+): string[] {
   const [w, d] =
-    footprintSize(
-      getFootprint(brick)
+    brick.footprint;
+
+  const [ax, az] =
+    cellAnchor(
+      brick.position,
+      brick.footprint
     );
 
-  return {
-    minX:
-      brick.position[0] -
-      w / 2,
-    maxX:
-      brick.position[0] +
-      w / 2,
-    minZ:
-      brick.position[2] -
-      d / 2,
-    maxZ:
-      brick.position[2] +
-      d / 2
-  };
-}
-
-/*
- * Collisione 2D precisa sul footprint.
- *
- * <= viene usato per permettere:
- *
- * [BRICK][BRICK]
- *
- * senza considerarli sovrapposti.
- */
-function overlaps(
-  a: Brick,
-  b: Brick
-): boolean {
-  const aBounds =
-    getBounds(a);
-
-  const bBounds =
-    getBounds(b);
-
-  return (
-    aBounds.minX <
-      bBounds.maxX &&
-    aBounds.maxX >
-      bBounds.minX &&
-    aBounds.minZ <
-      bBounds.maxZ &&
-    aBounds.maxZ >
-      bBounds.minZ
-  );
-}
-
-function sameLayer(
-  a: Brick,
-  b: Brick
-): boolean {
-  return (
-    Math.abs(
-      a.position[1] -
-        b.position[1]
-    ) < 0.01
-  );
-}
-
-function validPlacement(
-  candidate: Brick,
-  bricks: Brick[]
-): boolean {
-  return !bricks.some(
-    (brick) =>
-      sameLayer(
-        candidate,
-        brick
-      ) &&
-      overlaps(
-        candidate,
-        brick
-      )
-  );
-}
-
-/*
- * Converte ogni posizione occupata dal brick
- * in una coordinata di cella stabile.
- *
- * Questo evita il problema dei brick pari:
- *
- * 2x2 centrato su 0
- * occupa:
- * -0.45 / +0.45
- *
- * che NON deve diventare due volte la stessa cella.
- */
-function getCoveredCells(
-  brick: Brick
-): Array<[number, number]> {
-  const [w, d] =
-    getRotatedFootprint(
-      brick
-    );
-
-  const cells: Array<
-    [number, number]
-  > = [];
-
-  const centerX =
-    brick.position[0] /
-    CELL;
-
-  const centerZ =
-    brick.position[2] /
-    CELL;
-
-  const startX =
-    centerX -
-    (w - 1) / 2;
-
-  const startZ =
-    centerZ -
-    (d - 1) / 2;
+  const cells: string[] = [];
 
   for (
-    let ix = 0;
-    ix < w;
-    ix++
+    let x = ax;
+    x < ax + w;
+    x++
   ) {
     for (
-      let iz = 0;
-      iz < d;
-      iz++
+      let z = az;
+      z < az + d;
+      z++
     ) {
-      cells.push([
-        Math.round(
-          startX + ix
-        ),
-        Math.round(
-          startZ + iz
-        )
-      ]);
+      cells.push(
+        `${x}:${z}`
+      );
     }
   }
 
   return cells;
 }
 
-function cellKey(
-  x: number,
-  z: number
-): string {
-  return `${x},${z}`;
+function layerFromY(
+  y: number
+) {
+  return Math.max(
+    0,
+    Math.round(
+      (y - BRICK_HEIGHT / 2) /
+        BRICK_HEIGHT
+    )
+  );
 }
 
-/*
- * Trova la quota (Y) della superficie di appoggio superiore.
- *
- * A differenza del vecchio sistema "a livelli interi" (che assumeva
- * un'unica altezza fissa uguale per ogni brick), questo calcolo usa
- * l'altezza REALE di ciascun brick coprente. È necessario da quando
- * esiste il pezzo MICRO, alto solo 1/3 di un brick standard: un
- * indice di layer fisso non saprebbe più dire dove finisce la sua
- * superficie. Un brick viene impilato solo quando tutte le sue celle
- * hanno un supporto.
- */
-function supportedTop(
-  candidate: Brick,
-  bricks: Brick[]
-): number {
-  const candidateCells =
-    getCoveredCells(
-      candidate
-    ).map(
-      ([x, z]) =>
-        cellKey(x, z)
-    );
-
-  if (
-    candidateCells.length ===
-    0
-  ) {
-    return 0;
-  }
-
-  let bestTop = 0;
+function occupied(
+  bricks: Brick[],
+  ignoreId?: number
+) {
+  const map =
+    new Map<string, number>();
 
   for (const brick of bricks) {
-    const top =
-      brick.position[1] +
-      brick.size[1] / 2;
+    if (
+      brick.id === ignoreId
+    ) {
+      continue;
+    }
 
-    const supportCells =
-      new Set(
-        getCoveredCells(
-          brick
-        ).map(
-          ([x, z]) =>
-            cellKey(x, z)
-        )
+    for (
+      const cell of cellsFor(
+        brick
+      )
+    ) {
+      map.set(
+        `${brick.layer}:${cell}`,
+        brick.id
       );
-
-    const covers =
-      candidateCells.every(
-        (key) =>
-          supportCells.has(
-            key
-          )
-      );
-
-    if (covers) {
-      bestTop =
-        Math.max(
-          bestTop,
-          top
-        );
     }
   }
 
-  return bestTop;
+  return map;
+}
+
+function highestSupportedLayer(
+  candidate: Brick,
+  bricks: Brick[]
+) {
+  const cells =
+    cellsFor(candidate);
+
+  let layer = 0;
+
+  const map =
+    occupied(
+      bricks,
+      candidate.id
+    );
+
+  for (
+    let test = 0;
+    test < 60;
+    test++
+  ) {
+    const supported =
+      test === 0 ||
+      cells.every(
+        (cell) =>
+          map.has(
+            `${test - 1}:${cell}`
+          )
+      );
+
+    const clear =
+      cells.every(
+        (cell) =>
+          !map.has(
+            `${test}:${cell}`
+          )
+      );
+
+    if (
+      supported &&
+      clear
+    ) {
+      layer = test;
+    } else if (
+      test >
+      layer + 1
+    ) {
+      break;
+    }
+  }
+
+  return layer;
+}
+
+function isValid(
+  candidate: Brick,
+  bricks: Brick[]
+) {
+  const map =
+    occupied(
+      bricks,
+      candidate.id
+    );
+
+  return (
+    cellsFor(candidate).every(
+      (cell) =>
+        !map.has(
+          `${candidate.layer}:${cell}`
+        )
+    ) &&
+    (
+      candidate.layer === 0 ||
+      cellsFor(candidate).every(
+        (cell) =>
+          map.has(
+            `${candidate.layer - 1}:${cell}`
+          )
+      )
+    )
+  );
+}
+
+function id() {
+  return (
+    Date.now() +
+    Math.floor(
+      Math.random() * 100000
+    )
+  );
 }
 
 /*
- * Costruisce un brick con snapping
- * coerente per tutte le operazioni:
+ * Snap del centro del brick.
  *
- * - ADD
- * - GHOST
- * - DRAG
- * - ARROWS
- * - DUPLICATE
+ * Brick con dimensione dispari:
+ *   1 stud -> centro su intero
+ *
+ * Brick con dimensione pari:
+ *   2/4/6 stud -> centro su mezzo stud
+ *
+ * Questo permette di mantenere il brick perfettamente
+ * allineato alla griglia indipendentemente dalla dimensione.
  */
-function buildCandidate(
+function snapCenter(
+  value: number,
+  span: number
+) {
+  const offset =
+    (span - 1) / 2;
+
+  return (
+    Math.round(
+      value - offset
+    ) + offset
+  );
+}
+
+/*
+ * Piano orizzontale utilizzato esclusivamente durante
+ * il drag.
+ *
+ * Il mouse viene trasformato in un punto X/Z indipendente
+ * dalla geometria del brick.
+ */
+function dragPlanePoint(
+  ray: THREE.Ray
+): THREE.Vector3 | null {
+  const plane =
+    new THREE.Plane(
+      new THREE.Vector3(
+        0,
+        1,
+        0
+      ),
+      0
+    );
+
+  const point =
+    new THREE.Vector3();
+
+  return ray.intersectPlane(
+    plane,
+    point
+  );
+}
+
+function makeBrick(
   kind: BrickKind,
   color: string,
   point: THREE.Vector3,
   bricks: Brick[],
-  forcedTop?: number,
-  forcedRotation = 0
+  rotation:
+    | 0
+    | 90
+    | 180
+    | 270 = 0,
+  forcedLayer?: number
 ): Brick {
-  const x =
-    snapCenter(point.x);
+  const footprint =
+    effectiveFootprint(
+      kind,
+      rotation
+    );
 
-  const z =
-    snapCenter(point.z);
+  const [w, d] =
+    footprint;
 
-  const height =
-    sizes[kind][1];
+  const ax =
+    Math.round(
+      point.x -
+        (w - 1) / 2
+    );
 
-  const base: Brick = {
-    id:
-      Date.now() +
-      Math.floor(
-        Math.random() * 100000
-      ),
-    size:
-      sizes[kind],
-    footprint:
-      footprints[kind],
-    position: [
-      x,
-      height / 2,
-      z
-    ],
-    color,
+  const az =
+    Math.round(
+      point.z -
+        (d - 1) / 2
+    );
+
+  const center: Vec3 = [
+    ax + (w - 1) / 2,
+    0,
+    az + (d - 1) / 2
+  ];
+
+  const provisional: Brick = {
+    id: id(),
+    kind,
     shape:
-      shapeOf[kind],
-    rotationY:
-      forcedRotation
+      brickDefs[kind].shape,
+    footprint,
+    size:
+      sizeFor(footprint),
+    position:
+      center,
+    rotation,
+    color,
+    layer: 0
   };
 
-  const top =
-    forcedTop ??
-    supportedTop(
-      base,
+  const layer =
+    forcedLayer ??
+    highestSupportedLayer(
+      provisional,
       bricks
     );
 
-  return {
-    ...base,
-    position: [
-      x,
-      top +
-        height / 2,
-      z
-    ]
-  };
+  provisional.layer =
+    layer;
+
+  provisional.position = [
+    center[0],
+    layer *
+      BRICK_HEIGHT +
+      BRICK_HEIGHT / 2,
+    center[2]
+  ];
+
+  return provisional;
 }
 
-function GhostBrick({
-  position,
-  size,
+function cloneBricks(
+  bricks: Brick[]
+): Brick[] {
+  return bricks.map(
+    (b) => ({
+      ...b,
+      position: [
+        ...b.position
+      ] as Vec3,
+      footprint: [
+        ...b.footprint
+      ] as Footprint,
+      size: [
+        ...b.size
+      ] as Vec3
+    })
+  );
+}
+
+function initialScene(): Brick[] {
+  const add = (
+    kind: BrickKind,
+    color: string,
+    x: number,
+    z: number,
+    layer: number,
+    rotation:
+      | 0
+      | 90
+      | 180
+      | 270 = 0,
+    idValue = id()
+  ): Brick => {
+    const footprint =
+      effectiveFootprint(
+        kind,
+        rotation
+      );
+
+    return {
+      id: idValue,
+      kind,
+      shape:
+        brickDefs[kind].shape,
+      footprint,
+      size:
+        sizeFor(footprint),
+      position: [
+        x,
+        layer *
+          BRICK_HEIGHT +
+          BRICK_HEIGHT / 2,
+        z
+      ],
+      rotation,
+      color,
+      layer
+    };
+  };
+
+  return [
+    add(
+      "2x4",
+      "#168B4B",
+      -1.5,
+      0,
+      0,
+      0,
+      101
+    ),
+
+    add(
+      "2x4",
+      "#168B4B",
+      2.5,
+      0,
+      0,
+      0,
+      102
+    ),
+
+    add(
+      "2x2",
+      "#0877B9",
+      0,
+      0,
+      1,
+      0,
+      103
+    ),
+
+    add(
+      "2x2",
+      "#0877B9",
+      2,
+      0,
+      1,
+      0,
+      104
+    ),
+
+    add(
+      "2x2",
+      "#F6B800",
+      1,
+      0,
+      2,
+      0,
+      105
+    ),
+
+    add(
+      "1x2",
+      "#D84C9B",
+      1,
+      1,
+      3,
+      90,
+      106
+    )
+  ];
+}
+
+function Studs({
   footprint,
-  shape,
   color,
-  valid
+  ghost = false
 }: {
-  position: [
-    number,
-    number,
-    number
-  ];
-  size: [
-    number,
-    number,
-    number
-  ];
-  footprint: [
-    number,
-    number
-  ];
-  shape: BrickShape;
+  footprint: Footprint;
   color: string;
-  valid: boolean;
+  ghost?: boolean;
 }) {
+  const [w, d] =
+    footprint;
+
+  const xs =
+    Array.from(
+      { length: w },
+      (_, i) =>
+        (i - (w - 1) / 2) *
+        STUD_SPACING
+    );
+
+  const zs =
+    Array.from(
+      { length: d },
+      (_, i) =>
+        (i - (d - 1) / 2) *
+        STUD_SPACING
+    );
+
   return (
     <group
-      position={position}
+      position={[
+        0,
+        BRICK_HEIGHT / 2 +
+          STUD_HEIGHT / 2 -
+          0.008,
+        0
+      ]}
     >
-      <BrickVisual
-        shape={shape}
-        size={size}
-        footprint={footprint}
-        color={
-          valid
-            ? color
-            : "#ef4444"
+      {xs.flatMap(
+        (x) =>
+          zs.map(
+            (z) => (
+              <group
+                key={`${x}-${z}`}
+                position={[
+                  x,
+                  0,
+                  z
+                ]}
+              >
+                <mesh
+                  castShadow={!ghost}
+                >
+                  <cylinderGeometry
+                    args={[
+                      STUD_RADIUS,
+                      STUD_RADIUS *
+                        1.04,
+                      STUD_HEIGHT,
+                      24
+                    ]}
+                  />
+
+                  <meshStandardMaterial
+                    color={color}
+                    roughness={0.28}
+                    metalness={0.01}
+                    transparent={
+                      ghost
+                    }
+                    opacity={
+                      ghost
+                        ? 0.55
+                        : 1
+                    }
+                  />
+                </mesh>
+
+                <mesh
+                  position={[
+                    0,
+                    STUD_HEIGHT / 2 +
+                      0.002,
+                    0
+                  ]}
+                >
+                  <torusGeometry
+                    args={[
+                      0.111,
+                      0.021,
+                      8,
+                      20
+                    ]}
+                  />
+
+                  <meshStandardMaterial
+                    color={
+                      ghost
+                        ? "#ffffff"
+                        : color
+                    }
+                    roughness={0.3}
+                    metalness={0.02}
+                    transparent={
+                      ghost
+                    }
+                    opacity={
+                      ghost
+                        ? 0.35
+                        : 0.72
+                    }
+                  />
+                </mesh>
+              </group>
+            )
+          )
+      )}
+    </group>
+  );
+}
+
+function BrickModel({
+  brick,
+  ghost = false
+}: {
+  brick: Brick;
+  ghost?: boolean;
+}) {
+  const color =
+    ghost
+      ? brick.color
+      : brick.color;
+
+  const size: Vec3 = [
+    brick.footprint[0] *
+        STUD_SPACING -
+      0.035,
+
+    BRICK_HEIGHT,
+
+    brick.footprint[1] *
+        STUD_SPACING -
+      0.035
+  ];
+
+  const materialColor =
+    ghost
+      ? color
+      : color;
+
+  return (
+    <group
+      rotation-y={THREE.MathUtils.degToRad(
+        brick.rotation
+      )}
+    >
+      <RoundedBox
+        args={size}
+        radius={0.075}
+        smoothness={4}
+        castShadow={!ghost}
+        receiveShadow={!ghost}
+      >
+        <meshStandardMaterial
+          color={materialColor}
+          roughness={0.31}
+          metalness={0.015}
+          transparent={ghost}
+          opacity={
+            ghost
+              ? 0.42
+              : 1
+          }
+          depthWrite={!ghost}
+        />
+      </RoundedBox>
+
+      <Studs
+        footprint={
+          brickDefs[
+            brick.kind
+          ].footprint
         }
-        opacity={0.3}
+        color={
+          materialColor
+        }
+        ghost={ghost}
       />
+
+      {!ghost && (
+        <mesh
+          position={[
+            0,
+            -BRICK_HEIGHT / 2 +
+              0.012,
+            0
+          ]}
+          receiveShadow
+        >
+          <boxGeometry
+            args={[
+              Math.max(
+                0.08,
+                size[0] -
+                  0.09
+              ),
+              0.024,
+              Math.max(
+                0.08,
+                size[2] -
+                  0.09
+              )
+            ]}
+          />
+
+          <meshStandardMaterial
+            color={color}
+            roughness={0.42}
+          />
+        </mesh>
+      )}
     </group>
   );
 }
@@ -598,56 +860,70 @@ function BrickMesh({
   brick: Brick;
   selected: boolean;
   dragging: boolean;
+
   onSelect: (
     id: number
   ) => void;
+
   onHover: (
     point: THREE.Vector3
   ) => void;
+
   onPlace: (
     point: THREE.Vector3
   ) => void;
+
   onDragStart: (
-    id: number
+    id: number,
+    ray: THREE.Ray
   ) => void;
+
   onDragMove: (
-    point: THREE.Vector3
+    ray: THREE.Ray
   ) => void;
+
   onDragEnd: () => void;
 }) {
+  const size =
+    sizeFor(
+      brick.footprint
+    );
+
   return (
     <group
       position={
         brick.position
       }
-      rotation={[
-        0,
-        brick.rotationY,
-        0
-      ]}
+
       onClick={(e) => {
         e.stopPropagation();
 
-        if (
-          dragging
-        ) {
+        if (dragging) {
           return;
         }
 
         if (e.shiftKey) {
-          onPlace(e.point);
+          onPlace(
+            e.point
+          );
         } else {
           onSelect(
             brick.id
           );
         }
       }}
+
+      /*
+       * LEFT CLICK SU BRICK:
+       *
+       * - seleziona il pezzo
+       * - blocca OrbitControls
+       * - avvia il drag
+       */
       onPointerDown={(e) => {
         e.stopPropagation();
 
-        if (
-          e.button !== 0
-        ) {
+        if (e.button !== 0) {
           return;
         }
 
@@ -656,17 +932,17 @@ function BrickMesh({
         );
 
         onDragStart(
-          brick.id
+          brick.id,
+          e.ray
         );
       }}
+
       onPointerMove={(e) => {
         e.stopPropagation();
 
-        if (
-          dragging
-        ) {
+        if (dragging) {
           onDragMove(
-            e.point
+            e.ray
           );
         } else {
           onHover(
@@ -674,50 +950,44 @@ function BrickMesh({
           );
         }
       }}
+
       onPointerUp={(e) => {
         e.stopPropagation();
-
         onDragEnd();
       }}
-      onPointerCancel={() => {
+
+      onPointerCancel={(e) => {
+        e.stopPropagation();
         onDragEnd();
       }}
     >
-      <BrickVisual
-        shape={
-          brick.shape
-        }
-        size={
-          brick.size
-        }
-        footprint={
-          brick.footprint
-        }
-        color={
-          brick.color
-        }
+      <BrickModel
+        brick={brick}
       />
 
       {selected && (
         <mesh
           position={[
             0,
-            brick.size[1] / 2 +
-              0.13,
+            BRICK_HEIGHT / 2 +
+              STUD_HEIGHT +
+              0.01,
             0
           ]}
+          rotation-y={THREE.MathUtils.degToRad(
+            brick.rotation
+          )}
         >
           <boxGeometry
             args={[
-              brick.size[0] +
-                0.08,
-              0.04,
-              brick.size[2] +
-                0.08
+              size[0] + 0.11,
+              0.025,
+              size[2] + 0.11
             ]}
           />
+
           <meshBasicMaterial
-            color="#c084fc"
+            color="#8b5cf6"
             wireframe
           />
         </mesh>
@@ -726,12 +996,38 @@ function BrickMesh({
   );
 }
 
+function GhostBrick({
+  brick,
+  valid
+}: {
+  brick: Brick;
+  valid: boolean;
+}) {
+  const ghost = {
+    ...brick,
+    color: valid
+      ? "#37E38B"
+      : "#FF3347"
+  };
+
+  return (
+    <group
+      position={
+        brick.position
+      }
+    >
+      <BrickModel
+        brick={ghost}
+        ghost
+      />
+    </group>
+  );
+}
+
 function CameraController({
   viewMode
 }: {
-  viewMode:
-    | "iso"
-    | "top";
+  viewMode: ViewMode;
 }) {
   const { camera } =
     useThree();
@@ -740,7 +1036,7 @@ function CameraController({
     const target =
       new THREE.Vector3(
         0,
-        0.8,
+        0.9,
         0
       );
 
@@ -748,14 +1044,30 @@ function CameraController({
       viewMode === "top"
     ) {
       camera.position.set(
-        0.01,
-        11,
+        0,
+        12,
         0.01
+      );
+    } else if (
+      viewMode === "front"
+    ) {
+      camera.position.set(
+        0,
+        4.5,
+        11
+      );
+    } else if (
+      viewMode === "side"
+    ) {
+      camera.position.set(
+        11,
+        4.5,
+        0
       );
     } else {
       camera.position.set(
-        8,
-        7,
+        8.5,
+        6.5,
         9
       );
     }
@@ -766,30 +1078,6 @@ function CameraController({
   }, [
     camera,
     viewMode
-  ]);
-
-  return null;
-}
-
-function CameraCapture({
-  onReady
-}: {
-  onReady: (
-    capture: () => string
-  ) => void;
-}) {
-  const { gl } =
-    useThree();
-
-  useEffect(() => {
-    onReady(() =>
-      gl.domElement.toDataURL(
-        "image/png"
-      )
-    );
-  }, [
-    gl,
-    onReady
   ]);
 
   return null;
@@ -812,36 +1100,50 @@ function Scene({
   gridVisible
 }: {
   bricks: Brick[];
+
   selectedId:
     | number
     | null;
+
   draggingId:
     | number
     | null;
-  ghost: Brick | null;
+
+  ghost:
+    | Brick
+    | null;
+
   ghostValid: boolean;
+
   onSelect: (
     id: number
   ) => void;
+
   onPointer: (
     point: THREE.Vector3
   ) => void;
+
   onCaptureReady: (
     capture: () => string
   ) => void;
+
   onPlace: (
     point: THREE.Vector3
   ) => void;
+
   onDragStart: (
-    id: number
+    id: number,
+    ray: THREE.Ray
   ) => void;
+
   onDragMove: (
-    point: THREE.Vector3
+    ray: THREE.Ray
   ) => void;
+
   onDragEnd: () => void;
-  viewMode:
-    | "iso"
-    | "top";
+
+  viewMode: ViewMode;
+
   gridVisible: boolean;
 }) {
   const groundHover = (
@@ -853,15 +1155,13 @@ function Scene({
       draggingId !== null
     ) {
       onDragMove(
+        e.ray
+      );
+    } else {
+      onPointer(
         e.point
       );
-
-      return;
     }
-
-    onPointer(
-      e.point
-    );
   };
 
   const groundClick = (
@@ -870,16 +1170,12 @@ function Scene({
     e.stopPropagation();
 
     if (
-      draggingId !== null
+      draggingId === null
     ) {
-      onDragEnd();
-
-      return;
+      onPlace(
+        e.point
+      );
     }
-
-    onPlace(
-      e.point
-    );
   };
 
   return (
@@ -887,61 +1183,73 @@ function Scene({
       shadows
       camera={{
         position: [
-          8,
-          7,
+          8.5,
+          6.5,
           9
         ],
-        fov: 45
+        fov: 42
       }}
       gl={{
         preserveDrawingBuffer:
           true
       }}
-      dpr={[1, 2]}
     >
       <color
         attach="background"
         args={[
-          "#080b14"
+          "#070a11"
         ]}
       />
 
       <ambientLight
-        intensity={1.1}
+        intensity={0.7}
+      />
+
+      <hemisphereLight
+        intensity={0.48}
+        groundColor="#05070c"
       />
 
       <directionalLight
         position={[
-          5,
-          9,
-          4
+          6,
+          10,
+          5
         ]}
-        intensity={3.1}
+        intensity={3.2}
         castShadow
         shadow-mapSize={[
           2048,
           2048
         ]}
+        shadow-camera-left={-12}
+        shadow-camera-right={12}
+        shadow-camera-top={12}
+        shadow-camera-bottom={-12}
       />
 
-      <hemisphereLight
-        intensity={0.42}
+      <pointLight
+        position={[
+          -6,
+          5,
+          -5
+        ]}
+        intensity={0.55}
+        color="#5b7cff"
       />
 
       {gridVisible && (
         <Grid
           args={[
-            30,
-            30
+            32,
+            32
           ]}
-          cellSize={STUD}
-          cellThickness={0.5}
-          cellColor="#252b3a"
-          sectionSize={
-            STUD * 5
-          }
-          sectionThickness={1}
-          sectionColor="#3d4660"
+          cellSize={1}
+          cellThickness={0.55}
+          cellColor="#273044"
+          sectionSize={5}
+          sectionThickness={1.1}
+          sectionColor="#46516b"
           fadeDistance={30}
         />
       )}
@@ -954,7 +1262,7 @@ function Scene({
         ]}
         position={[
           0,
-          -0.03,
+          -0.035,
           0
         ]}
         onPointerMove={
@@ -967,14 +1275,65 @@ function Scene({
       >
         <planeGeometry
           args={[
-            30,
-            30
+            32,
+            32
           ]}
         />
+
         <shadowMaterial
-          opacity={0.18}
+          opacity={0.24}
         />
       </mesh>
+
+      {/*
+       * Piano invisibile usato durante il drag.
+       *
+       * Serve a garantire un riferimento stabile X/Z anche
+       * quando il mouse passa sopra altri brick.
+       */}
+      {draggingId !== null && (
+        <mesh
+          rotation={[
+            -Math.PI / 2,
+            0,
+            0
+          ]}
+          position={[
+            0,
+            0,
+            0
+          ]}
+          onPointerMove={(e) => {
+            e.stopPropagation();
+
+            onDragMove(
+              e.ray
+            );
+          }}
+          onPointerUp={(e) => {
+            e.stopPropagation();
+            onDragEnd();
+          }}
+          onPointerCancel={(e) => {
+            e.stopPropagation();
+            onDragEnd();
+          }}
+        >
+          <planeGeometry
+            args={[
+              40,
+              40
+            ]}
+          />
+
+          <meshBasicMaterial
+            transparent
+            opacity={0}
+            depthWrite={false}
+            depthTest={false}
+          />
+        </mesh>
+      )}
 
       {bricks.map(
         (brick) => (
@@ -1011,28 +1370,16 @@ function Scene({
         )
       )}
 
-      {ghost && (
-        <GhostBrick
-          position={
-            ghost.position
-          }
-          size={
-            ghost.size
-          }
-          footprint={
-            ghost.footprint
-          }
-          shape={
-            ghost.shape
-          }
-          color={
-            ghost.color
-          }
-          valid={
-            ghostValid
-          }
-        />
-      )}
+      {ghost &&
+        draggingId ===
+          null && (
+          <GhostBrick
+            brick={ghost}
+            valid={
+              ghostValid
+            }
+          />
+        )}
 
       <CameraController
         viewMode={
@@ -1040,28 +1387,41 @@ function Scene({
         }
       />
 
-      <CameraCapture
+      <CaptureBridge
         onReady={
           onCaptureReady
         }
       />
 
+      {/*
+       * BLOCCO CAMERA DURANTE IL DRAG.
+       *
+       * Questo è il punto principale della correzione:
+       * mentre un brick viene trascinato OrbitControls è
+       * completamente disabilitato.
+       */}
       <OrbitControls
+        enabled={
+          draggingId ===
+          null
+        }
         makeDefault
         enableDamping
-        dampingFactor={0.08}
+        dampingFactor={0.075}
         target={[
           0,
-          0.8,
+          0.9,
           0
         ]}
+        minDistance={4}
+        maxDistance={25}
       />
 
       <GizmoHelper
         alignment="bottom-right"
         margin={[
-          64,
-          64
+          60,
+          60
         ]}
       >
         <GizmoViewport
@@ -1070,7 +1430,7 @@ function Scene({
             "#4ade80",
             "#60a5fa"
           ]}
-          labelColor="#0a0e18"
+          labelColor="#dbe4ff"
           hideNegativeAxes
         />
       </GizmoHelper>
@@ -1078,57 +1438,64 @@ function Scene({
   );
 }
 
+function CaptureBridge({
+  onReady
+}: {
+  onReady: (
+    capture: () => string
+  ) => void;
+}) {
+  const { gl } =
+    useThree();
+
+  useEffect(() => {
+    onReady(
+      () =>
+        gl.domElement.toDataURL(
+          "image/png"
+        )
+    );
+  }, [
+    gl,
+    onReady
+  ]);
+
+  return null;
+}
+
 function BrickThumb({
   footprint,
-  shape
+  color
 }: {
-  footprint: [
-    number,
-    number
-  ];
-  shape: BrickShape;
+  footprint: Footprint;
+  color: string;
 }) {
-  if (
-    shape === "cone"
-  ) {
-    return (
-      <div className="brickThumbCone" />
-    );
-  }
-
-  if (
-    shape === "cylinder"
-  ) {
-    return (
-      <div className="brickThumbRound" />
-    );
-  }
-
   const [w, d] =
     footprint;
 
-  const studs =
-    Array.from({
-      length: w * d
-    });
-
   return (
     <div
-      className="brickThumbBox"
+      className="brickThumbPro"
       style={{
-        aspectRatio: `${w} / ${d}`
+        aspectRatio:
+          `${w}/${d}`,
+        background:
+          color
       }}
     >
       <div
-        className="brickThumbStuds"
+        className="thumbStuds"
         style={{
           gridTemplateColumns:
-            `repeat(${w}, 1fr)`
+            `repeat(${w},1fr)`
         }}
       >
-        {studs.map(
+        {Array.from({
+          length:
+            w * d
+        }).map(
           (_, i) => (
-            <span
+            <i
               key={i}
             />
           )
@@ -1178,102 +1545,28 @@ function Switch({
   );
 }
 
-const cloneBricks = (
-  bricks: Brick[]
-): Brick[] =>
-  bricks.map(
-    (b) => ({
-      ...b,
-      position: [
-        ...b.position
-      ] as [
-        number,
-        number,
-        number
-      ],
-      size: [
-        ...b.size
-      ] as [
-        number,
-        number,
-        number
-      ],
-      footprint: [
-        ...b.footprint
-      ] as [
-        number,
-        number
-      ],
-      rotationY:
-        b.rotationY ??
-        0
-    })
+export default function Builder() {
+  const [
+    color,
+    setColor
+  ] = useState(
+    palette[0]
   );
 
-export default function Builder() {
-  const [color, setColor] =
-    useState(
-      palette[3]
-    );
-
-  const [kind, setKind] =
+  const [
+    kind,
+    setKind
+  ] =
     useState<BrickKind>(
       "2x2"
     );
 
-  const [bricks, setBricks] =
-    useState<Brick[]>([
-      {
-        id: 1,
-        size:
-          sizes["2x4"],
-        footprint:
-          footprints["2x4"],
-        position: [
-          0,
-          BRICK_HEIGHT / 2,
-          0
-        ],
-        color:
-          "#22c55e",
-        shape: "box",
-        rotationY: 0
-      },
-      {
-        id: 2,
-        size:
-          sizes["2x2"],
-        footprint:
-          footprints["2x2"],
-        position: [
-          0,
-          BRICK_HEIGHT / 2 +
-            BRICK_HEIGHT,
-          0
-        ],
-        color:
-          "#3b82f6",
-        shape: "box",
-        rotationY: 0
-      },
-      {
-        id: 3,
-        size:
-          sizes["1x1"],
-        footprint:
-          footprints["1x1"],
-        position: [
-          0,
-          BRICK_HEIGHT / 2 +
-            BRICK_HEIGHT * 2,
-          0
-        ],
-        color:
-          "#facc15",
-        shape: "box",
-        rotationY: 0
-      }
-    ]);
+  const [
+    bricks,
+    setBricks
+  ] = useState<Brick[]>(
+    initialScene
+  );
 
   const [
     selectedId,
@@ -1283,6 +1576,9 @@ export default function Builder() {
       number | null
     >(null);
 
+  /*
+   * ID del brick attualmente trascinato.
+   */
   const [
     draggingId,
     setDraggingId
@@ -1290,6 +1586,71 @@ export default function Builder() {
     useState<
       number | null
     >(null);
+
+  /*
+   * Offset tra il punto esatto in cui l'utente
+   * ha cliccato e il centro del brick.
+   *
+   * Evita il classico "salto" quando inizia il drag.
+   */
+  const dragOffset =
+    useRef({
+      x: 0,
+      z: 0
+    });
+
+  /*
+   * La cronologia del drag viene salvata solamente
+   * quando il brick viene realmente spostato.
+   *
+   * Un semplice click non genera una voce Undo.
+   */
+  const dragHistoryCommitted =
+    useRef(false);
+
+  const [
+    history,
+    setHistory
+  ] =
+    useState<
+      Snapshot[]
+    >([]);
+
+  const [
+    future,
+    setFuture
+  ] =
+    useState<
+      Snapshot[]
+    >([]);
+
+  const [
+    ghostPoint,
+    setGhostPoint
+  ] =
+    useState<
+      THREE.Vector3 | null
+    >(null);
+
+  const [
+    viewMode,
+    setViewMode
+  ] =
+    useState<ViewMode>(
+      "iso"
+    );
+
+  const [
+    gridVisible,
+    setGridVisible
+  ] =
+    useState(true);
+
+  const [
+    panelOpen,
+    setPanelOpen
+  ] =
+    useState(true);
 
   const [
     capture,
@@ -1305,22 +1666,10 @@ export default function Builder() {
   ] =
     useState(false);
 
-  const [title, setTitle] =
-    useState("");
-
   const [
-    editingTitle,
-    setEditingTitle
+    saved,
+    setSaved
   ] =
-    useState(false);
-
-  const [
-    creator,
-    setCreator
-  ] =
-    useState("");
-
-  const [saved, setSaved] =
     useState(false);
 
   const [
@@ -1332,52 +1681,35 @@ export default function Builder() {
     >(null);
 
   const [
-    history,
-    setHistory
+    title,
+    setTitle
   ] =
-    useState<
-      HistoryState[]
-    >([]);
+    useState("");
 
   const [
-    future,
-    setFuture
+    creator,
+    setCreator
   ] =
-    useState<
-      HistoryState[]
-    >([]);
+    useState("");
 
   const [
-    ghostPoint,
-    setGhostPoint
+    editingTitle,
+    setEditingTitle
   ] =
-    useState<
-      THREE.Vector3 | null
-    >(null);
+    useState(false);
 
   const [
-    viewMode,
-    setViewMode
+    toast,
+    setToast
   ] =
-    useState<
-      "iso" | "top"
-    >("iso");
-
-  const [
-    gridVisible,
-    setGridVisible
-  ] =
-    useState(true);
-
-  const [
-    panelOpen,
-    setPanelOpen
-  ] =
-    useState(true);
+    useState("");
 
   const available =
-    STARTER_LIMIT -
-    bricks.length;
+    Math.max(
+      0,
+      STARTER_LIMIT -
+        bricks.length
+    );
 
   const selected =
     useMemo(
@@ -1397,7 +1729,7 @@ export default function Builder() {
     useMemo(
       () =>
         ghostPoint
-          ? buildCandidate(
+          ? makeBrick(
               kind,
               color,
               ghostPoint,
@@ -1414,9 +1746,27 @@ export default function Builder() {
 
   const ghostValid =
     !!ghost &&
-    validPlacement(
+    isValid(
       ghost,
       bricks
+    );
+
+  const notify =
+    useCallback(
+      (
+        message: string
+      ) => {
+        setToast(
+          message
+        );
+
+        window.setTimeout(
+          () =>
+            setToast(""),
+          1400
+        );
+      },
+      []
     );
 
   const commit =
@@ -1452,11 +1802,14 @@ export default function Builder() {
         if (
           available <= 0
         ) {
+          notify(
+            "STARTER SET EMPTY"
+          );
           return;
         }
 
         const next =
-          buildCandidate(
+          makeBrick(
             kind,
             color,
             point,
@@ -1464,11 +1817,14 @@ export default function Builder() {
           );
 
         if (
-          !validPlacement(
+          !isValid(
             next,
             bricks
           )
         ) {
+          notify(
+            "NO STUD SUPPORT HERE"
+          );
           return;
         }
 
@@ -1486,7 +1842,8 @@ export default function Builder() {
         bricks,
         color,
         commit,
-        kind
+        kind,
+        notify
       ]
     );
 
@@ -1519,311 +1876,108 @@ export default function Builder() {
       ]
     );
 
-  const recolorSelected =
-    useCallback(
-      (nextColor: string) => {
-        setColor(
-          nextColor
-        );
-
-        if (
-          selectedId ===
-          null
-        ) {
-          return;
-        }
-
-        const changed =
-          bricks.map(
-            (brick) =>
-              brick.id ===
-              selectedId
-                ? {
-                    ...brick,
-                    color:
-                      nextColor
-                  }
-                : brick
-          );
-
-        if (
-          changed.some(
-            (brick, index) =>
-              brick.color !==
-              bricks[index].color
-          )
-        ) {
-          commit(
-            changed
-          );
-        }
-      },
-      [
-        bricks,
-        commit,
-        selectedId
-      ]
-    );
-
-  const duplicateSelected =
+  const rotateSelected =
     useCallback(
       () => {
-        if (
-          selectedId ===
-            null ||
-          available <= 0
-        ) {
+        if (!selected) {
           return;
         }
 
-        const source =
-          bricks.find(
+        const nextRotation =
+          ((
+            selected.rotation +
+            90
+          ) % 360) as
+            | 0
+            | 90
+            | 180
+            | 270;
+
+        const footprint =
+          effectiveFootprint(
+            selected.kind,
+            nextRotation
+          );
+
+        const rotated: Brick =
+          {
+            ...selected,
+            rotation:
+              nextRotation,
+            footprint,
+            size:
+              sizeFor(
+                footprint
+              )
+          };
+
+        const others =
+          bricks.filter(
             (b) =>
-              b.id ===
-              selectedId
+              b.id !==
+              selected.id
           );
 
-        if (!source) {
-          return;
-        }
-
-        const [
-          width,
-          depth
-        ] =
-          getRotatedFootprint(
-            source
+        const layer =
+          highestSupportedLayer(
+            rotated,
+            others
           );
 
-        const rotation =
-          source.rotationY ??
-          0;
-
-        const localX =
-          Math.round(
-            Math.cos(rotation)
+        const anchor =
+          cellAnchor(
+            selected.position,
+            selected.footprint
           );
 
-        const localZ =
-          Math.round(
-            Math.sin(rotation)
-          );
-
-        /*
-         * Adiacenza geometrica:
-         *
-         * distanza centro =
-         * metà larghezza A +
-         * metà larghezza B
-         *
-         * Dato che il duplicato ha lo stesso
-         * footprint dell'originale, questo è
-         * semplicemente width * CELL (non
-         * (width + 1) * STUD / 2: quella
-         * formula, rimasta da una versione
-         * precedente, spaziava i duplicati in
-         * modo scorretto — troppo vicini per i
-         * pezzi più grandi di 1x1, causando
-         * sovrapposizioni e duplicati "silenti"
-         * che fallivano il validPlacement).
-         */
-        const candidates: Array<
-          [number, number]
-        > = [
+        const center: Vec3 =
           [
-            localX *
-              (width * CELL),
-            localZ *
-              (width * CELL)
-          ],
-          [
-            -localX *
-              (width * CELL),
-            -localZ *
-              (width * CELL)
-          ],
-          [
-            -localZ *
-              (depth * CELL),
-            localX *
-              (depth * CELL)
-          ],
-          [
-            localZ *
-              (depth * CELL),
-            -localX *
-              (depth * CELL)
-          ]
-        ];
+            anchor[0] +
+              (footprint[0] -
+                1) /
+                2,
 
-        let duplicate:
-          Brick | null =
-          null;
+            layer *
+                BRICK_HEIGHT +
+              BRICK_HEIGHT /
+                2,
 
-        for (const [
-          offsetX,
-          offsetZ
-        ] of candidates) {
-          const candidate: Brick =
-            {
-              ...source,
-              id:
-                Date.now() +
-                Math.floor(
-                  Math.random() *
-                    100000
-                ),
-              position: [
-                snapCenter(
-                  source.position[0] +
-                    offsetX
-                ),
-                source.position[1],
-                snapCenter(
-                  source.position[2] +
-                    offsetZ
-                )
-              ],
-              rotationY:
-                source.rotationY ??
-                0,
-              size: [
-                ...source.size
-              ] as [
-                number,
-                number,
-                number
-              ],
-              footprint: [
-                ...source.footprint
-              ] as [
-                number,
-                number
-              ]
-            };
+            anchor[1] +
+              (footprint[1] -
+                1) /
+                2
+          ];
 
-          if (
-            validPlacement(
-              candidate,
-              bricks
-            )
-          ) {
-            duplicate =
-              candidate;
-
-            break;
-          }
-        }
+        const candidate =
+          {
+            ...rotated,
+            position:
+              center,
+            layer
+          };
 
         if (
-          !duplicate
+          !isValid(
+            candidate,
+            others
+          )
         ) {
+          notify(
+            "ROTATION BLOCKED"
+          );
           return;
         }
 
         commit([
-          ...bricks,
-          duplicate
+          ...others,
+          candidate
         ]);
-
-        setSelectedId(
-          duplicate.id
-        );
-      },
-      [
-        available,
-        bricks,
-        commit,
-        selectedId
-      ]
-    );
-
-  const rotateSelected =
-    useCallback(
-      () => {
-        if (
-          selectedId ===
-          null
-        ) {
-          return;
-        }
-
-        const selectedBrick =
-          bricks.find(
-            (b) =>
-              b.id ===
-              selectedId
-          );
-
-        if (
-          !selectedBrick
-        ) {
-          return;
-        }
-
-        const currentRotation =
-          selectedBrick.rotationY ??
-          0;
-
-        const nextRotation =
-          currentRotation +
-          Math.PI / 2;
-
-        const normalizedRotation =
-          (
-            nextRotation %
-              (Math.PI * 2) +
-            Math.PI * 2
-          ) %
-          (Math.PI * 2);
-
-        /*
-         * Dopo la rotazione il centro
-         * viene mantenuto.
-         *
-         * Il footprint viene letto
-         * dinamicamente da
-         * getRotatedFootprint().
-         */
-        const next =
-          bricks.map(
-            (b) =>
-              b.id ===
-              selectedId
-                ? {
-                    ...b,
-                    rotationY:
-                      normalizedRotation
-                  }
-                : b
-          );
-
-        const changed =
-          next.find(
-            (b) =>
-              b.id ===
-              selectedId
-          )!;
-
-        if (
-          validPlacement(
-            changed,
-            next.filter(
-              (b) =>
-                b.id !==
-                selectedId
-            )
-          )
-        ) {
-          commit(
-            next
-          );
-        }
       },
       [
         bricks,
         commit,
-        selectedId
+        notify,
+        selected
       ]
     );
 
@@ -1833,109 +1987,124 @@ export default function Builder() {
         dx: number,
         dz: number
       ) => {
-        if (
-          selectedId ===
-          null
-        ) {
+        if (!selected) {
           return;
         }
 
-        const next =
-          bricks.map(
+        const others =
+          bricks.filter(
             (b) =>
-              b.id ===
-              selectedId
-                ? {
-                    ...b,
-                    position: [
-                      snapCenter(
-                        b.position[0] +
-                          dx
-                      ),
-                      b.position[1],
-                      snapCenter(
-                        b.position[2] +
-                          dz
-                      )
-                    ] as [
-                      number,
-                      number,
-                      number
-                    ]
-                  }
-                : b
+              b.id !==
+              selected.id
           );
 
-        const moved =
-          next.find(
-            (b) =>
-              b.id ===
-              selectedId
-          )!;
+        const candidate =
+          {
+            ...selected,
+            position: [
+              selected.position[0] +
+                dx,
+              selected.position[1],
+              selected.position[2] +
+                dz
+            ] as Vec3
+          };
 
         if (
-          validPlacement(
-            moved,
-            next.filter(
-              (b) =>
-                b.id !==
-                selectedId
-            )
+          !isValid(
+            candidate,
+            others
           )
         ) {
-          commit(
-            next
+          notify(
+            "MOVE BLOCKED"
           );
+          return;
         }
+
+        commit([
+          ...others,
+          candidate
+        ]);
       },
       [
         bricks,
         commit,
-        selectedId
+        notify,
+        selected
       ]
     );
 
+  /*
+   * INIZIO DRAG
+   *
+   * Calcoliamo il punto del mouse sul piano X/Z
+   * e memorizziamo l'offset rispetto al centro del brick.
+   */
   const startDragging =
     useCallback(
-      (id: number) => {
+      (
+        idValue: number,
+        ray: THREE.Ray
+      ) => {
         const brick =
           bricks.find(
             (b) =>
-              b.id === id
+              b.id ===
+              idValue
           );
 
-        if (!brick) {
+        const point =
+          dragPlanePoint(
+            ray
+          );
+
+        if (
+          !brick ||
+          !point
+        ) {
           return;
         }
 
+        dragOffset.current =
+          {
+            x:
+              brick.position[0] -
+              point.x,
+
+            z:
+              brick.position[2] -
+              point.z
+          };
+
+        dragHistoryCommitted.current =
+          false;
+
         setSelectedId(
-          id
+          idValue
         );
 
+        /*
+         * Questo stato disabilita immediatamente
+         * OrbitControls.
+         */
         setDraggingId(
-          id
+          idValue
         );
-
-        setHistory(
-          (h) => [
-            ...h.slice(
-              -39
-            ),
-            cloneBricks(
-              bricks
-            )
-          ]
-        );
-
-        setFuture([]);
       },
       [bricks]
     );
 
+  /*
+   * MOVIMENTO DRAG
+   *
+   * Il movimento è calcolato sul piano X/Z,
+   * non sulla superficie del brick.
+   */
   const dragMove =
     useCallback(
       (
-        point: THREE.Vector3
+        ray: THREE.Ray
       ) => {
         if (
           draggingId ===
@@ -1944,60 +2113,133 @@ export default function Builder() {
           return;
         }
 
-        const x =
-          snapCenter(
-            point.x
+        const point =
+          dragPlanePoint(
+            ray
           );
 
-        const z =
-          snapCenter(
-            point.z
-          );
+        if (!point) {
+          return;
+        }
 
         setBricks(
-          (currentBricks) => {
-            const current =
-              currentBricks.find(
+          (current) => {
+            const currentBrick =
+              current.find(
                 (b) =>
                   b.id ===
                   draggingId
               );
 
-            if (!current) {
-              return currentBricks;
+            if (
+              !currentBrick
+            ) {
+              return current;
             }
 
-            const moved: Brick =
-              {
-                ...current,
-                position: [
-                  x,
-                  current.position[1],
-                  z
-                ]
-              };
+            const [
+              w,
+              d
+            ] =
+              currentBrick.footprint;
+
+            /*
+             * Snap intelligente in base al footprint.
+             */
+            const x =
+              snapCenter(
+                point.x +
+                  dragOffset
+                    .current
+                    .x,
+                w
+              );
+
+            const z =
+              snapCenter(
+                point.z +
+                  dragOffset
+                    .current
+                    .z,
+                d
+              );
+
+            /*
+             * Nessun aggiornamento React se il brick
+             * è già sulla stessa cella.
+             */
+            if (
+              x ===
+                currentBrick
+                  .position[0] &&
+              z ===
+                currentBrick
+                  .position[2]
+            ) {
+              return current;
+            }
+
+            const candidate:
+              Brick = {
+              ...currentBrick,
+
+              position: [
+                x,
+                currentBrick
+                  .position[1],
+                z
+              ]
+            };
 
             const others =
-              currentBricks.filter(
+              current.filter(
                 (b) =>
                   b.id !==
                   draggingId
               );
 
+            /*
+             * Se la posizione non è valida,
+             * manteniamo l'ultima posizione valida.
+             */
             if (
-              !validPlacement(
-                moved,
+              !isValid(
+                candidate,
                 others
               )
             ) {
-              return currentBricks;
+              return current;
             }
 
-            return currentBricks.map(
+            /*
+             * Salviamo lo snapshot Undo solamente
+             * al primo movimento reale.
+             */
+            if (
+              !dragHistoryCommitted.current
+            ) {
+              dragHistoryCommitted.current =
+                true;
+
+              setHistory(
+                (h) => [
+                  ...h.slice(
+                    -39
+                  ),
+                  cloneBricks(
+                    current
+                  )
+                ]
+              );
+
+              setFuture([]);
+            }
+
+            return current.map(
               (b) =>
                 b.id ===
                 draggingId
-                  ? moved
+                  ? candidate
                   : b
             );
           }
@@ -2006,15 +2248,70 @@ export default function Builder() {
       [draggingId]
     );
 
+  /*
+   * FINE DRAG
+   */
   const endDragging =
     useCallback(
       () => {
         setDraggingId(
           null
         );
+
+        dragOffset.current =
+          {
+            x: 0,
+            z: 0
+          };
+
+        dragHistoryCommitted.current =
+          false;
       },
       []
     );
+
+  /*
+   * Safety net:
+   * se il mouse esce dal canvas mentre il brick è
+   * trascinato, il drag viene comunque chiuso.
+   */
+  useEffect(() => {
+    if (
+      draggingId ===
+      null
+    ) {
+      return;
+    }
+
+    const handlePointerUp =
+      () =>
+        endDragging();
+
+    window.addEventListener(
+      "pointerup",
+      handlePointerUp
+    );
+
+    window.addEventListener(
+      "pointercancel",
+      handlePointerUp
+    );
+
+    return () => {
+      window.removeEventListener(
+        "pointerup",
+        handlePointerUp
+      );
+
+      window.removeEventListener(
+        "pointercancel",
+        handlePointerUp
+      );
+    };
+  }, [
+    draggingId,
+    endDragging
+  ]);
 
   const undo =
     useCallback(
@@ -2022,8 +2319,9 @@ export default function Builder() {
         const previous =
           history.at(-1);
 
-        if (!previous)
+        if (!previous) {
           return;
+        }
 
         setFuture(
           (f) => [
@@ -2047,10 +2345,6 @@ export default function Builder() {
             previous
           )
         );
-
-        setSelectedId(
-          null
-        );
       },
       [
         bricks,
@@ -2064,8 +2358,9 @@ export default function Builder() {
         const next =
           future.at(-1);
 
-        if (!next)
+        if (!next) {
           return;
+        }
 
         setHistory(
           (h) => [
@@ -2089,10 +2384,6 @@ export default function Builder() {
             next
           )
         );
-
-        setSelectedId(
-          null
-        );
       },
       [
         bricks,
@@ -2101,158 +2392,36 @@ export default function Builder() {
     );
 
   useEffect(() => {
-    const handler = (
-      e: KeyboardEvent
-    ) => {
-      if (
-        (
-          e.target as HTMLElement
-        )?.tagName ===
-        "INPUT"
-      ) {
-        return;
-      }
-
-      if (
-        (
-          e.ctrlKey ||
-          e.metaKey
-        ) &&
-        e.key.toLowerCase() ===
-          "d"
-      ) {
-        e.preventDefault();
-        duplicateSelected();
-        return;
-      }
-
-      if (
-        e.key ===
-          "Delete" ||
-        e.key ===
-          "Backspace"
-      ) {
-        removeSelected();
-      }
-
-      if (
-        e.key.toLowerCase() ===
-        "r"
-      ) {
-        rotateSelected();
-      }
-
-      if (
-        e.key ===
-        "ArrowLeft"
-      ) {
-        moveSelected(
-          -CELL,
-          0
-        );
-      }
-
-      if (
-        e.key ===
-        "ArrowRight"
-      ) {
-        moveSelected(
-          CELL,
-          0
-        );
-      }
-
-      if (
-        e.key ===
-        "ArrowUp"
-      ) {
-        moveSelected(
-          0,
-          -CELL
-        );
-      }
-
-      if (
-        e.key ===
-        "ArrowDown"
-      ) {
-        moveSelected(
-          0,
-          CELL
-        );
-      }
-
-      if (
-        (
-          e.ctrlKey ||
-          e.metaKey
-        ) &&
-        e.key.toLowerCase() ===
-          "z"
-      ) {
-        e.preventDefault();
-        undo();
-      }
-
-      if (
-        (
-          e.ctrlKey ||
-          e.metaKey
-        ) &&
-        e.key.toLowerCase() ===
-          "y"
-      ) {
-        e.preventDefault();
-        redo();
-      }
-    };
-
-    window.addEventListener(
-      "keydown",
-      handler
-    );
-
-    return () =>
-      window.removeEventListener(
-        "keydown",
-        handler
-      );
-  }, [
-    duplicateSelected,
-    moveSelected,
-    redo,
-    removeSelected,
-    rotateSelected,
-    undo
-  ]);
-
-  useEffect(() => {
-    const savedDraft =
+    const raw =
       localStorage.getItem(
         "brick-builder-draft-state"
       );
 
-    if (!savedDraft)
+    if (!raw) {
       return;
+    }
 
     try {
       const parsed =
         JSON.parse(
-          savedDraft
+          raw
         ) as Brick[];
 
-      setBricks(
-        parsed.map(
-          (b) => ({
-            ...b,
-            rotationY:
-              b.rotationY ??
-              0
-          })
-        )
-      );
+      if (
+        Array.isArray(
+          parsed
+        ) &&
+        parsed.length
+      ) {
+        setBricks(
+          parsed
+        );
+      }
     } catch {
-      /* ignore malformed local draft */
+      /*
+       * Ignore malformed
+       * local draft.
+       */
     }
   }, []);
 
@@ -2265,46 +2434,166 @@ export default function Builder() {
     );
   }, [bricks]);
 
-  const openSave = () => {
-    setSaved(false);
+  useEffect(() => {
+    const handler =
+      (
+        e: KeyboardEvent
+      ) => {
+        const target =
+          e.target as
+            | HTMLElement
+            | null;
 
-    setPreviewSrc(
-      capture
-        ? capture()
-        : null
+        if (
+          target?.tagName ===
+            "INPUT" ||
+          target?.tagName ===
+            "TEXTAREA"
+        ) {
+          return;
+        }
+
+        if (
+          e.key ===
+            "Delete" ||
+          e.key ===
+            "Backspace"
+        ) {
+          removeSelected();
+        }
+
+        if (
+          e.key.toLowerCase() ===
+          "r"
+        ) {
+          rotateSelected();
+        }
+
+        if (
+          e.key ===
+          "ArrowLeft"
+        ) {
+          moveSelected(
+            -1,
+            0
+          );
+        }
+
+        if (
+          e.key ===
+          "ArrowRight"
+        ) {
+          moveSelected(
+            1,
+            0
+          );
+        }
+
+        if (
+          e.key ===
+          "ArrowUp"
+        ) {
+          moveSelected(
+            0,
+            -1
+          );
+        }
+
+        if (
+          e.key ===
+          "ArrowDown"
+        ) {
+          moveSelected(
+            0,
+            1
+          );
+        }
+
+        if (
+          (e.ctrlKey ||
+            e.metaKey) &&
+          e.key.toLowerCase() ===
+            "z"
+        ) {
+          e.preventDefault();
+          undo();
+        }
+
+        if (
+          (e.ctrlKey ||
+            e.metaKey) &&
+          e.key.toLowerCase() ===
+            "y"
+        ) {
+          e.preventDefault();
+          redo();
+        }
+      };
+
+    window.addEventListener(
+      "keydown",
+      handler
     );
 
-    setShowSave(
-      true
-    );
-  };
+    return () =>
+      window.removeEventListener(
+        "keydown",
+        handler
+      );
+  }, [
+    moveSelected,
+    redo,
+    removeSelected,
+    rotateSelected,
+    undo
+  ]);
 
-  const confirmSave = () => {
-    if (
-      !title.trim() ||
-      !previewSrc
-    ) {
-      return;
-    }
+  const openSave =
+    () => {
+      setSaved(
+        false
+      );
 
-    localStorage.setItem(
-      "brick-builder-draft",
-      JSON.stringify({
-        title:
-          title.trim(),
-        creator:
-          creator.trim() ||
-          "Anonymous",
-        bricks,
-        preview:
-          previewSrc,
-        savedAt:
-          Date.now()
-      })
-    );
+      setPreviewSrc(
+        capture
+          ? capture()
+          : null
+      );
 
-    setSaved(true);
-  };
+      setShowSave(
+        true
+      );
+    };
+
+  const confirmSave =
+    () => {
+      if (
+        !title.trim() ||
+        !previewSrc
+      ) {
+        return;
+      }
+
+      localStorage.setItem(
+        "brick-builder-draft",
+        JSON.stringify({
+          title:
+            title.trim(),
+          creator:
+            creator.trim() ||
+            "Anonymous",
+          bricks,
+          preview:
+            previewSrc,
+          savedAt:
+            Date.now()
+        })
+      );
+
+      setSaved(
+        true
+      );
+    };
 
   return (
     <main className="builderShell">
@@ -2317,7 +2606,7 @@ export default function Builder() {
             <span className="brandMark">
               ◆
             </span>{" "}
-            BRICK BUILDER
+            BRICK
           </Link>
 
           <Link
@@ -2326,8 +2615,8 @@ export default function Builder() {
           >
             <ChevronLeft
               size={14}
-            />{" "}
-            BACK TO GALLERY
+            />
+            GALLERY
           </Link>
         </div>
 
@@ -2336,9 +2625,13 @@ export default function Builder() {
             <input
               autoFocus
               className="titleInput"
-              value={title}
+              value={
+                title
+              }
               placeholder="UNTITLED CREATION"
-              onChange={(e) =>
+              onChange={(
+                e
+              ) =>
                 setTitle(
                   e.target.value
                 )
@@ -2348,7 +2641,9 @@ export default function Builder() {
                   false
                 )
               }
-              onKeyDown={(e) => {
+              onKeyDown={(
+                e
+              ) => {
                 if (
                   e.key ===
                   "Enter"
@@ -2368,16 +2663,13 @@ export default function Builder() {
 
               <button
                 className="titleEditBtn"
-                aria-label="Rename creation"
                 onClick={() =>
                   setEditingTitle(
                     true
                   )
                 }
               >
-                <Pencil
-                  size={12}
-                />
+                EDIT
               </button>
             </>
           )}
@@ -2385,8 +2677,9 @@ export default function Builder() {
 
         <div className="builderActions">
           <button
-            aria-label="undo"
-            onClick={undo}
+            onClick={
+              undo
+            }
             disabled={
               !history.length
             }
@@ -2397,8 +2690,9 @@ export default function Builder() {
           </button>
 
           <button
-            aria-label="redo"
-            onClick={redo}
+            onClick={
+              redo
+            }
             disabled={
               !future.length
             }
@@ -2422,11 +2716,12 @@ export default function Builder() {
       <div
         className="builderBody"
         style={{
-          gridTemplateColumns: `${
-            panelOpen
-              ? 230
-              : 64
-          }px 1fr 220px`
+          gridTemplateColumns:
+            `${
+              panelOpen
+                ? 246
+                : 58
+            }px 1fr 232px`
         }}
       >
         <aside
@@ -2439,16 +2734,16 @@ export default function Builder() {
           <div className="panelHeaderRow">
             {panelOpen && (
               <p className="panelLabel">
-                BRICKS
+                PARTS LIBRARY
               </p>
             )}
 
             <button
               className="collapseBtn"
-              aria-label="Toggle bricks panel"
               onClick={() =>
                 setPanelOpen(
-                  (v) => !v
+                  (v) =>
+                    !v
                 )
               }
             >
@@ -2467,10 +2762,10 @@ export default function Builder() {
           {panelOpen && (
             <>
               <p className="category">
-                BASIC
+                BRICKS
               </p>
 
-              <div className="brickPalette">
+              <div className="brickPalette proPalette">
                 {basicKinds.map(
                   (k) => (
                     <button
@@ -2481,26 +2776,28 @@ export default function Builder() {
                           : ""
                       }`}
                       onClick={() =>
-                        setKind(k)
-                      }
-                      title={
-                        kindLabel[k]
+                        setKind(
+                          k
+                        )
                       }
                     >
                       <BrickThumb
                         footprint={
-                          footprints[k]
+                          brickDefs[
+                            k
+                          ]
+                            .footprint
                         }
-                        shape={
-                          shapeOf[k]
+                        color={
+                          color
                         }
                       />
 
-                      <span className="brickOptionLabel">
+                      <span>
                         {
-                          kindLabel[
+                          brickDefs[
                             k
-                          ]
+                          ].label
                         }
                       </span>
                     </button>
@@ -2509,10 +2806,10 @@ export default function Builder() {
               </div>
 
               <p className="category">
-                SPECIAL
+                SPECIAL PARTS
               </p>
 
-              <div className="brickPalette">
+              <div className="brickPalette proPalette">
                 {specialKinds.map(
                   (k) => (
                     <button
@@ -2523,26 +2820,28 @@ export default function Builder() {
                           : ""
                       }`}
                       onClick={() =>
-                        setKind(k)
-                      }
-                      title={
-                        kindLabel[k]
+                        setKind(
+                          k
+                        )
                       }
                     >
                       <BrickThumb
                         footprint={
-                          footprints[k]
+                          brickDefs[
+                            k
+                          ]
+                            .footprint
                         }
-                        shape={
-                          shapeOf[k]
+                        color={
+                          color
                         }
                       />
 
-                      <span className="brickOptionLabel">
+                      <span>
                         {
-                          kindLabel[
+                          brickDefs[
                             k
-                          ]
+                          ].label
                         }
                       </span>
                     </button>
@@ -2551,10 +2850,10 @@ export default function Builder() {
               </div>
 
               <p className="category">
-                COLORS
+                COLOR / PLASTIC
               </p>
 
-              <div className="colorPalette">
+              <div className="colorPalette proColors">
                 {palette.map(
                   (c) => (
                     <button
@@ -2570,7 +2869,7 @@ export default function Builder() {
                           c
                       }}
                       onClick={() =>
-                        recolorSelected(
+                        setColor(
                           c
                         )
                       }
@@ -2579,35 +2878,63 @@ export default function Builder() {
                 )}
               </div>
 
+              <div className="materialNote">
+                <span
+                  className="materialSwatch"
+                  style={{
+                    background:
+                      color
+                  }}
+                />
+
+                <div>
+                  <b>
+                    ABS PLASTIC
+                  </b>
+
+                  <small>
+                    Gloss · molded color
+                  </small>
+                </div>
+              </div>
+
               <p className="category">
                 STARTER SET
               </p>
 
               <div className="available">
                 <span>
-                  AVAILABLE
+                  PIECES LEFT
                 </span>
 
                 <b>
-                  {available} / {STARTER_LIMIT}
+                  {available} /{" "}
+                  {STARTER_LIMIT}
                 </b>
               </div>
 
               <div className="progress">
                 <i
                   style={{
-                    width: `${(available / STARTER_LIMIT) * 100}%`
+                    width:
+                      `${
+                        (available /
+                          STARTER_LIMIT) *
+                        100
+                      }%`
                   }}
                 />
               </div>
 
               <p className="panelHelp">
-                Drag bricks to move
-                them on the grid.
-                Green placement is
-                valid. Click a brick
-                to select it. Shift+Click
-                a brick to stack on top.
+                Click an empty cell
+                to place. Hovering a
+                brick previews a
+                compatible stack on
+                its stud surface.
+                Shift+Click places
+                directly on the hovered
+                structure.
               </p>
             </>
           )}
@@ -2632,7 +2959,9 @@ export default function Builder() {
             onPointer={
               setGhostPoint
             }
-            onPlace={addAt}
+            onPlace={
+              addAt
+            }
             onCaptureReady={
               setCapture
             }
@@ -2655,33 +2984,30 @@ export default function Builder() {
 
           <div className="sceneHud">
             <span>
+              <Box size={12} />
               {bricks.length} PIECES
             </span>
 
             <span>
-              GRID 1×1
+              <Grid3X3
+                size={12}
+              />
+              1 STUD SNAP
             </span>
 
             <span>
-              {draggingId !==
-              null
-                ? "MOVING BRICK"
-                : ghost
+              {ghost
                 ? ghostValid
                   ? "PLACEMENT READY"
                   : "BLOCKED"
                 : selected
-                ? "BRICK SELECTED"
-                : "READY TO BUILD"}
+                  ? `SELECTED #${selected.id}`
+                  : "READY TO BUILD"}
             </span>
           </div>
 
           <div className="sceneHint">
-            DRAG TO MOVE · HOVER TO
-            PREVIEW · CLICK TO PLACE ·
-            ARROWS MOVE · R ROTATE ·
-            CTRL/CMD+D DUPLICATE ·
-            CTRL/CMD+Z UNDO
+            HOVER = LIVE GHOST · CLICK = PLACE · CLICK BRICK = DRAG · SHIFT+CLICK = STACK · R = ROTATE · ARROWS = MOVE
           </div>
 
           <div className="bottomTools">
@@ -2696,61 +3022,34 @@ export default function Builder() {
                     )
                 )
               }
-              disabled={
-                available <= 0
-              }
             >
               <Plus
                 size={14}
-              />{" "}
-              ADD BRICK
-            </button>
-
-            <button
-              onClick={
-                duplicateSelected
-              }
-              disabled={
-                selectedId ===
-                  null ||
-                available <= 0
-              }
-            >
-              <Plus
-                size={14}
-              />{" "}
-              DUPLICATE
+              />
+              ADD
             </button>
 
             <button
               onClick={
                 removeSelected
               }
-              disabled={
-                selectedId ===
-                null
-              }
             >
               <Eraser
                 size={14}
-              />{" "}
-              REMOVE
+              />
+              DELETE
             </button>
 
             <span className="toolbarDivider" />
 
             <button
-              aria-label="move left"
               onClick={() =>
                 moveSelected(
-                  -CELL,
+                  -1,
                   0
                 )
               }
-              disabled={
-                selectedId ===
-                null
-              }
+              aria-label="move left"
             >
               <ArrowLeft
                 size={14}
@@ -2758,17 +3057,13 @@ export default function Builder() {
             </button>
 
             <button
-              aria-label="move right"
               onClick={() =>
                 moveSelected(
-                  CELL,
+                  1,
                   0
                 )
               }
-              disabled={
-                selectedId ===
-                null
-              }
+              aria-label="move right"
             >
               <ArrowRight
                 size={14}
@@ -2776,17 +3071,13 @@ export default function Builder() {
             </button>
 
             <button
-              aria-label="move up"
               onClick={() =>
                 moveSelected(
                   0,
-                  -CELL
+                  -1
                 )
               }
-              disabled={
-                selectedId ===
-                null
-              }
+              aria-label="move forward"
             >
               <ArrowUp
                 size={14}
@@ -2794,17 +3085,13 @@ export default function Builder() {
             </button>
 
             <button
-              aria-label="move down"
               onClick={() =>
                 moveSelected(
                   0,
-                  CELL
+                  1
                 )
               }
-              disabled={
-                selectedId ===
-                null
-              }
+              aria-label="move backward"
             >
               <ArrowDown
                 size={14}
@@ -2815,14 +3102,10 @@ export default function Builder() {
               onClick={
                 rotateSelected
               }
-              disabled={
-                selectedId ===
-                null
-              }
             >
               <RotateCw
                 size={14}
-              />{" "}
+              />
               ROTATE
             </button>
 
@@ -2844,7 +3127,7 @@ export default function Builder() {
                         c
                     }}
                     onClick={() =>
-                      recolorSelected(
+                      setColor(
                         c
                       )
                     }
@@ -2857,14 +3140,13 @@ export default function Builder() {
 
         <aside className="toolsPanel">
           <p className="panelLabel">
-            TOOLS
+            INSPECTOR
           </p>
 
           <div className="toolRow toolActive">
             <MousePointer2
               size={15}
             />
-
             <span>
               SELECT
             </span>
@@ -2874,19 +3156,14 @@ export default function Builder() {
             className="toolRow"
             onClick={() =>
               moveSelected(
-                -CELL,
+                -1,
                 0
               )
-            }
-            disabled={
-              selectedId ===
-              null
             }
           >
             <Move
               size={15}
             />
-
             <span>
               MOVE
             </span>
@@ -2897,37 +3174,12 @@ export default function Builder() {
             onClick={
               rotateSelected
             }
-            disabled={
-              selectedId ===
-              null
-            }
           >
             <RotateCw
               size={15}
             />
-
             <span>
-              ROTATE
-            </span>
-          </button>
-
-          <button
-            className="toolRow"
-            onClick={
-              duplicateSelected
-            }
-            disabled={
-              selectedId ===
-                null ||
-              available <= 0
-            }
-          >
-            <Plus
-              size={15}
-            />
-
-            <span>
-              DUPLICATE
+              ROTATE 90°
             </span>
           </button>
 
@@ -2936,55 +3188,14 @@ export default function Builder() {
             onClick={
               removeSelected
             }
-            disabled={
-              selectedId ===
-              null
-            }
           >
             <Trash2
               size={15}
             />
-
             <span>
               DELETE
             </span>
           </button>
-
-          <p className="category">
-            ACTIONS
-          </p>
-
-          <div className="actionsGrid">
-            <button
-              onClick={undo}
-              disabled={
-                !history.length
-              }
-            >
-              <Undo2
-                size={16}
-              />
-
-              <span>
-                UNDO
-              </span>
-            </button>
-
-            <button
-              onClick={redo}
-              disabled={
-                !future.length
-              }
-            >
-              <Redo2
-                size={16}
-              />
-
-              <span>
-                REDO
-              </span>
-            </button>
-          </div>
 
           <p className="category">
             DISPLAY
@@ -3005,9 +3216,7 @@ export default function Builder() {
             />
           </label>
 
-          <label
-            title="Snapping alla griglia sempre attivo: necessario per l'incastro e lo stacking dei brick."
-          >
+          <label>
             <span>
               SNAP
             </span>
@@ -3019,40 +3228,111 @@ export default function Builder() {
           </label>
 
           <p className="category">
-            VIEW
+            CAMERA
           </p>
 
-          <button
-            className={`viewButton ${
-              viewMode ===
-              "iso"
-                ? "viewSelected"
-                : ""
-            }`}
-            onClick={() =>
-              setViewMode(
-                "iso"
+          <div className="viewGrid">
+            {(
+              [
+                "iso",
+                "top",
+                "front",
+                "side"
+              ] as ViewMode[]
+            ).map(
+              (mode) => (
+                <button
+                  key={mode}
+                  className={
+                    viewMode ===
+                    mode
+                      ? "viewSelected"
+                      : ""
+                  }
+                  onClick={() =>
+                    setViewMode(
+                      mode
+                    )
+                  }
+                >
+                  {mode.toUpperCase()}
+                </button>
               )
-            }
-          >
-            ISOMETRIC
-          </button>
+            )}
+          </div>
 
-          <button
-            className={`viewButton ${
-              viewMode ===
-              "top"
-                ? "viewSelected"
-                : ""
-            }`}
-            onClick={() =>
-              setViewMode(
-                "top"
-              )
-            }
-          >
-            TOP VIEW
-          </button>
+          <p className="category">
+            SELECTED PART
+          </p>
+
+          {selected ? (
+            <div className="inspectorCard">
+              <div
+                className="inspectorSwatch"
+                style={{
+                  background:
+                    selected.color
+                }}
+              >
+                <BrickThumb
+                  footprint={
+                    selected.footprint
+                  }
+                  color={
+                    selected.color
+                  }
+                />
+              </div>
+
+              <b>
+                {
+                  brickDefs[
+                    selected.kind
+                  ].label
+                }
+              </b>
+
+              <span>
+                LAYER{" "}
+                {selected.layer +
+                  1}
+              </span>
+
+              <span>
+                ROTATION{" "}
+                {selected.rotation}°
+              </span>
+
+              <span>
+                COLOR{" "}
+                {selected.color.toUpperCase()}
+              </span>
+
+              <span>
+                STUDS{" "}
+                {
+                  selected
+                    .footprint[0]
+                }{" "}
+                ×{" "}
+                {
+                  selected
+                    .footprint[1]
+                }
+              </span>
+            </div>
+          ) : (
+            <div className="emptyInspector">
+              <Layers3
+                size={18}
+              />
+
+              <span>
+                Select a brick to
+                inspect it.
+              </span>
+            </div>
+          )}
 
           <div className="pieceCount">
             <span>
@@ -3060,23 +3340,18 @@ export default function Builder() {
             </span>
 
             <b>
-              {bricks.length} / {STARTER_LIMIT}
-            </b>
-          </div>
-
-          <div className="selectedInfo">
-            <span>
-              SELECTED
-            </span>
-
-            <b>
-              {selected
-                ? selected.id
-                : "—"}
+              {bricks.length} /{" "}
+              {STARTER_LIMIT}
             </b>
           </div>
         </aside>
       </div>
+
+      {toast && (
+        <div className="builderToast">
+          {toast}
+        </div>
+      )}
 
       {showSave && (
         <div
@@ -3096,20 +3371,17 @@ export default function Builder() {
             {!saved ? (
               <>
                 <p className="eyebrow">
-                  FINALIZE CREATION
+                  PUBLISH BUILD
                 </p>
 
                 <h2>
-                  SAVE YOUR
-                  MASTERPIECE
+                  SAVE TO SHOWCASE
                 </h2>
 
                 <p className="modalText">
-                  The current camera
-                  view becomes the
-                  public thumbnail.
-                  Adjust the camera
-                  before saving.
+                  Your current camera
+                  becomes the gallery
+                  thumbnail.
                 </p>
 
                 <label>
@@ -3117,10 +3389,15 @@ export default function Builder() {
 
                   <input
                     autoFocus
-                    value={title}
-                    onChange={(e) =>
+                    value={
+                      title
+                    }
+                    onChange={(
+                      e
+                    ) =>
                       setTitle(
-                        e.target.value
+                        e.target
+                          .value
                       )
                     }
                     placeholder="My masterpiece"
@@ -3128,16 +3405,21 @@ export default function Builder() {
                 </label>
 
                 <label>
-                  CREATOR NAME
+                  CREATOR
 
                   <input
-                    value={creator}
-                    onChange={(e) =>
+                    value={
+                      creator
+                    }
+                    onChange={(
+                      e
+                    ) =>
                       setCreator(
-                        e.target.value
+                        e.target
+                          .value
                       )
                     }
-                    placeholder="Your name or handle"
+                    placeholder="Your handle"
                   />
                 </label>
 
@@ -3147,7 +3429,7 @@ export default function Builder() {
                       src={
                         previewSrc
                       }
-                      alt="Current preview"
+                      alt="Build preview"
                     />
                   ) : (
                     <span>
@@ -3189,21 +3471,19 @@ export default function Builder() {
                 </div>
 
                 <p className="eyebrow">
-                  CREATION SAVED
+                  SAVED
                 </p>
 
                 <h2>
-                  READY FOR THE
-                  SHOWCASE
+                  READY FOR THE SHOWCASE
                 </h2>
 
                 <p className="modalText">
-                  Saved locally for
-                  this prototype.
-                  PostgreSQL, permanent
-                  thumbnails and public
-                  gallery publishing come
-                  next.
+                  Prototype save stored
+                  locally. Permanent
+                  publishing can be
+                  connected to PostgreSQL
+                  later.
                 </p>
 
                 <div className="modalActions">
