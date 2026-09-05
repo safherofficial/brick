@@ -1,10 +1,12 @@
 import Link from "next/link";
+import ShowcaseThumb from "@/components/showcase/ShowcaseThumb";
+import { findCreation } from "@/lib/creations";
 
 const creations = [
-  ["Floating Island", "@mika", "🏝️", "3.1K"],
-  ["Samurai Mech", "@kenji", "🤖", "1.8K"],
-  ["Dragon", "@dragon", "🐉", "5.2K"],
-  ["Cozy Cabin", "@forest", "🏡", "1.6K"]
+  { title: "Floating Island", author: "@mika", art: "🏝️", likes: "3.1K" },
+  { title: "Samurai Mech", author: "@kenji", slug: "pixel-robot", likes: "1.8K" },
+  { title: "Dragon", author: "@dragon", art: "🐉", likes: "5.2K" },
+  { title: "Cozy Cabin", author: "@forest", slug: "cozy-cabin", likes: "1.6K" }
 ];
 
 export default function Home() {
@@ -55,15 +57,18 @@ export default function Home() {
           <Link href="/gallery" className="textLink">VIEW ALL →</Link>
         </div>
         <div className="creationGrid">
-          {creations.map(([title, creator, art, likes]) => (
-            <article className="creationCard" key={title}>
-              <div className="cardArtwork">{art}</div>
-              <div className="cardMeta">
-                <div><h3>{title}</h3><p>{creator}</p></div>
-                <span>♥ {likes}</span>
-              </div>
-            </article>
-          ))}
+          {creations.map(({ title, author, art, slug, likes }) => {
+            const creation = slug ? findCreation(slug) : null;
+            return (
+              <article className="creationCard" key={title}>
+                <div className="cardArtwork">{creation ? <ShowcaseThumb creation={creation} /> : art}</div>
+                <div className="cardMeta">
+                  <div><h3>{title}</h3><p>{author}</p></div>
+                  <span>♥ {likes}</span>
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section>
     </main>
