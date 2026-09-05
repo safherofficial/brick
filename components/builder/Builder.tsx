@@ -157,14 +157,6 @@ function footprintSize(
   ];
 }
 
-/**
- * Restituisce il footprint reale del brick
- * tenendo conto della rotazione di 90°.
- *
- * footprint rimane canonico:
- * la rotazione viene gestita esclusivamente
- * tramite rotationY.
- */
 function getRotatedFootprint(
   brick: Brick
 ): [number, number] {
@@ -254,12 +246,6 @@ function validPlacement(
   );
 }
 
-/**
- * Celle occupate da un brick.
- *
- * Viene usato per determinare il supporto
- * verticale durante lo stacking.
- */
 function getCoveredCells(
   brick: Brick
 ): Array<[number, number]> {
@@ -555,17 +541,6 @@ function BrickMesh({
         onDragStart(
           brick.id
         );
-
-        const target =
-          e.target as THREE.Object3D & {
-            setPointerCapture?: (
-              pointerId: number
-            ) => void;
-          };
-
-        target.setPointerCapture?.(
-          e.pointerId
-        );
       }}
       onPointerMove={(e) => {
         e.stopPropagation();
@@ -584,17 +559,6 @@ function BrickMesh({
       }}
       onPointerUp={(e) => {
         e.stopPropagation();
-
-        const target =
-          e.target as THREE.Object3D & {
-            releasePointerCapture?: (
-              pointerId: number
-            ) => void;
-          };
-
-        target.releasePointerCapture?.(
-          e.pointerId
-        );
 
         onDragEnd();
       }}
@@ -1448,12 +1412,6 @@ export default function Builder() {
       ]
     );
 
-  /**
-   * Cambia il colore del brick selezionato.
-   *
-   * Il cambio colore viene registrato
-   * nella cronologia Undo/Redo.
-   */
   const recolorSelected =
     useCallback(
       (nextColor: string) => {
@@ -1500,12 +1458,6 @@ export default function Builder() {
       ]
     );
 
-  /**
-   * Trova una posizione libera per il duplicato.
-   *
-   * Prima prova nella direzione locale del brick,
-   * poi nelle quattro direzioni cardinali.
-   */
   const duplicateSelected =
     useCallback(
       () => {
@@ -1665,13 +1617,6 @@ export default function Builder() {
       ]
     );
 
-  /**
-   * Ruota il brick di 90°.
-   *
-   * Il footprint rimane canonico.
-   * La rotazione reale viene applicata
-   * dal group Three.js.
-   */
   const rotateSelected =
     useCallback(
       () => {
@@ -1753,9 +1698,6 @@ export default function Builder() {
       ]
     );
 
-  /**
-   * Movimento di una cella reale.
-   */
   const moveSelected =
     useCallback(
       (
@@ -1820,13 +1762,6 @@ export default function Builder() {
       ]
     );
 
-  /**
-   * Inizio del drag.
-   *
-   * La posizione iniziale viene salvata
-   * una sola volta per permettere un singolo
-   * Undo dell'intero trascinamento.
-   */
   const startDragging =
     useCallback(
       (id: number) => {
@@ -1868,12 +1803,6 @@ export default function Builder() {
       [bricks]
     );
 
-  /**
-   * Movimento durante il drag.
-   *
-   * Il brick segue esclusivamente la griglia STUD.
-   * Una posizione invalida non viene applicata.
-   */
   const dragMove =
     useCallback(
       (
@@ -1946,12 +1875,6 @@ export default function Builder() {
       ]
     );
 
-  /**
-   * Fine del drag.
-   *
-   * La cronologia è già stata salvata
-   * all'inizio del trascinamento.
-   */
   const endDragging =
     useCallback(
       () => {
@@ -3074,8 +2997,7 @@ export default function Builder() {
                     value={title}
                     onChange={(e) =>
                       setTitle(
-                        e.target
-                          .value
+                        e.target.value
                       )
                     }
                     placeholder="My masterpiece"
@@ -3089,8 +3011,7 @@ export default function Builder() {
                     value={creator}
                     onChange={(e) =>
                       setCreator(
-                        e.target
-                          .value
+                        e.target.value
                       )
                     }
                     placeholder="Your name or handle"
