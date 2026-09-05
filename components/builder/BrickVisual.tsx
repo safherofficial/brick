@@ -78,6 +78,15 @@ export function Stud({
  *
  * Altezza standard:
  * 1.08 world units.
+ *
+ * IMPORTANTE:
+ * La rotazione NON viene applicata qui.
+ * BrickVisual costruisce sempre la geometria
+ * nella sua configurazione canonica.
+ *
+ * La rotazione viene applicata al group superiore
+ * in BrickMesh, così corpo e studs ruotano
+ * insieme attorno al centro del brick.
  */
 export function BrickVisual({
   shape,
