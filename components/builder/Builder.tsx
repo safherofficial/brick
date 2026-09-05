@@ -1,8 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState
+} from "react";
 import Link from "next/link";
-import { Canvas, ThreeEvent, useThree } from "@react-three/fiber";
+import {
+  Canvas,
+  ThreeEvent,
+  useThree
+} from "@react-three/fiber";
 import {
   Grid,
   GizmoHelper,
@@ -29,16 +38,36 @@ import {
 } from "lucide-react";
 import {
   BrickVisual,
-  type BrickShape
+  type BrickShape,
+  STUD,
+  BRICK_HEIGHT
 } from "./BrickVisual";
 
 type Brick = {
   id: number;
-  size: [number, number, number];
-  footprint: [number, number];
-  position: [number, number, number];
+
+  size: [
+    number,
+    number,
+    number
+  ];
+
+  footprint: [
+    number,
+    number
+  ];
+
+  position: [
+    number,
+    number,
+    number
+  ];
+
   color: string;
+
   shape: BrickShape;
+
+  rotationY: number;
 };
 
 type BrickKind =
@@ -61,9 +90,10 @@ const palette = [
   "#e5e7eb"
 ];
 
-const heights = 0.45;
-
-const shapeOf: Record<BrickKind, BrickShape> = {
+const shapeOf: Record<
+  BrickKind,
+  BrickShape
+> = {
   "1x1": "box",
   "2x2": "box",
   "2x4": "box",
@@ -71,7 +101,10 @@ const shapeOf: Record<BrickKind, BrickShape> = {
   round: "cylinder"
 };
 
-const kindLabel: Record<BrickKind, string> = {
+const kindLabel: Record<
+  BrickKind,
+  string
+> = {
   "1x1": "1×1",
   "2x2": "2×2",
   "2x4": "2×4",
@@ -83,11 +116,35 @@ const sizes: Record<
   BrickKind,
   [number, number, number]
 > = {
-  "1x1": [0.9, heights, 0.9],
-  "2x2": [1.8, heights, 1.8],
-  "2x4": [3.6, heights, 1.8],
-  cone: [0.9, heights, 0.9],
-  round: [0.9, heights, 0.9]
+  "1x1": [
+    STUD,
+    BRICK_HEIGHT,
+    STUD
+  ],
+
+  "2x2": [
+    STUD * 2,
+    BRICK_HEIGHT,
+    STUD * 2
+  ],
+
+  "2x4": [
+    STUD * 4,
+    BRICK_HEIGHT,
+    STUD * 2
+  ],
+
+  cone: [
+    STUD,
+    BRICK_HEIGHT,
+    STUD
+  ],
+
+  round: [
+    STUD,
+    BRICK_HEIGHT,
+    STUD
+  ]
 };
 
 const footprints: Record<
@@ -112,20 +169,57 @@ const specialKinds: BrickKind[] = [
   "round"
 ];
 
-function getFootprint(brick: Brick) {
+/**
+ * Converte un footprint espresso in studs
+ * nella dimensione reale in world units.
+ *
+ * Esempio:
+ * [4,2] -> [3.6,1.8]
+ */
+function footprintSize(
+  footprint: [number, number]
+): [number, number] {
+  return [
+    footprint[0] * STUD,
+    footprint[1] * STUD
+  ];
+}
+
+function getFootprint(
+  brick: Brick
+) {
   return brick.footprint;
 }
 
-function overlaps(a: Brick, b: Brick) {
-  const [aw, ad] = getFootprint(a);
-  const [bw, bd] = getFootprint(b);
+/**
+ * Collisione 2D sulla griglia reale.
+ *
+ * Il footprint è espresso in studs,
+ * ma le coordinate Three.js sono espresse
+ * in world units.
+ */
+function overlaps(
+  a: Brick,
+  b: Brick
+) {
+  const [aw, ad] =
+    footprintSize(
+      getFootprint(a)
+    );
+
+  const [bw, bd] =
+    footprintSize(
+      getFootprint(b)
+    );
 
   const ax = Math.abs(
-    a.position[0] - b.position[0]
+    a.position[0] -
+      b.position[0]
   );
 
   const az = Math.abs(
-    a.position[2] - b.position[2]
+    a.position[2] -
+      b.position[2]
   );
 
   return (
@@ -134,10 +228,14 @@ function overlaps(a: Brick, b: Brick) {
   );
 }
 
-function sameLayer(a: Brick, b: Brick) {
+function sameLayer(
+  a: Brick,
+  b: Brick
+) {
   return (
     Math.abs(
-      a.position[1] - b.position[1]
+      a.position[1] -
+        b.position[1]
     ) < 0.01
   );
 }
@@ -148,104 +246,129 @@ function validPlacement(
 ) {
   return !bricks.some(
     (brick) =>
-      sameLayer(candidate, brick) &&
-      overlaps(candidate, brick)
+      sameLayer(
+        candidate,
+        brick
+      ) &&
+      overlaps(
+        candidate,
+        brick
+      )
   );
 }
 
+/**
+ * Determina il livello superiore
+ * su cui può essere posizionato il brick.
+ *
+ * Tutte le coordinate orizzontali
+ * utilizzano STUD come unità.
+ */
 function supportedLayer(
   candidate: Brick,
   bricks: Brick[]
 ) {
-  const [cw, cd] = candidate.footprint;
-
-  const minX =
-    candidate.position[0] -
-    cw / 2 +
-    0.5;
-
-  const maxX =
-    candidate.position[0] +
-    cw / 2 -
-    0.5;
-
-  const minZ =
-    candidate.position[2] -
-    cd / 2 +
-    0.5;
-
-  const maxZ =
-    candidate.position[2] +
-    cd / 2 -
-    0.5;
+  const [cw, cd] =
+    candidate.footprint;
 
   const cells: Array<
     [number, number]
   > = [];
 
+  /**
+   * Genera il centro di ogni cella
+   * coperta dal brick.
+   *
+   * Esempio 2x4:
+   *
+   * x = -1.35, -0.45, 0.45, 1.35
+   * z = -0.45, 0.45
+   */
   for (
-    let x = minX;
-    x <= maxX;
-    x += 1
+    let ix = 0;
+    ix < cw;
+    ix++
   ) {
     for (
-      let z = minZ;
-      z <= maxZ;
-      z += 1
+      let iz = 0;
+      iz < cd;
+      iz++
     ) {
-      cells.push([x, z]);
+      const x =
+        candidate.position[0] -
+        ((cw - 1) * STUD) / 2 +
+        ix * STUD;
+
+      const z =
+        candidate.position[2] -
+        ((cd - 1) * STUD) / 2 +
+        iz * STUD;
+
+      cells.push([
+        x,
+        z
+      ]);
     }
   }
 
-  if (!cells.length) return 0;
+  if (!cells.length) {
+    return 0;
+  }
 
   let bestLayer = 0;
 
   for (const brick of bricks) {
-    const layer = Math.round(
-      (brick.position[1] -
-        heights / 2) /
-        heights
-    );
+    const layer =
+      Math.round(
+        (
+          brick.position[1] -
+          BRICK_HEIGHT / 2
+        ) /
+          BRICK_HEIGHT
+      );
 
-    if (layer < 0) continue;
+    if (layer < 0) {
+      continue;
+    }
 
     const [bw, bd] =
       brick.footprint;
 
+    /**
+     * Limiti reali della superficie
+     * occupata dal brick.
+     */
     const bMinX =
       brick.position[0] -
-      bw / 2 +
-      0.5;
+      (bw * STUD) / 2;
 
     const bMaxX =
       brick.position[0] +
-      bw / 2 -
-      0.5;
+      (bw * STUD) / 2;
 
     const bMinZ =
       brick.position[2] -
-      bd / 2 +
-      0.5;
+      (bd * STUD) / 2;
 
     const bMaxZ =
       brick.position[2] +
-      bd / 2 -
-      0.5;
+      (bd * STUD) / 2;
 
-    const covers = cells.every(
-      ([x, z]) =>
-        x >= bMinX &&
-        x <= bMaxX &&
-        z >= bMinZ &&
-        z <= bMaxZ
-    );
+    const covers =
+      cells.every(
+        ([x, z]) =>
+          x >= bMinX &&
+          x <= bMaxX &&
+          z >= bMinZ &&
+          z <= bMaxZ
+      );
 
     if (covers) {
-      bestLayer = Math.max(
-        bestLayer,
-        layer + 1
-      );
+      bestLayer =
+        Math.max(
+          bestLayer,
+          layer + 1
+        );
     }
   }
 
@@ -259,19 +382,48 @@ function buildCandidate(
   bricks: Brick[],
   forcedLayer?: number
 ): Brick {
-  const x = Math.round(point.x);
-  const z = Math.round(point.z);
+  /**
+   * Snap reale:
+   *
+   * 0.00
+   * 0.90
+   * 1.80
+   * 2.70
+   * ...
+   */
+  const x =
+    Math.round(
+      point.x / STUD
+    ) * STUD;
+
+  const z =
+    Math.round(
+      point.z / STUD
+    ) * STUD;
 
   const layer =
     forcedLayer ??
     supportedLayer(
       {
         id: -1,
+
         size: sizes[kind],
-        footprint: footprints[kind],
-        position: [x, 0, z],
+
+        footprint:
+          footprints[kind],
+
+        position: [
+          x,
+          0,
+          z
+        ],
+
         color,
-        shape: shapeOf[kind]
+
+        shape:
+          shapeOf[kind],
+
+        rotationY: 0
       },
       bricks
     );
@@ -279,23 +431,32 @@ function buildCandidate(
   return {
     id:
       Date.now() +
-      Math.floor(Math.random() * 1000),
+      Math.floor(
+        Math.random() * 1000
+      ),
 
-    size: sizes[kind],
+    size:
+      sizes[kind],
 
     footprint:
       footprints[kind],
 
     position: [
       x,
-      heights / 2 +
-        layer * heights,
+
+      BRICK_HEIGHT / 2 +
+        layer *
+          BRICK_HEIGHT,
+
       z
     ],
 
     color,
 
-    shape: shapeOf[kind]
+    shape:
+      shapeOf[kind],
+
+    rotationY: 0
   };
 }
 
@@ -307,15 +468,33 @@ function GhostBrick({
   color,
   valid
 }: {
-  position: [number, number, number];
-  size: [number, number, number];
-  footprint: [number, number];
+  position: [
+    number,
+    number,
+    number
+  ];
+
+  size: [
+    number,
+    number,
+    number
+  ];
+
+  footprint: [
+    number,
+    number
+  ];
+
   shape: BrickShape;
+
   color: string;
+
   valid: boolean;
 }) {
   return (
-    <group position={position}>
+    <group
+      position={position}
+    >
       <BrickVisual
         shape={shape}
         size={size}
@@ -339,37 +518,63 @@ function BrickMesh({
   onPlace
 }: {
   brick: Brick;
+
   selected: boolean;
-  onSelect: (id: number) => void;
+
+  onSelect: (
+    id: number
+  ) => void;
+
   onHover: (
     point: THREE.Vector3
   ) => void;
+
   onPlace: (
     point: THREE.Vector3
   ) => void;
 }) {
   return (
     <group
-      position={brick.position}
+      position={
+        brick.position
+      }
+      rotation={[
+        0,
+        brick.rotationY,
+        0
+      ]}
       onClick={(e) => {
         e.stopPropagation();
 
         if (e.shiftKey) {
           onPlace(e.point);
         } else {
-          onSelect(brick.id);
+          onSelect(
+            brick.id
+          );
         }
       }}
       onPointerMove={(e) => {
         e.stopPropagation();
-        onHover(e.point);
+
+        onHover(
+          e.point
+        );
       }}
     >
       <BrickVisual
-        shape={brick.shape}
-        size={brick.size}
-        footprint={brick.footprint}
-        color={brick.color}
+        shape={
+          brick.shape
+        }
+        size={
+          brick.size
+        }
+        footprint={
+          brick.footprint
+        }
+        color={
+          brick.color
+        }
       />
 
       {selected && (
@@ -380,12 +585,19 @@ function BrickMesh({
               0.13,
             0
           ]}
+          rotation={[
+            0,
+            0,
+            0
+          ]}
         >
           <boxGeometry
             args={[
               brick.size[0] +
                 0.08,
+
               0.04,
+
               brick.size[2] +
                 0.08
             ]}
@@ -404,9 +616,12 @@ function BrickMesh({
 function CameraController({
   viewMode
 }: {
-  viewMode: "iso" | "top";
+  viewMode:
+    | "iso"
+    | "top";
 }) {
-  const { camera } = useThree();
+  const { camera } =
+    useThree();
 
   useEffect(() => {
     const target =
@@ -416,7 +631,9 @@ function CameraController({
         0
       );
 
-    if (viewMode === "top") {
+    if (
+      viewMode === "top"
+    ) {
       camera.position.set(
         0.01,
         11,
@@ -430,8 +647,13 @@ function CameraController({
       );
     }
 
-    camera.lookAt(target);
-  }, [camera, viewMode]);
+    camera.lookAt(
+      target
+    );
+  }, [
+    camera,
+    viewMode
+  ]);
 
   return null;
 }
@@ -443,7 +665,8 @@ function CameraCapture({
     capture: () => string
   ) => void;
 }) {
-  const { gl } = useThree();
+  const { gl } =
+    useThree();
 
   useEffect(() => {
     onReady(() =>
@@ -451,7 +674,10 @@ function CameraCapture({
         "image/png"
       )
     );
-  }, [gl, onReady]);
+  }, [
+    gl,
+    onReady
+  ]);
 
   return null;
 }
@@ -469,57 +695,91 @@ function Scene({
   gridVisible
 }: {
   bricks: Brick[];
-  selectedId: number | null;
+
+  selectedId:
+    | number
+    | null;
+
   ghost: Brick | null;
+
   ghostValid: boolean;
-  onSelect: (id: number) => void;
+
+  onSelect: (
+    id: number
+  ) => void;
+
   onPointer: (
     point: THREE.Vector3
   ) => void;
+
   onCaptureReady: (
     capture: () => string
   ) => void;
+
   onPlace: (
     point: THREE.Vector3
   ) => void;
-  viewMode: "iso" | "top";
+
+  viewMode:
+    | "iso"
+    | "top";
+
   gridVisible: boolean;
 }) {
   const groundHover = (
     e: ThreeEvent<PointerEvent>
   ) => {
     e.stopPropagation();
-    onPointer(e.point);
+
+    onPointer(
+      e.point
+    );
   };
 
   const groundClick = (
     e: ThreeEvent<PointerEvent>
   ) => {
     e.stopPropagation();
-    onPlace(e.point);
+
+    onPlace(
+      e.point
+    );
   };
 
   return (
     <Canvas
       shadows
       camera={{
-        position: [8, 7, 9],
+        position: [
+          8,
+          7,
+          9
+        ],
         fov: 45
       }}
       gl={{
-        preserveDrawingBuffer: true
+        preserveDrawingBuffer:
+          true
       }}
       dpr={[1, 2]}
     >
       <color
         attach="background"
-        args={["#080b14"]}
+        args={[
+          "#080b14"
+        ]}
       />
 
-      <ambientLight intensity={1.1} />
+      <ambientLight
+        intensity={1.1}
+      />
 
       <directionalLight
-        position={[5, 9, 4]}
+        position={[
+          5,
+          9,
+          4
+        ]}
         intensity={3.1}
         castShadow
         shadow-mapSize={[
@@ -528,15 +788,22 @@ function Scene({
         ]}
       />
 
-      <hemisphereLight intensity={0.42} />
+      <hemisphereLight
+        intensity={0.42}
+      />
 
       {gridVisible && (
         <Grid
-          args={[30, 30]}
-          cellSize={1}
+          args={[
+            30,
+            30
+          ]}
+          cellSize={STUD}
           cellThickness={0.5}
           cellColor="#252b3a"
-          sectionSize={5}
+          sectionSize={
+            STUD * 5
+          }
           sectionThickness={1}
           sectionColor="#3d4660"
           fadeDistance={30}
@@ -554,12 +821,19 @@ function Scene({
           -0.03,
           0
         ]}
-        onPointerMove={groundHover}
-        onClick={groundClick}
+        onPointerMove={
+          groundHover
+        }
+        onClick={
+          groundClick
+        }
         receiveShadow
       >
         <planeGeometry
-          args={[30, 30]}
+          args={[
+            30,
+            30
+          ]}
         />
 
         <shadowMaterial
@@ -567,38 +841,61 @@ function Scene({
         />
       </mesh>
 
-      {bricks.map((brick) => (
-        <BrickMesh
-          key={brick.id}
-          brick={brick}
-          selected={
-            selectedId === brick.id
-          }
-          onSelect={onSelect}
-          onHover={onPointer}
-          onPlace={onPlace}
-        />
-      ))}
+      {bricks.map(
+        (brick) => (
+          <BrickMesh
+            key={brick.id}
+            brick={brick}
+            selected={
+              selectedId ===
+              brick.id
+            }
+            onSelect={
+              onSelect
+            }
+            onHover={
+              onPointer
+            }
+            onPlace={
+              onPlace
+            }
+          />
+        )
+      )}
 
       {ghost && (
         <GhostBrick
-          position={ghost.position}
-          size={ghost.size}
+          position={
+            ghost.position
+          }
+          size={
+            ghost.size
+          }
           footprint={
             ghost.footprint
           }
-          shape={ghost.shape}
-          color={ghost.color}
-          valid={ghostValid}
+          shape={
+            ghost.shape
+          }
+          color={
+            ghost.color
+          }
+          valid={
+            ghostValid
+          }
         />
       )}
 
       <CameraController
-        viewMode={viewMode}
+        viewMode={
+          viewMode
+        }
       />
 
       <CameraCapture
-        onReady={onCaptureReady}
+        onReady={
+          onCaptureReady
+        }
       />
 
       <OrbitControls
@@ -614,7 +911,10 @@ function Scene({
 
       <GizmoHelper
         alignment="bottom-right"
-        margin={[64, 64]}
+        margin={[
+          64,
+          64
+        ]}
       >
         <GizmoViewport
           axisColors={[
@@ -630,22 +930,29 @@ function Scene({
   );
 }
 
-// Miniatura CSS del brick per la palette: niente immagini, solo un piccolo
-// "pezzo" con studs proporzionati all'impronta reale (footprint) del brick.
+// Miniatura CSS del brick per la palette.
 function BrickThumb({
   footprint,
   shape
 }: {
-  footprint: [number, number];
+  footprint: [
+    number,
+    number
+  ];
+
   shape: BrickShape;
 }) {
-  if (shape === "cone") {
+  if (
+    shape === "cone"
+  ) {
     return (
       <div className="brickThumbCone" />
     );
   }
 
-  if (shape === "cylinder") {
+  if (
+    shape === "cylinder"
+  ) {
     return (
       <div className="brickThumbRound" />
     );
@@ -654,9 +961,10 @@ function BrickThumb({
   const [w, d] =
     footprint;
 
-  const studs = Array.from({
-    length: w * d
-  });
+  const studs =
+    Array.from({
+      length: w * d
+    });
 
   return (
     <div
@@ -672,16 +980,19 @@ function BrickThumb({
             `repeat(${w}, 1fr)`
         }}
       >
-        {studs.map((_, i) => (
-          <span key={i} />
-        ))}
+        {studs.map(
+          (_, i) => (
+            <span
+              key={i}
+            />
+          )
+        )}
       </div>
     </div>
   );
 }
 
-// Interruttore a scorrimento reale (non una checkbox nativa) per coerenza
-// visiva con il resto della UI.
+// Interruttore a scorrimento.
 function Switch({
   checked,
   onChange,
@@ -689,18 +1000,25 @@ function Switch({
   title
 }: {
   checked: boolean;
+
   onChange?: (
     value: boolean
   ) => void;
+
   disabled?: boolean;
+
   title?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
-      aria-checked={checked}
-      disabled={disabled}
+      aria-checked={
+        checked
+      }
+      disabled={
+        disabled
+      }
       title={title}
       className={`switchTrack ${
         checked
@@ -708,7 +1026,9 @@ function Switch({
           : ""
       }`}
       onClick={() =>
-        onChange?.(!checked)
+        onChange?.(
+          !checked
+        )
       }
     >
       <span className="switchThumb" />
@@ -719,77 +1039,121 @@ function Switch({
 const cloneBricks = (
   bricks: Brick[]
 ): Brick[] =>
-  bricks.map((b) => ({
-    ...b,
-    position: [
-      ...b.position
-    ] as [
-      number,
-      number,
-      number
-    ],
-    size: [
-      ...b.size
-    ] as [
-      number,
-      number,
-      number
-    ],
-    footprint: [
-      ...b.footprint
-    ] as [
-      number,
-      number
-    ]
-  }));
+  bricks.map(
+    (b) => ({
+      ...b,
+
+      position: [
+        ...b.position
+      ] as [
+        number,
+        number,
+        number
+      ],
+
+      size: [
+        ...b.size
+      ] as [
+        number,
+        number,
+        number
+      ],
+
+      footprint: [
+        ...b.footprint
+      ] as [
+        number,
+        number
+      ],
+
+      rotationY:
+        b.rotationY ??
+        0
+    })
+  );
 
 export default function Builder() {
   const [color, setColor] =
-    useState(palette[3]);
+    useState(
+      palette[3]
+    );
 
   const [kind, setKind] =
-    useState<BrickKind>("2x2");
+    useState<BrickKind>(
+      "2x2"
+    );
 
   const [bricks, setBricks] =
     useState<Brick[]>([
       {
         id: 1,
-        size: sizes["2x4"],
+
+        size:
+          sizes["2x4"],
+
         footprint:
           footprints["2x4"],
+
         position: [
           0,
-          0.225,
+          BRICK_HEIGHT / 2,
           0
         ],
-        color: "#22c55e",
-        shape: "box"
+
+        color:
+          "#22c55e",
+
+        shape: "box",
+
+        rotationY: 0
       },
+
       {
         id: 2,
-        size: sizes["2x2"],
+
+        size:
+          sizes["2x2"],
+
         footprint:
           footprints["2x2"],
+
         position: [
           0,
-          0.675,
+          BRICK_HEIGHT / 2 +
+            BRICK_HEIGHT,
           0
         ],
-        color: "#3b82f6",
-        shape: "box"
+
+        color:
+          "#3b82f6",
+
+        shape: "box",
+
+        rotationY: 0
       },
+
       {
         id: 3,
-        size: sizes["1x1"],
+
+        size:
+          sizes["1x1"],
+
         footprint:
           footprints["1x1"],
+
         position: [
           0,
-          1.125,
+          BRICK_HEIGHT / 2 +
+            BRICK_HEIGHT * 2,
           0
         ],
-        color: "#facc15",
-        shape: "box"
+
+        color:
+          "#facc15",
+
+        shape: "box",
+
+        rotationY: 0
       }
     ]);
 
@@ -797,9 +1161,9 @@ export default function Builder() {
     selectedId,
     setSelectedId
   ] =
-    useState<number | null>(
-      null
-    );
+    useState<
+      number | null
+    >(null);
 
   const [
     capture,
@@ -837,33 +1201,33 @@ export default function Builder() {
     previewSrc,
     setPreviewSrc
   ] =
-    useState<string | null>(
-      null
-    );
+    useState<
+      string | null
+    >(null);
 
   const [
     history,
     setHistory
   ] =
-    useState<HistoryState[]>(
-      []
-    );
+    useState<
+      HistoryState[]
+    >([]);
 
   const [
     future,
     setFuture
   ] =
-    useState<HistoryState[]>(
-      []
-    );
+    useState<
+      HistoryState[]
+    >([]);
 
   const [
     ghostPoint,
     setGhostPoint
   ] =
-    useState<THREE.Vector3 | null>(
-      null
-    );
+    useState<
+      THREE.Vector3 | null
+    >(null);
 
   const [
     viewMode,
@@ -886,38 +1250,41 @@ export default function Builder() {
     useState(true);
 
   const available =
-    100 - bricks.length;
+    100 -
+    bricks.length;
 
-  const selected = useMemo(
-    () =>
-      bricks.find(
-        (b) =>
-          b.id ===
-          selectedId
-      ) ?? null,
-    [
-      bricks,
-      selectedId
-    ]
-  );
+  const selected =
+    useMemo(
+      () =>
+        bricks.find(
+          (b) =>
+            b.id ===
+            selectedId
+        ) ?? null,
+      [
+        bricks,
+        selectedId
+      ]
+    );
 
-  const ghost = useMemo(
-    () =>
-      ghostPoint
-        ? buildCandidate(
-            kind,
-            color,
-            ghostPoint,
-            bricks
-          )
-        : null,
-    [
-      ghostPoint,
-      kind,
-      color,
-      bricks
-    ]
-  );
+  const ghost =
+    useMemo(
+      () =>
+        ghostPoint
+          ? buildCandidate(
+              kind,
+              color,
+              ghostPoint,
+              bricks
+            )
+          : null,
+      [
+        ghostPoint,
+        kind,
+        color,
+        bricks
+      ]
+    );
 
   const ghostValid =
     !!ghost &&
@@ -928,15 +1295,25 @@ export default function Builder() {
 
   const commit =
     useCallback(
-      (next: Brick[]) => {
-        setHistory((h) => [
-          ...h.slice(-39),
-          cloneBricks(bricks)
-        ]);
+      (
+        next: Brick[]
+      ) => {
+        setHistory(
+          (h) => [
+            ...h.slice(
+              -39
+            ),
+            cloneBricks(
+              bricks
+            )
+          ]
+        );
 
         setFuture([]);
 
-        setBricks(next);
+        setBricks(
+          next
+        );
       },
       [bricks]
     );
@@ -946,8 +1323,11 @@ export default function Builder() {
       (
         point: THREE.Vector3
       ) => {
-        if (available <= 0)
+        if (
+          available <= 0
+        ) {
           return;
+        }
 
         const next =
           buildCandidate(
@@ -1002,7 +1382,9 @@ export default function Builder() {
           )
         );
 
-        setSelectedId(null);
+        setSelectedId(
+          null
+        );
       },
       [
         bricks,
@@ -1011,6 +1393,18 @@ export default function Builder() {
       ]
     );
 
+  /**
+   * Ruota il brick di 90°.
+   *
+   * La geometria NON viene riscalata:
+   * la rotazione viene applicata realmente
+   * al group Three.js tramite rotationY.
+   *
+   * Il footprint logico viene invece scambiato
+   * quando il brick è ruotato di 90°/270°,
+   * così collisioni e stacking continuano
+   * a usare la griglia corretta.
+   */
   const rotateSelected =
     useCallback(
       () => {
@@ -1021,30 +1415,75 @@ export default function Builder() {
           return;
         }
 
+        const selectedBrick =
+          bricks.find(
+            (b) =>
+              b.id ===
+              selectedId
+          );
+
+        if (
+          !selectedBrick
+        ) {
+          return;
+        }
+
+        const currentRotation =
+          selectedBrick.rotationY ??
+          0;
+
+        const nextRotation =
+          currentRotation +
+          Math.PI / 2;
+
+        const normalizedRotation =
+          (
+            nextRotation %
+            (Math.PI * 2) +
+            Math.PI * 2
+          ) %
+          (Math.PI * 2);
+
+        const quarterTurn =
+          Math.round(
+            normalizedRotation /
+              (Math.PI / 2)
+          ) %
+            2 !==
+          0;
+
+        const originalFootprint =
+          selectedBrick.footprint;
+
+        const nextFootprint =
+          quarterTurn
+            ? [
+                originalFootprint[1],
+                originalFootprint[0]
+              ]
+            : [
+                originalFootprint[0],
+                originalFootprint[1]
+              ];
+
         const next =
-          bricks.map((b) =>
-            b.id ===
-            selectedId
-              ? {
-                  ...b,
-                  size: [
-                    b.size[2],
-                    b.size[1],
-                    b.size[0]
-                  ] as [
-                    number,
-                    number,
-                    number
-                  ],
-                  footprint: [
-                    b.footprint[1],
-                    b.footprint[0]
-                  ] as [
-                    number,
-                    number
-                  ]
-                }
-              : b
+          bricks.map(
+            (b) =>
+              b.id ===
+              selectedId
+                ? {
+                    ...b,
+
+                    rotationY:
+                      normalizedRotation,
+
+                    footprint:
+                      nextFootprint as [
+                        number,
+                        number
+                      ]
+                  }
+                : b
           );
 
         const changed =
@@ -1064,7 +1503,9 @@ export default function Builder() {
             )
           )
         ) {
-          commit(next);
+          commit(
+            next
+          );
         }
       },
       [
@@ -1074,6 +1515,12 @@ export default function Builder() {
       ]
     );
 
+  /**
+   * Movimento di una cella reale.
+   *
+   * dx e dz arrivano già in world units.
+   * Tutti i chiamanti utilizzano STUD.
+   */
   const moveSelected =
     useCallback(
       (
@@ -1088,24 +1535,28 @@ export default function Builder() {
         }
 
         const next =
-          bricks.map((b) =>
-            b.id ===
-            selectedId
-              ? {
-                  ...b,
-                  position: [
-                    b.position[0] +
-                      dx,
-                    b.position[1],
-                    b.position[2] +
-                      dz
-                  ] as [
-                    number,
-                    number,
-                    number
-                  ]
-                }
-              : b
+          bricks.map(
+            (b) =>
+              b.id ===
+              selectedId
+                ? {
+                    ...b,
+
+                    position: [
+                      b.position[0] +
+                        dx,
+
+                      b.position[1],
+
+                      b.position[2] +
+                        dz
+                    ] as [
+                      number,
+                      number,
+                      number
+                    ]
+                  }
+                : b
           );
 
         const moved =
@@ -1125,7 +1576,9 @@ export default function Builder() {
             )
           )
         ) {
-          commit(next);
+          commit(
+            next
+          );
         }
       },
       [
@@ -1136,60 +1589,88 @@ export default function Builder() {
     );
 
   const undo =
-    useCallback(() => {
-      const previous =
-        history.at(-1);
+    useCallback(
+      () => {
+        const previous =
+          history.at(-1);
 
-      if (!previous)
-        return;
+        if (!previous)
+          return;
 
-      setFuture((f) => [
-        ...f,
-        cloneBricks(bricks)
-      ]);
+        setFuture(
+          (f) => [
+            ...f,
+            cloneBricks(
+              bricks
+            )
+          ]
+        );
 
-      setHistory((h) =>
-        h.slice(0, -1)
-      );
+        setHistory(
+          (h) =>
+            h.slice(
+              0,
+              -1
+            )
+        );
 
-      setBricks(
-        cloneBricks(
-          previous
-        )
-      );
+        setBricks(
+          cloneBricks(
+            previous
+          )
+        );
 
-      setSelectedId(null);
-    }, [
-      bricks,
-      history
-    ]);
+        setSelectedId(
+          null
+        );
+      },
+      [
+        bricks,
+        history
+      ]
+    );
 
   const redo =
-    useCallback(() => {
-      const next =
-        future.at(-1);
+    useCallback(
+      () => {
+        const next =
+          future.at(-1);
 
-      if (!next)
-        return;
+        if (!next)
+          return;
 
-      setHistory((h) => [
-        ...h,
-        cloneBricks(bricks)
-      ]);
+        setHistory(
+          (h) => [
+            ...h,
+            cloneBricks(
+              bricks
+            )
+          ]
+        );
 
-      setFuture((f) =>
-        f.slice(0, -1)
-      );
+        setFuture(
+          (f) =>
+            f.slice(
+              0,
+              -1
+            )
+        );
 
-      setBricks(
-        cloneBricks(next)
-      );
+        setBricks(
+          cloneBricks(
+            next
+          )
+        );
 
-      setSelectedId(null);
-    }, [
-      bricks,
-      future
-    ]);
+        setSelectedId(
+          null
+        );
+      },
+      [
+        bricks,
+        future
+      ]
+    );
 
   useEffect(() => {
     const handler = (
@@ -1206,9 +1687,9 @@ export default function Builder() {
 
       if (
         e.key ===
-        "Delete" ||
+          "Delete" ||
         e.key ===
-        "Backspace"
+          "Backspace"
       ) {
         removeSelected();
       }
@@ -1225,7 +1706,7 @@ export default function Builder() {
         "ArrowLeft"
       ) {
         moveSelected(
-          -1,
+          -STUD,
           0
         );
       }
@@ -1235,7 +1716,7 @@ export default function Builder() {
         "ArrowRight"
       ) {
         moveSelected(
-          1,
+          STUD,
           0
         );
       }
@@ -1246,7 +1727,7 @@ export default function Builder() {
       ) {
         moveSelected(
           0,
-          -1
+          -STUD
         );
       }
 
@@ -1256,7 +1737,7 @@ export default function Builder() {
       ) {
         moveSelected(
           0,
-          1
+          STUD
         );
       }
 
@@ -1269,6 +1750,7 @@ export default function Builder() {
           "z"
       ) {
         e.preventDefault();
+
         undo();
       }
 
@@ -1281,6 +1763,7 @@ export default function Builder() {
           "y"
       ) {
         e.preventDefault();
+
         redo();
       }
     };
@@ -1313,9 +1796,20 @@ export default function Builder() {
       return;
 
     try {
-      setBricks(
+      const parsed =
         JSON.parse(
           savedDraft
+        ) as Brick[];
+
+      setBricks(
+        parsed.map(
+          (b) => ({
+            ...b,
+
+            rotationY:
+              b.rotationY ??
+              0
+          })
         )
       );
     } catch {
@@ -1326,7 +1820,9 @@ export default function Builder() {
   useEffect(() => {
     localStorage.setItem(
       "brick-builder-draft-state",
-      JSON.stringify(bricks)
+      JSON.stringify(
+        bricks
+      )
     );
   }, [bricks]);
 
@@ -1339,7 +1835,9 @@ export default function Builder() {
         : null
     );
 
-    setShowSave(true);
+    setShowSave(
+      true
+    );
   };
 
   const confirmSave = () => {
@@ -1355,12 +1853,16 @@ export default function Builder() {
       JSON.stringify({
         title:
           title.trim(),
+
         creator:
           creator.trim() ||
           "Anonymous",
+
         bricks,
+
         preview:
           previewSrc,
+
         savedAt:
           Date.now()
       })
@@ -1438,7 +1940,9 @@ export default function Builder() {
                   )
                 }
               >
-                <Pencil size={12} />
+                <Pencil
+                  size={12}
+                />
               </button>
             </>
           )}
@@ -1452,7 +1956,9 @@ export default function Builder() {
               !history.length
             }
           >
-            <Undo2 size={15} />
+            <Undo2
+              size={15}
+            />
           </button>
 
           <button
@@ -1462,12 +1968,16 @@ export default function Builder() {
               !future.length
             }
           >
-            <Redo2 size={15} />
+            <Redo2
+              size={15}
+            />
           </button>
 
           <button
             className="primaryButton"
-            onClick={openSave}
+            onClick={
+              openSave
+            }
           >
             SAVE
           </button>
@@ -1621,10 +2131,13 @@ export default function Builder() {
                           : ""
                       }`}
                       style={{
-                        background: c
+                        background:
+                          c
                       }}
                       onClick={() =>
-                        setColor(c)
+                        setColor(
+                          c
+                        )
                       }
                     />
                   )
@@ -1735,8 +2248,10 @@ export default function Builder() {
                 )
               }
             >
-              <Plus size={14} /> ADD
-              BRICK
+              <Plus
+                size={14}
+              />{" "}
+              ADD BRICK
             </button>
 
             <button
@@ -1744,7 +2259,9 @@ export default function Builder() {
                 removeSelected
               }
             >
-              <Eraser size={14} />{" "}
+              <Eraser
+                size={14}
+              />{" "}
               REMOVE
             </button>
 
@@ -1754,7 +2271,7 @@ export default function Builder() {
               aria-label="move left"
               onClick={() =>
                 moveSelected(
-                  -1,
+                  -STUD,
                   0
                 )
               }
@@ -1768,7 +2285,7 @@ export default function Builder() {
               aria-label="move right"
               onClick={() =>
                 moveSelected(
-                  1,
+                  STUD,
                   0
                 )
               }
@@ -1783,7 +2300,7 @@ export default function Builder() {
               onClick={() =>
                 moveSelected(
                   0,
-                  -1
+                  -STUD
                 )
               }
             >
@@ -1797,7 +2314,7 @@ export default function Builder() {
               onClick={() =>
                 moveSelected(
                   0,
-                  1
+                  STUD
                 )
               }
             >
@@ -1831,10 +2348,13 @@ export default function Builder() {
                         : ""
                     }`}
                     style={{
-                      background: c
+                      background:
+                        c
                     }}
                     onClick={() =>
-                      setColor(c)
+                      setColor(
+                        c
+                      )
                     }
                   />
                 )
@@ -1852,6 +2372,7 @@ export default function Builder() {
             <MousePointer2
               size={15}
             />
+
             <span>
               SELECT
             </span>
@@ -1861,12 +2382,15 @@ export default function Builder() {
             className="toolRow"
             onClick={() =>
               moveSelected(
-                -1,
+                -STUD,
                 0
               )
             }
           >
-            <Move size={15} />
+            <Move
+              size={15}
+            />
+
             <span>
               MOVE
             </span>
@@ -1881,6 +2405,7 @@ export default function Builder() {
             <RotateCw
               size={15}
             />
+
             <span>
               ROTATE
             </span>
@@ -1892,7 +2417,10 @@ export default function Builder() {
               removeSelected
             }
           >
-            <Trash2 size={15} />
+            <Trash2
+              size={15}
+            />
+
             <span>
               DELETE
             </span>
@@ -1912,6 +2440,7 @@ export default function Builder() {
               <Undo2
                 size={16}
               />
+
               <span>
                 UNDO
               </span>
@@ -1926,6 +2455,7 @@ export default function Builder() {
               <Redo2
                 size={16}
               />
+
               <span>
                 REDO
               </span>
@@ -1970,12 +2500,15 @@ export default function Builder() {
 
           <button
             className={`viewButton ${
-              viewMode === "iso"
+              viewMode ===
+              "iso"
                 ? "viewSelected"
                 : ""
             }`}
             onClick={() =>
-              setViewMode("iso")
+              setViewMode(
+                "iso"
+              )
             }
           >
             ISOMETRIC
@@ -1983,12 +2516,15 @@ export default function Builder() {
 
           <button
             className={`viewButton ${
-              viewMode === "top"
+              viewMode ===
+              "top"
                 ? "viewSelected"
                 : ""
             }`}
             onClick={() =>
-              setViewMode("top")
+              setViewMode(
+                "top"
+              )
             }
           >
             TOP VIEW
@@ -2022,7 +2558,9 @@ export default function Builder() {
         <div
           className="modalBackdrop"
           onClick={() =>
-            setShowSave(false)
+            setShowSave(
+              false
+            )
           }
         >
           <div
@@ -2084,7 +2622,9 @@ export default function Builder() {
                 <div className="modalPreview">
                   {previewSrc ? (
                     <img
-                      src={previewSrc}
+                      src={
+                        previewSrc
+                      }
                       alt="Current preview"
                     />
                   ) : (
