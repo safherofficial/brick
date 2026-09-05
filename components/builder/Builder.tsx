@@ -148,6 +148,35 @@ const specialKinds: BrickKind[] = [
   "round"
 ];
 
+/*
+ * ---------------------------------------------------------
+ * GRID / SNAPPING
+ * ---------------------------------------------------------
+ *
+ * I brick vengono allineati sulle celle reali della griglia.
+ *
+ * Il centro può trovarsi anche a mezzo STUD:
+ *
+ * 1x1 -> centro su 0, 1 STUD, 2 STUD...
+ * 2x2 -> centro su 0, 1 STUD, 2 STUD...
+ * 2x4 -> centro su 0, 1 STUD, 2 STUD...
+ *
+ * Per l'adiacenza usiamo invece il footprint reale.
+ */
+
+const CENTER_SNAP =
+  STUD / 2;
+
+function snapCenter(
+  value: number
+): number {
+  return (
+    Math.round(
+      value / CENTER_SNAP
+    ) * CENTER_SNAP
+  );
+}
+
 function footprintSize(
   footprint: [number, number]
 ): [number, number] {
@@ -187,40 +216,69 @@ function getFootprint(
   );
 }
 
+/*
+ * Restituisce i limiti occupati dal brick
+ * sul piano X/Z.
+ */
+function getBounds(
+  brick: Brick
+) {
+  const [w, d] =
+    footprintSize(
+      getFootprint(brick)
+    );
+
+  return {
+    minX:
+      brick.position[0] -
+      w / 2,
+    maxX:
+      brick.position[0] +
+      w / 2,
+    minZ:
+      brick.position[2] -
+      d / 2,
+    maxZ:
+      brick.position[2] +
+      d / 2
+  };
+}
+
+/*
+ * Collisione 2D precisa sul footprint.
+ *
+ * <= viene usato per permettere:
+ *
+ * [BRICK][BRICK]
+ *
+ * senza considerarli sovrapposti.
+ */
 function overlaps(
   a: Brick,
   b: Brick
-) {
-  const [aw, ad] =
-    footprintSize(
-      getFootprint(a)
-    );
+): boolean {
+  const aBounds =
+    getBounds(a);
 
-  const [bw, bd] =
-    footprintSize(
-      getFootprint(b)
-    );
-
-  const ax = Math.abs(
-    a.position[0] -
-      b.position[0]
-  );
-
-  const az = Math.abs(
-    a.position[2] -
-      b.position[2]
-  );
+  const bBounds =
+    getBounds(b);
 
   return (
-    ax < (aw + bw) / 2 &&
-    az < (ad + bd) / 2
+    aBounds.minX <
+      bBounds.maxX &&
+    aBounds.maxX >
+      bBounds.minX &&
+    aBounds.minZ <
+      bBounds.maxZ &&
+    aBounds.maxZ >
+      bBounds.minZ
   );
 }
 
 function sameLayer(
   a: Brick,
   b: Brick
-) {
+): boolean {
   return (
     Math.abs(
       a.position[1] -
@@ -232,7 +290,7 @@ function sameLayer(
 function validPlacement(
   candidate: Brick,
   bricks: Brick[]
-) {
+): boolean {
   return !bricks.some(
     (brick) =>
       sameLayer(
@@ -246,6 +304,18 @@ function validPlacement(
   );
 }
 
+/*
+ * Converte ogni posizione occupata dal brick
+ * in una coordinata di cella stabile.
+ *
+ * Questo evita il problema dei brick pari:
+ *
+ * 2x2 centrato su 0
+ * occupa:
+ * -0.45 / +0.45
+ *
+ * che NON deve diventare due volte la stessa cella.
+ */
 function getCoveredCells(
   brick: Brick
 ): Array<[number, number]> {
@@ -258,6 +328,22 @@ function getCoveredCells(
     [number, number]
   > = [];
 
+  const centerX =
+    brick.position[0] /
+    STUD;
+
+  const centerZ =
+    brick.position[2] /
+    STUD;
+
+  const startX =
+    centerX -
+    (w - 1) / 2;
+
+  const startZ =
+    centerZ -
+    (d - 1) / 2;
+
   for (
     let ix = 0;
     ix < w;
@@ -269,14 +355,12 @@ function getCoveredCells(
       iz++
     ) {
       cells.push([
-        brick.position[0] -
-          ((w - 1) * STUD) /
-            2 +
-          ix * STUD,
-        brick.position[2] -
-          ((d - 1) * STUD) /
-            2 +
-          iz * STUD
+        Math.round(
+          startX + ix
+        ),
+        Math.round(
+          startZ + iz
+        )
       ]);
     }
   }
@@ -287,18 +371,20 @@ function getCoveredCells(
 function cellKey(
   x: number,
   z: number
-) {
-  return `${Math.round(
-    x / STUD
-  )},${Math.round(
-    z / STUD
-  )}`;
+): string {
+  return `${x},${z}`;
 }
 
+/*
+ * Trova il layer superiore supportato.
+ *
+ * Un brick viene impilato solo quando
+ * tutte le sue celle hanno un supporto.
+ */
 function supportedLayer(
   candidate: Brick,
   bricks: Brick[]
-) {
+): number {
   const candidateCells =
     getCoveredCells(
       candidate
@@ -360,49 +446,35 @@ function supportedLayer(
   return bestLayer;
 }
 
+/*
+ * Costruisce un brick con snapping
+ * coerente per tutte le operazioni:
+ *
+ * - ADD
+ * - GHOST
+ * - DRAG
+ * - ARROWS
+ * - DUPLICATE
+ */
 function buildCandidate(
   kind: BrickKind,
   color: string,
   point: THREE.Vector3,
   bricks: Brick[],
-  forcedLayer?: number
+  forcedLayer?: number,
+  forcedRotation = 0
 ): Brick {
   const x =
-    Math.round(
-      point.x / STUD
-    ) * STUD;
+    snapCenter(point.x);
 
   const z =
-    Math.round(
-      point.z / STUD
-    ) * STUD;
+    snapCenter(point.z);
 
-  const layer =
-    forcedLayer ??
-    supportedLayer(
-      {
-        id: -1,
-        size: sizes[kind],
-        footprint:
-          footprints[kind],
-        position: [
-          x,
-          0,
-          z
-        ],
-        color,
-        shape:
-          shapeOf[kind],
-        rotationY: 0
-      },
-      bricks
-    );
-
-  return {
+  const base: Brick = {
     id:
       Date.now() +
       Math.floor(
-        Math.random() * 1000
+        Math.random() * 100000
       ),
     size:
       sizes[kind],
@@ -410,15 +482,32 @@ function buildCandidate(
       footprints[kind],
     position: [
       x,
-      BRICK_HEIGHT / 2 +
-        layer *
-          BRICK_HEIGHT,
+      BRICK_HEIGHT / 2,
       z
     ],
     color,
     shape:
       shapeOf[kind],
-    rotationY: 0
+    rotationY:
+      forcedRotation
+  };
+
+  const layer =
+    forcedLayer ??
+    supportedLayer(
+      base,
+      bricks
+    );
+
+  return {
+    ...base,
+    position: [
+      x,
+      BRICK_HEIGHT / 2 +
+        layer *
+          BRICK_HEIGHT,
+      z
+    ]
   };
 }
 
@@ -599,7 +688,6 @@ function BrickMesh({
                 0.08
             ]}
           />
-
           <meshBasicMaterial
             color="#c084fc"
             wireframe
@@ -855,7 +943,6 @@ function Scene({
             30
           ]}
         />
-
         <shadowMaterial
           opacity={0.18}
         />
@@ -1177,14 +1264,6 @@ export default function Builder() {
     >(null);
 
   const [
-    dragStartPosition,
-    setDragStartPosition
-  ] =
-    useState<
-      [number, number, number] | null
-    >(null);
-
-  const [
     capture,
     setCapture
   ] =
@@ -1502,40 +1581,50 @@ export default function Builder() {
             Math.sin(rotation)
           );
 
+        /*
+         * Adiacenza geometrica:
+         *
+         * distanza centro =
+         * metà larghezza A +
+         * metà larghezza B
+         *
+         * quindi NON usiamo più
+         * (width + 1) * STUD.
+         */
         const candidates: Array<
           [number, number]
         > = [
           [
             localX *
               ((width + 1) *
-                STUD),
+                STUD / 2),
             localZ *
               ((width + 1) *
-                STUD)
+                STUD / 2)
           ],
           [
             -localX *
               ((width + 1) *
-                STUD),
+                STUD / 2),
             -localZ *
               ((width + 1) *
-                STUD)
+                STUD / 2)
           ],
           [
             -localZ *
               ((depth + 1) *
-                STUD),
+                STUD / 2),
             localX *
               ((depth + 1) *
-                STUD)
+                STUD / 2)
           ],
           [
             localZ *
               ((depth + 1) *
-                STUD),
+                STUD / 2),
             -localX *
               ((depth + 1) *
-                STUD)
+                STUD / 2)
           ]
         ];
 
@@ -1557,11 +1646,15 @@ export default function Builder() {
                     100000
                 ),
               position: [
-                source.position[0] +
-                  offsetX,
+                snapCenter(
+                  source.position[0] +
+                    offsetX
+                ),
                 source.position[1],
-                source.position[2] +
-                  offsetZ
+                snapCenter(
+                  source.position[2] +
+                    offsetZ
+                )
               ],
               rotationY:
                 source.rotationY ??
@@ -1656,6 +1749,14 @@ export default function Builder() {
           ) %
           (Math.PI * 2);
 
+        /*
+         * Dopo la rotazione il centro
+         * viene mantenuto.
+         *
+         * Il footprint viene letto
+         * dinamicamente da
+         * getRotatedFootprint().
+         */
         const next =
           bricks.map(
             (b) =>
@@ -1719,11 +1820,15 @@ export default function Builder() {
                 ? {
                     ...b,
                     position: [
-                      b.position[0] +
-                        dx,
+                      snapCenter(
+                        b.position[0] +
+                          dx
+                      ),
                       b.position[1],
-                      b.position[2] +
-                        dz
+                      snapCenter(
+                        b.position[2] +
+                          dz
+                      )
                     ] as [
                       number,
                       number,
@@ -1783,10 +1888,6 @@ export default function Builder() {
           id
         );
 
-        setDragStartPosition([
-          ...brick.position
-        ]);
-
         setHistory(
           (h) => [
             ...h.slice(
@@ -1815,74 +1916,72 @@ export default function Builder() {
           return;
         }
 
-        const current =
-          bricks.find(
-            (b) =>
-              b.id ===
-              draggingId
+        const x =
+          snapCenter(
+            point.x
           );
 
-        if (!current) {
-          return;
-        }
-
-        const x =
-          Math.round(
-            point.x / STUD
-          ) * STUD;
-
         const z =
-          Math.round(
-            point.z / STUD
-          ) * STUD;
-
-        const moved: Brick =
-          {
-            ...current,
-            position: [
-              x,
-              current.position[1],
-              z
-            ]
-          };
-
-        if (
-          !validPlacement(
-            moved,
-            bricks.filter(
-              (b) =>
-                b.id !==
-                draggingId
-            )
-          )
-        ) {
-          return;
-        }
+          snapCenter(
+            point.z
+          );
 
         setBricks(
-          bricks.map(
-            (b) =>
-              b.id ===
-              draggingId
-                ? moved
-                : b
-          )
+          (currentBricks) => {
+            const current =
+              currentBricks.find(
+                (b) =>
+                  b.id ===
+                  draggingId
+              );
+
+            if (!current) {
+              return currentBricks;
+            }
+
+            const moved: Brick =
+              {
+                ...current,
+                position: [
+                  x,
+                  current.position[1],
+                  z
+                ]
+              };
+
+            const others =
+              currentBricks.filter(
+                (b) =>
+                  b.id !==
+                  draggingId
+              );
+
+            if (
+              !validPlacement(
+                moved,
+                others
+              )
+            ) {
+              return currentBricks;
+            }
+
+            return currentBricks.map(
+              (b) =>
+                b.id ===
+                draggingId
+                  ? moved
+                  : b
+            );
+          }
         );
       },
-      [
-        bricks,
-        draggingId
-      ]
+      [draggingId]
     );
 
   const endDragging =
     useCallback(
       () => {
         setDraggingId(
-          null
-        );
-
-        setDragStartPosition(
           null
         );
       },
@@ -1995,9 +2094,7 @@ export default function Builder() {
           "d"
       ) {
         e.preventDefault();
-
         duplicateSelected();
-
         return;
       }
 
@@ -2066,7 +2163,6 @@ export default function Builder() {
           "z"
       ) {
         e.preventDefault();
-
         undo();
       }
 
@@ -2079,7 +2175,6 @@ export default function Builder() {
           "y"
       ) {
         e.preventDefault();
-
         redo();
       }
     };
