@@ -45,41 +45,11 @@ import {
 
 type Brick = {
   id: number;
-
-  size: [
-    number,
-    number,
-    number
-  ];
-
-  /**
-   * Footprint CANONICO del brick.
-   *
-   * IMPORTANTE:
-   * non viene modificato durante la rotazione.
-   * La footprint effettivamente occupata dalla
-   * rotazione viene calcolata tramite
-   * getRotatedFootprint().
-   */
-  footprint: [
-    number,
-    number
-  ];
-
-  position: [
-    number,
-    number,
-    number
-  ];
-
+  size: [number, number, number];
+  footprint: [number, number];
+  position: [number, number, number];
   color: string;
-
   shape: BrickShape;
-
-  /**
-   * Rotazione reale Three.js sul pivot centrale
-   * del group BrickMesh.
-   */
   rotationY: number;
 };
 
@@ -134,25 +104,21 @@ const sizes: Record<
     BRICK_HEIGHT,
     STUD
   ],
-
   "2x2": [
     STUD * 2,
     BRICK_HEIGHT,
     STUD * 2
   ],
-
   "2x4": [
     STUD * 4,
     BRICK_HEIGHT,
     STUD * 2
   ],
-
   cone: [
     STUD,
     BRICK_HEIGHT,
     STUD
   ],
-
   round: [
     STUD,
     BRICK_HEIGHT,
@@ -182,13 +148,6 @@ const specialKinds: BrickKind[] = [
   "round"
 ];
 
-/**
- * Converte un footprint espresso in studs
- * nella dimensione reale in world units.
- *
- * Esempio:
- * [4,2] -> [3.6,1.8]
- */
 function footprintSize(
   footprint: [number, number]
 ): [number, number] {
@@ -199,34 +158,12 @@ function footprintSize(
 }
 
 /**
- * Restituisce il footprint canonico del brick.
+ * Restituisce il footprint reale del brick
+ * tenendo conto della rotazione di 90°.
  *
- * Il valore memorizzato nel brick NON cambia
- * durante la rotazione.
- */
-function getFootprint(
-  brick: Brick
-): [number, number] {
-  return [
-    brick.footprint[0],
-    brick.footprint[1]
-  ];
-}
-
-/**
- * Restituisce il footprint effettivamente occupato
- * dal brick considerando la rotazione.
- *
- * 0° / 180°:
- *   4x2 -> 4x2
- *
- * 90° / 270°:
- *   4x2 -> 2x4
- *
- * Questa funzione viene usata esclusivamente
- * dalla logica di collisione e stacking.
- *
- * NON modifica il brick e NON modifica la geometria.
+ * footprint rimane canonico:
+ * la rotazione viene gestita esclusivamente
+ * tramite rotationY.
  */
 function getRotatedFootprint(
   brick: Brick
@@ -237,9 +174,9 @@ function getRotatedFootprint(
         (Math.PI / 2)
     );
 
-  return (
-    Math.abs(quarterTurns) % 2 === 0
-  )
+  return Math.abs(
+    quarterTurns
+  ) % 2 === 0
     ? [
         brick.footprint[0],
         brick.footprint[1]
@@ -250,28 +187,26 @@ function getRotatedFootprint(
       ];
 }
 
-/**
- * Collisione 2D sulla griglia reale.
- *
- * Il footprint è espresso in studs,
- * ma le coordinate Three.js sono espresse
- * in world units.
- *
- * La footprint viene ruotata logicamente
- * senza modificare size o footprint canonici.
- */
+function getFootprint(
+  brick: Brick
+): [number, number] {
+  return getRotatedFootprint(
+    brick
+  );
+}
+
 function overlaps(
   a: Brick,
   b: Brick
 ) {
   const [aw, ad] =
     footprintSize(
-      getRotatedFootprint(a)
+      getFootprint(a)
     );
 
   const [bw, bd] =
     footprintSize(
-      getRotatedFootprint(b)
+      getFootprint(b)
     );
 
   const ax = Math.abs(
@@ -320,65 +255,76 @@ function validPlacement(
 }
 
 /**
- * Determina il livello superiore
- * su cui può essere posizionato il brick.
+ * Celle occupate da un brick.
  *
- * Tutte le coordinate orizzontali
- * utilizzano STUD come unità.
- *
- * La footprint reale tiene conto
- * della rotazione.
+ * Viene usato per determinare il supporto
+ * verticale durante lo stacking.
  */
-function supportedLayer(
-  candidate: Brick,
-  bricks: Brick[]
-) {
-  const [cw, cd] =
+function getCoveredCells(
+  brick: Brick
+): Array<[number, number]> {
+  const [w, d] =
     getRotatedFootprint(
-      candidate
+      brick
     );
 
   const cells: Array<
     [number, number]
   > = [];
 
-  /**
-   * Genera il centro di ogni cella
-   * coperta dal brick.
-   *
-   * Esempio 2x4:
-   *
-   * x = -1.35, -0.45, 0.45, 1.35
-   * z = -0.45, 0.45
-   */
   for (
     let ix = 0;
-    ix < cw;
+    ix < w;
     ix++
   ) {
     for (
       let iz = 0;
-      iz < cd;
+      iz < d;
       iz++
     ) {
-      const x =
-        candidate.position[0] -
-        ((cw - 1) * STUD) / 2 +
-        ix * STUD;
-
-      const z =
-        candidate.position[2] -
-        ((cd - 1) * STUD) / 2 +
-        iz * STUD;
-
       cells.push([
-        x,
-        z
+        brick.position[0] -
+          ((w - 1) * STUD) /
+            2 +
+          ix * STUD,
+        brick.position[2] -
+          ((d - 1) * STUD) /
+            2 +
+          iz * STUD
       ]);
     }
   }
 
-  if (!cells.length) {
+  return cells;
+}
+
+function cellKey(
+  x: number,
+  z: number
+) {
+  return `${Math.round(
+    x / STUD
+  )},${Math.round(
+    z / STUD
+  )}`;
+}
+
+function supportedLayer(
+  candidate: Brick,
+  bricks: Brick[]
+) {
+  const candidateCells =
+    getCoveredCells(
+      candidate
+    ).map(
+      ([x, z]) =>
+        cellKey(x, z)
+    );
+
+  if (
+    candidateCells.length ===
+    0
+  ) {
     return 0;
   }
 
@@ -398,38 +344,22 @@ function supportedLayer(
       continue;
     }
 
-    const [bw, bd] =
-      getRotatedFootprint(
-        brick
+    const supportCells =
+      new Set(
+        getCoveredCells(
+          brick
+        ).map(
+          ([x, z]) =>
+            cellKey(x, z)
+        )
       );
 
-    /**
-     * Limiti reali della superficie
-     * occupata dal brick.
-     */
-    const bMinX =
-      brick.position[0] -
-      (bw * STUD) / 2;
-
-    const bMaxX =
-      brick.position[0] +
-      (bw * STUD) / 2;
-
-    const bMinZ =
-      brick.position[2] -
-      (bd * STUD) / 2;
-
-    const bMaxZ =
-      brick.position[2] +
-      (bd * STUD) / 2;
-
     const covers =
-      cells.every(
-        ([x, z]) =>
-          x >= bMinX &&
-          x <= bMaxX &&
-          z >= bMinZ &&
-          z <= bMaxZ
+      candidateCells.every(
+        (key) =>
+          supportCells.has(
+            key
+          )
       );
 
     if (covers) {
@@ -451,15 +381,6 @@ function buildCandidate(
   bricks: Brick[],
   forcedLayer?: number
 ): Brick {
-  /**
-   * Snap reale:
-   *
-   * 0.00
-   * 0.90
-   * 1.80
-   * 2.70
-   * ...
-   */
   const x =
     Math.round(
       point.x / STUD
@@ -475,24 +396,17 @@ function buildCandidate(
     supportedLayer(
       {
         id: -1,
-
-        size:
-          sizes[kind],
-
+        size: sizes[kind],
         footprint:
           footprints[kind],
-
         position: [
           x,
           0,
           z
         ],
-
         color,
-
         shape:
           shapeOf[kind],
-
         rotationY: 0
       },
       bricks
@@ -504,28 +418,20 @@ function buildCandidate(
       Math.floor(
         Math.random() * 1000
       ),
-
     size:
       sizes[kind],
-
     footprint:
       footprints[kind],
-
     position: [
       x,
-
       BRICK_HEIGHT / 2 +
         layer *
           BRICK_HEIGHT,
-
       z
     ],
-
     color,
-
     shape:
       shapeOf[kind],
-
     rotationY: 0
   };
 }
@@ -543,22 +449,17 @@ function GhostBrick({
     number,
     number
   ];
-
   size: [
     number,
     number,
     number
   ];
-
   footprint: [
     number,
     number
   ];
-
   shape: BrickShape;
-
   color: string;
-
   valid: boolean;
 }) {
   return (
@@ -583,25 +484,33 @@ function GhostBrick({
 function BrickMesh({
   brick,
   selected,
+  dragging,
   onSelect,
   onHover,
-  onPlace
+  onPlace,
+  onDragStart,
+  onDragMove,
+  onDragEnd
 }: {
   brick: Brick;
-
   selected: boolean;
-
+  dragging: boolean;
   onSelect: (
     id: number
   ) => void;
-
   onHover: (
     point: THREE.Vector3
   ) => void;
-
   onPlace: (
     point: THREE.Vector3
   ) => void;
+  onDragStart: (
+    id: number
+  ) => void;
+  onDragMove: (
+    point: THREE.Vector3
+  ) => void;
+  onDragEnd: () => void;
 }) {
   return (
     <group
@@ -610,11 +519,17 @@ function BrickMesh({
       }
       rotation={[
         0,
-        brick.rotationY ?? 0,
+        brick.rotationY,
         0
       ]}
       onClick={(e) => {
         e.stopPropagation();
+
+        if (
+          dragging
+        ) {
+          return;
+        }
 
         if (e.shiftKey) {
           onPlace(e.point);
@@ -624,12 +539,67 @@ function BrickMesh({
           );
         }
       }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+
+        if (
+          e.button !== 0
+        ) {
+          return;
+        }
+
+        onSelect(
+          brick.id
+        );
+
+        onDragStart(
+          brick.id
+        );
+
+        const target =
+          e.target as THREE.Object3D & {
+            setPointerCapture?: (
+              pointerId: number
+            ) => void;
+          };
+
+        target.setPointerCapture?.(
+          e.pointerId
+        );
+      }}
       onPointerMove={(e) => {
         e.stopPropagation();
 
-        onHover(
-          e.point
+        if (
+          dragging
+        ) {
+          onDragMove(
+            e.point
+          );
+        } else {
+          onHover(
+            e.point
+          );
+        }
+      }}
+      onPointerUp={(e) => {
+        e.stopPropagation();
+
+        const target =
+          e.target as THREE.Object3D & {
+            releasePointerCapture?: (
+              pointerId: number
+            ) => void;
+          };
+
+        target.releasePointerCapture?.(
+          e.pointerId
         );
+
+        onDragEnd();
+      }}
+      onPointerCancel={() => {
+        onDragEnd();
       }}
     >
       <BrickVisual
@@ -660,9 +630,7 @@ function BrickMesh({
             args={[
               brick.size[0] +
                 0.08,
-
               0.04,
-
               brick.size[2] +
                 0.08
             ]}
@@ -750,51 +718,66 @@ function CameraCapture({
 function Scene({
   bricks,
   selectedId,
+  draggingId,
   ghost,
   ghostValid,
   onSelect,
   onPointer,
   onCaptureReady,
   onPlace,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
   viewMode,
   gridVisible
 }: {
   bricks: Brick[];
-
   selectedId:
     | number
     | null;
-
+  draggingId:
+    | number
+    | null;
   ghost: Brick | null;
-
   ghostValid: boolean;
-
   onSelect: (
     id: number
   ) => void;
-
   onPointer: (
     point: THREE.Vector3
   ) => void;
-
   onCaptureReady: (
     capture: () => string
   ) => void;
-
   onPlace: (
     point: THREE.Vector3
   ) => void;
-
+  onDragStart: (
+    id: number
+  ) => void;
+  onDragMove: (
+    point: THREE.Vector3
+  ) => void;
+  onDragEnd: () => void;
   viewMode:
     | "iso"
     | "top";
-
   gridVisible: boolean;
 }) {
   const groundHover = (
     e: ThreeEvent<PointerEvent>
   ) => {
     e.stopPropagation();
+
+    if (
+      draggingId !== null
+    ) {
+      onDragMove(
+        e.point
+      );
+
+      return;
+    }
 
     onPointer(
       e.point
@@ -805,6 +788,14 @@ function Scene({
     e: ThreeEvent<PointerEvent>
   ) => {
     e.stopPropagation();
+
+    if (
+      draggingId !== null
+    ) {
+      onDragEnd();
+
+      return;
+    }
 
     onPlace(
       e.point
@@ -915,6 +906,10 @@ function Scene({
               selectedId ===
               brick.id
             }
+            dragging={
+              draggingId ===
+              brick.id
+            }
             onSelect={
               onSelect
             }
@@ -923,6 +918,15 @@ function Scene({
             }
             onPlace={
               onPlace
+            }
+            onDragStart={
+              onDragStart
+            }
+            onDragMove={
+              onDragMove
+            }
+            onDragEnd={
+              onDragEnd
             }
           />
         )
@@ -995,7 +999,6 @@ function Scene({
   );
 }
 
-// Miniatura CSS del brick per la palette.
 function BrickThumb({
   footprint,
   shape
@@ -1004,7 +1007,6 @@ function BrickThumb({
     number,
     number
   ];
-
   shape: BrickShape;
 }) {
   if (
@@ -1057,7 +1059,6 @@ function BrickThumb({
   );
 }
 
-// Interruttore a scorrimento.
 function Switch({
   checked,
   onChange,
@@ -1065,13 +1066,10 @@ function Switch({
   title
 }: {
   checked: boolean;
-
   onChange?: (
     value: boolean
   ) => void;
-
   disabled?: boolean;
-
   title?: string;
 }) {
   return (
@@ -1107,7 +1105,6 @@ const cloneBricks = (
   bricks.map(
     (b) => ({
       ...b,
-
       position: [
         ...b.position
       ] as [
@@ -1115,7 +1112,6 @@ const cloneBricks = (
         number,
         number
       ],
-
       size: [
         ...b.size
       ] as [
@@ -1123,16 +1119,15 @@ const cloneBricks = (
         number,
         number
       ],
-
       footprint: [
         ...b.footprint
       ] as [
         number,
         number
       ],
-
       rotationY:
-        b.rotationY ?? 0
+        b.rotationY ??
+        0
     })
   );
 
@@ -1151,72 +1146,52 @@ export default function Builder() {
     useState<Brick[]>([
       {
         id: 1,
-
         size:
           sizes["2x4"],
-
         footprint:
           footprints["2x4"],
-
         position: [
           0,
           BRICK_HEIGHT / 2,
           0
         ],
-
         color:
           "#22c55e",
-
         shape: "box",
-
         rotationY: 0
       },
-
       {
         id: 2,
-
         size:
           sizes["2x2"],
-
         footprint:
           footprints["2x2"],
-
         position: [
           0,
           BRICK_HEIGHT / 2 +
             BRICK_HEIGHT,
           0
         ],
-
         color:
           "#3b82f6",
-
         shape: "box",
-
         rotationY: 0
       },
-
       {
         id: 3,
-
         size:
           sizes["1x1"],
-
         footprint:
           footprints["1x1"],
-
         position: [
           0,
           BRICK_HEIGHT / 2 +
             BRICK_HEIGHT * 2,
           0
         ],
-
         color:
           "#facc15",
-
         shape: "box",
-
         rotationY: 0
       }
     ]);
@@ -1227,6 +1202,22 @@ export default function Builder() {
   ] =
     useState<
       number | null
+    >(null);
+
+  const [
+    draggingId,
+    setDraggingId
+  ] =
+    useState<
+      number | null
+    >(null);
+
+  const [
+    dragStartPosition,
+    setDragStartPosition
+  ] =
+    useState<
+      [number, number, number] | null
     >(null);
 
   const [
@@ -1458,15 +1449,228 @@ export default function Builder() {
     );
 
   /**
+   * Cambia il colore del brick selezionato.
+   *
+   * Il cambio colore viene registrato
+   * nella cronologia Undo/Redo.
+   */
+  const recolorSelected =
+    useCallback(
+      (nextColor: string) => {
+        setColor(
+          nextColor
+        );
+
+        if (
+          selectedId ===
+          null
+        ) {
+          return;
+        }
+
+        const changed =
+          bricks.map(
+            (brick) =>
+              brick.id ===
+              selectedId
+                ? {
+                    ...brick,
+                    color:
+                      nextColor
+                  }
+                : brick
+          );
+
+        if (
+          changed.some(
+            (brick, index) =>
+              brick.color !==
+              bricks[index].color
+          )
+        ) {
+          commit(
+            changed
+          );
+        }
+      },
+      [
+        bricks,
+        commit,
+        selectedId
+      ]
+    );
+
+  /**
+   * Trova una posizione libera per il duplicato.
+   *
+   * Prima prova nella direzione locale del brick,
+   * poi nelle quattro direzioni cardinali.
+   */
+  const duplicateSelected =
+    useCallback(
+      () => {
+        if (
+          selectedId ===
+            null ||
+          available <= 0
+        ) {
+          return;
+        }
+
+        const source =
+          bricks.find(
+            (b) =>
+              b.id ===
+              selectedId
+          );
+
+        if (!source) {
+          return;
+        }
+
+        const [
+          width,
+          depth
+        ] =
+          getRotatedFootprint(
+            source
+          );
+
+        const rotation =
+          source.rotationY ??
+          0;
+
+        const localX =
+          Math.round(
+            Math.cos(rotation)
+          );
+
+        const localZ =
+          Math.round(
+            Math.sin(rotation)
+          );
+
+        const candidates: Array<
+          [number, number]
+        > = [
+          [
+            localX *
+              ((width + 1) *
+                STUD),
+            localZ *
+              ((width + 1) *
+                STUD)
+          ],
+          [
+            -localX *
+              ((width + 1) *
+                STUD),
+            -localZ *
+              ((width + 1) *
+                STUD)
+          ],
+          [
+            -localZ *
+              ((depth + 1) *
+                STUD),
+            localX *
+              ((depth + 1) *
+                STUD)
+          ],
+          [
+            localZ *
+              ((depth + 1) *
+                STUD),
+            -localX *
+              ((depth + 1) *
+                STUD)
+          ]
+        ];
+
+        let duplicate:
+          Brick | null =
+          null;
+
+        for (const [
+          offsetX,
+          offsetZ
+        ] of candidates) {
+          const candidate: Brick =
+            {
+              ...source,
+              id:
+                Date.now() +
+                Math.floor(
+                  Math.random() *
+                    100000
+                ),
+              position: [
+                source.position[0] +
+                  offsetX,
+                source.position[1],
+                source.position[2] +
+                  offsetZ
+              ],
+              rotationY:
+                source.rotationY ??
+                0,
+              size: [
+                ...source.size
+              ] as [
+                number,
+                number,
+                number
+              ],
+              footprint: [
+                ...source.footprint
+              ] as [
+                number,
+                number
+              ]
+            };
+
+          if (
+            validPlacement(
+              candidate,
+              bricks
+            )
+          ) {
+            duplicate =
+              candidate;
+
+            break;
+          }
+        }
+
+        if (
+          !duplicate
+        ) {
+          return;
+        }
+
+        commit([
+          ...bricks,
+          duplicate
+        ]);
+
+        setSelectedId(
+          duplicate.id
+        );
+      },
+      [
+        available,
+        bricks,
+        commit,
+        selectedId
+      ]
+    );
+
+  /**
    * Ruota il brick di 90°.
    *
-   * La geometria NON viene modificata.
-   * Il footprint canonico NON viene modificato.
-   *
-   * La sola proprietà che cambia è rotationY.
-   *
-   * BrickMesh applica poi realmente la rotazione
-   * al group Three.js.
+   * Il footprint rimane canonico.
+   * La rotazione reale viene applicata
+   * dal group Three.js.
    */
   const rotateSelected =
     useCallback(
@@ -1495,12 +1699,17 @@ export default function Builder() {
           selectedBrick.rotationY ??
           0;
 
+        const nextRotation =
+          currentRotation +
+          Math.PI / 2;
+
         const normalizedRotation =
           (
-            currentRotation +
-            Math.PI / 2
+            nextRotation %
+              (Math.PI * 2) +
+            Math.PI * 2
           ) %
-            (Math.PI * 2);
+          (Math.PI * 2);
 
         const next =
           bricks.map(
@@ -1509,7 +1718,6 @@ export default function Builder() {
               selectedId
                 ? {
                     ...b,
-
                     rotationY:
                       normalizedRotation
                   }
@@ -1523,13 +1731,6 @@ export default function Builder() {
               selectedId
           )!;
 
-        /**
-         * La collisione utilizza
-         * getRotatedFootprint(),
-         * quindi il brick viene verificato
-         * con la footprint corretta per
-         * l'orientamento corrente.
-         */
         if (
           validPlacement(
             changed,
@@ -1554,9 +1755,6 @@ export default function Builder() {
 
   /**
    * Movimento di una cella reale.
-   *
-   * dx e dz arrivano già in world units.
-   * Tutti i chiamanti utilizzano STUD.
    */
   const moveSelected =
     useCallback(
@@ -1578,13 +1776,10 @@ export default function Builder() {
               selectedId
                 ? {
                     ...b,
-
                     position: [
                       b.position[0] +
                         dx,
-
                       b.position[1],
-
                       b.position[2] +
                         dz
                     ] as [
@@ -1623,6 +1818,152 @@ export default function Builder() {
         commit,
         selectedId
       ]
+    );
+
+  /**
+   * Inizio del drag.
+   *
+   * La posizione iniziale viene salvata
+   * una sola volta per permettere un singolo
+   * Undo dell'intero trascinamento.
+   */
+  const startDragging =
+    useCallback(
+      (id: number) => {
+        const brick =
+          bricks.find(
+            (b) =>
+              b.id === id
+          );
+
+        if (!brick) {
+          return;
+        }
+
+        setSelectedId(
+          id
+        );
+
+        setDraggingId(
+          id
+        );
+
+        setDragStartPosition([
+          ...brick.position
+        ]);
+
+        setHistory(
+          (h) => [
+            ...h.slice(
+              -39
+            ),
+            cloneBricks(
+              bricks
+            )
+          ]
+        );
+
+        setFuture([]);
+      },
+      [bricks]
+    );
+
+  /**
+   * Movimento durante il drag.
+   *
+   * Il brick segue esclusivamente la griglia STUD.
+   * Una posizione invalida non viene applicata.
+   */
+  const dragMove =
+    useCallback(
+      (
+        point: THREE.Vector3
+      ) => {
+        if (
+          draggingId ===
+          null
+        ) {
+          return;
+        }
+
+        const current =
+          bricks.find(
+            (b) =>
+              b.id ===
+              draggingId
+          );
+
+        if (!current) {
+          return;
+        }
+
+        const x =
+          Math.round(
+            point.x / STUD
+          ) * STUD;
+
+        const z =
+          Math.round(
+            point.z / STUD
+          ) * STUD;
+
+        const moved: Brick =
+          {
+            ...current,
+            position: [
+              x,
+              current.position[1],
+              z
+            ]
+          };
+
+        if (
+          !validPlacement(
+            moved,
+            bricks.filter(
+              (b) =>
+                b.id !==
+                draggingId
+            )
+          )
+        ) {
+          return;
+        }
+
+        setBricks(
+          bricks.map(
+            (b) =>
+              b.id ===
+              draggingId
+                ? moved
+                : b
+          )
+        );
+      },
+      [
+        bricks,
+        draggingId
+      ]
+    );
+
+  /**
+   * Fine del drag.
+   *
+   * La cronologia è già stata salvata
+   * all'inizio del trascinamento.
+   */
+  const endDragging =
+    useCallback(
+      () => {
+        setDraggingId(
+          null
+        );
+
+        setDragStartPosition(
+          null
+        );
+      },
+      []
     );
 
   const undo =
@@ -1723,6 +2064,21 @@ export default function Builder() {
       }
 
       if (
+        (
+          e.ctrlKey ||
+          e.metaKey
+        ) &&
+        e.key.toLowerCase() ===
+          "d"
+      ) {
+        e.preventDefault();
+
+        duplicateSelected();
+
+        return;
+      }
+
+      if (
         e.key ===
           "Delete" ||
         e.key ===
@@ -1816,6 +2172,7 @@ export default function Builder() {
         handler
       );
   }, [
+    duplicateSelected,
     moveSelected,
     redo,
     removeSelected,
@@ -1842,9 +2199,9 @@ export default function Builder() {
         parsed.map(
           (b) => ({
             ...b,
-
             rotationY:
-              b.rotationY ?? 0
+              b.rotationY ??
+              0
           })
         )
       );
@@ -1889,16 +2246,12 @@ export default function Builder() {
       JSON.stringify({
         title:
           title.trim(),
-
         creator:
           creator.trim() ||
           "Anonymous",
-
         bricks,
-
         preview:
           previewSrc,
-
         savedAt:
           Date.now()
       })
@@ -2171,7 +2524,7 @@ export default function Builder() {
                           c
                       }}
                       onClick={() =>
-                        setColor(
+                        recolorSelected(
                           c
                         )
                       }
@@ -2203,14 +2556,12 @@ export default function Builder() {
               </div>
 
               <p className="panelHelp">
-                Hover the grid to
-                preview placement —
-                green is valid, red is
-                blocked. Click empty
-                grid to place. Click a
-                brick to select it,
-                Shift+Click a brick to
-                stack on top.
+                Drag bricks to move
+                them on the grid.
+                Green placement is
+                valid. Click a brick
+                to select it. Shift+Click
+                a brick to stack on top.
               </p>
             </>
           )}
@@ -2221,6 +2572,9 @@ export default function Builder() {
             bricks={bricks}
             selectedId={
               selectedId
+            }
+            draggingId={
+              draggingId
             }
             ghost={ghost}
             ghostValid={
@@ -2235,6 +2589,15 @@ export default function Builder() {
             onPlace={addAt}
             onCaptureReady={
               setCapture
+            }
+            onDragStart={
+              startDragging
+            }
+            onDragMove={
+              dragMove
+            }
+            onDragEnd={
+              endDragging
             }
             viewMode={
               viewMode
@@ -2254,7 +2617,10 @@ export default function Builder() {
             </span>
 
             <span>
-              {ghost
+              {draggingId !==
+              null
+                ? "MOVING BRICK"
+                : ghost
                 ? ghostValid
                   ? "PLACEMENT READY"
                   : "BLOCKED"
@@ -2265,10 +2631,11 @@ export default function Builder() {
           </div>
 
           <div className="sceneHint">
-            HOVER TO PREVIEW · CLICK
-            TO PLACE · CLICK BRICK TO
-            SELECT · ARROWS MOVE · R
-            ROTATE · CTRL/CMD+Z UNDO
+            DRAG TO MOVE · HOVER TO
+            PREVIEW · CLICK TO PLACE ·
+            ARROWS MOVE · R ROTATE ·
+            CTRL/CMD+D DUPLICATE ·
+            CTRL/CMD+Z UNDO
           </div>
 
           <div className="bottomTools">
@@ -2283,6 +2650,9 @@ export default function Builder() {
                     )
                 )
               }
+              disabled={
+                available <= 0
+              }
             >
               <Plus
                 size={14}
@@ -2292,7 +2662,27 @@ export default function Builder() {
 
             <button
               onClick={
+                duplicateSelected
+              }
+              disabled={
+                selectedId ===
+                  null ||
+                available <= 0
+              }
+            >
+              <Plus
+                size={14}
+              />{" "}
+              DUPLICATE
+            </button>
+
+            <button
+              onClick={
                 removeSelected
+              }
+              disabled={
+                selectedId ===
+                null
               }
             >
               <Eraser
@@ -2311,6 +2701,10 @@ export default function Builder() {
                   0
                 )
               }
+              disabled={
+                selectedId ===
+                null
+              }
             >
               <ArrowLeft
                 size={14}
@@ -2324,6 +2718,10 @@ export default function Builder() {
                   STUD,
                   0
                 )
+              }
+              disabled={
+                selectedId ===
+                null
               }
             >
               <ArrowRight
@@ -2339,6 +2737,10 @@ export default function Builder() {
                   -STUD
                 )
               }
+              disabled={
+                selectedId ===
+                null
+              }
             >
               <ArrowUp
                 size={14}
@@ -2353,6 +2755,10 @@ export default function Builder() {
                   STUD
                 )
               }
+              disabled={
+                selectedId ===
+                null
+              }
             >
               <ArrowDown
                 size={14}
@@ -2362,6 +2768,10 @@ export default function Builder() {
             <button
               onClick={
                 rotateSelected
+              }
+              disabled={
+                selectedId ===
+                null
               }
             >
               <RotateCw
@@ -2388,7 +2798,7 @@ export default function Builder() {
                         c
                     }}
                     onClick={() =>
-                      setColor(
+                      recolorSelected(
                         c
                       )
                     }
@@ -2422,6 +2832,10 @@ export default function Builder() {
                 0
               )
             }
+            disabled={
+              selectedId ===
+              null
+            }
           >
             <Move
               size={15}
@@ -2437,6 +2851,10 @@ export default function Builder() {
             onClick={
               rotateSelected
             }
+            disabled={
+              selectedId ===
+              null
+            }
           >
             <RotateCw
               size={15}
@@ -2450,7 +2868,31 @@ export default function Builder() {
           <button
             className="toolRow"
             onClick={
+              duplicateSelected
+            }
+            disabled={
+              selectedId ===
+                null ||
+              available <= 0
+            }
+          >
+            <Plus
+              size={15}
+            />
+
+            <span>
+              DUPLICATE
+            </span>
+          </button>
+
+          <button
+            className="toolRow"
+            onClick={
               removeSelected
+            }
+            disabled={
+              selectedId ===
+              null
             }
           >
             <Trash2
