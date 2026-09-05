@@ -2,14 +2,20 @@
 
 import { RoundedBox } from "@react-three/drei";
 
-export type BrickShape = "box" | "cone" | "cylinder";
+export type BrickShape =
+  | "box"
+  | "cone"
+  | "cylinder";
 
 export const STUD = 0.9;
 
-const BRICK_HEIGHT = 1.08;
+// Altezza standard del brick.
+// La dimensione viene definita anche nel Builder per mantenere
+// una singola fonte di verità per la logica di stacking.
+export const BRICK_HEIGHT = 1.08;
 
 // Materiale plastico lucido stile LEGO: bassa rugosità + un velo di clearcoat
-// per la riflessione "a specchio" tipica dell'ABS stampato a iniezione.
+// per la riflessione tipica dell'ABS stampato a iniezione.
 function PlasticMaterial({
   color,
   opacity = 1
@@ -31,7 +37,7 @@ function PlasticMaterial({
   );
 }
 
-// Il tipico "stud" cilindrico sopra ogni brick.
+// Stud cilindrico sopra ogni brick.
 export function Stud({
   color,
   radius = 0.14,
@@ -42,10 +48,19 @@ export function Stud({
   height?: number;
 }) {
   return (
-    <mesh position={[0, height / 2, 0]} castShadow>
+    <mesh
+      position={[0, height / 2, 0]}
+      castShadow
+    >
       <cylinderGeometry
-        args={[radius, radius, height, 16]}
+        args={[
+          radius,
+          radius,
+          height,
+          16
+        ]}
       />
+
       <PlasticMaterial color={color} />
     </mesh>
   );
@@ -54,10 +69,15 @@ export function Stud({
 /**
  * Corpo di un brick in stile LEGO.
  *
- * STUD è l'unità geometrica della griglia:
- * 1 stud = 0.9 world units.
+ * STUD = 0.9 world units.
  *
- * L'altezza standard del brick è 1.08 world units.
+ * Esempi:
+ * 1x1 = 0.9 x 0.9
+ * 2x2 = 1.8 x 1.8
+ * 2x4 = 3.6 x 1.8
+ *
+ * Altezza standard:
+ * 1.08 world units.
  */
 export function BrickVisual({
   shape,
@@ -72,13 +92,21 @@ export function BrickVisual({
   footprint: [number, number];
   color: string;
   opacity?: number;
+  /**
+   * Pezzi decorativi sottili non hanno lo stud.
+   */
   studless?: boolean;
 }) {
-  const showStuds = opacity >= 1 && !studless;
+  const showStuds =
+    opacity >= 1 &&
+    !studless;
 
   if (shape === "cone") {
     return (
-      <mesh castShadow receiveShadow>
+      <mesh
+        castShadow
+        receiveShadow
+      >
         <coneGeometry
           args={[
             size[0] * 0.42,
@@ -86,6 +114,7 @@ export function BrickVisual({
             24
           ]}
         />
+
         <PlasticMaterial
           color={color}
           opacity={opacity}
@@ -97,7 +126,10 @@ export function BrickVisual({
   if (shape === "cylinder") {
     return (
       <group>
-        <mesh castShadow receiveShadow>
+        <mesh
+          castShadow
+          receiveShadow
+        >
           <cylinderGeometry
             args={[
               size[0] * 0.42,
@@ -106,6 +138,7 @@ export function BrickVisual({
               28
             ]}
           />
+
           <PlasticMaterial
             color={color}
             opacity={opacity}
@@ -132,8 +165,16 @@ export function BrickVisual({
   const studs = [];
 
   if (showStuds) {
-    for (let ix = 0; ix < w; ix++) {
-      for (let iz = 0; iz < d; iz++) {
+    for (
+      let ix = 0;
+      ix < w;
+      ix++
+    ) {
+      for (
+        let iz = 0;
+        iz < d;
+        iz++
+      ) {
         const x =
           -size[0] / 2 +
           STUD / 2 +
@@ -166,7 +207,8 @@ export function BrickVisual({
     size[2]
   );
 
-  const rounded = minDim > 0.18;
+  const rounded =
+    minDim > 0.18;
 
   return (
     <group>
@@ -189,6 +231,7 @@ export function BrickVisual({
           receiveShadow
         >
           <boxGeometry args={size} />
+
           <PlasticMaterial
             color={color}
             opacity={opacity}
