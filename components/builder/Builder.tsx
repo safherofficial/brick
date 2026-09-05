@@ -52,6 +52,15 @@ type Brick = {
     number
   ];
 
+  /**
+   * Footprint CANONICO del brick.
+   *
+   * IMPORTANTE:
+   * non viene modificato durante la rotazione.
+   * La footprint effettivamente occupata dalla
+   * rotazione viene calcolata tramite
+   * getRotatedFootprint().
+   */
   footprint: [
     number,
     number
@@ -67,6 +76,10 @@ type Brick = {
 
   shape: BrickShape;
 
+  /**
+   * Rotazione reale Three.js sul pivot centrale
+   * del group BrickMesh.
+   */
   rotationY: number;
 };
 
@@ -185,10 +198,56 @@ function footprintSize(
   ];
 }
 
+/**
+ * Restituisce il footprint canonico del brick.
+ *
+ * Il valore memorizzato nel brick NON cambia
+ * durante la rotazione.
+ */
 function getFootprint(
   brick: Brick
-) {
-  return brick.footprint;
+): [number, number] {
+  return [
+    brick.footprint[0],
+    brick.footprint[1]
+  ];
+}
+
+/**
+ * Restituisce il footprint effettivamente occupato
+ * dal brick considerando la rotazione.
+ *
+ * 0° / 180°:
+ *   4x2 -> 4x2
+ *
+ * 90° / 270°:
+ *   4x2 -> 2x4
+ *
+ * Questa funzione viene usata esclusivamente
+ * dalla logica di collisione e stacking.
+ *
+ * NON modifica il brick e NON modifica la geometria.
+ */
+function getRotatedFootprint(
+  brick: Brick
+): [number, number] {
+  const quarterTurns =
+    Math.round(
+      (brick.rotationY ?? 0) /
+        (Math.PI / 2)
+    );
+
+  return (
+    Math.abs(quarterTurns) % 2 === 0
+  )
+    ? [
+        brick.footprint[0],
+        brick.footprint[1]
+      ]
+    : [
+        brick.footprint[1],
+        brick.footprint[0]
+      ];
 }
 
 /**
@@ -197,6 +256,9 @@ function getFootprint(
  * Il footprint è espresso in studs,
  * ma le coordinate Three.js sono espresse
  * in world units.
+ *
+ * La footprint viene ruotata logicamente
+ * senza modificare size o footprint canonici.
  */
 function overlaps(
   a: Brick,
@@ -204,12 +266,12 @@ function overlaps(
 ) {
   const [aw, ad] =
     footprintSize(
-      getFootprint(a)
+      getRotatedFootprint(a)
     );
 
   const [bw, bd] =
     footprintSize(
-      getFootprint(b)
+      getRotatedFootprint(b)
     );
 
   const ax = Math.abs(
@@ -263,13 +325,18 @@ function validPlacement(
  *
  * Tutte le coordinate orizzontali
  * utilizzano STUD come unità.
+ *
+ * La footprint reale tiene conto
+ * della rotazione.
  */
 function supportedLayer(
   candidate: Brick,
   bricks: Brick[]
 ) {
   const [cw, cd] =
-    candidate.footprint;
+    getRotatedFootprint(
+      candidate
+    );
 
   const cells: Array<
     [number, number]
@@ -332,7 +399,9 @@ function supportedLayer(
     }
 
     const [bw, bd] =
-      brick.footprint;
+      getRotatedFootprint(
+        brick
+      );
 
     /**
      * Limiti reali della superficie
@@ -407,7 +476,8 @@ function buildCandidate(
       {
         id: -1,
 
-        size: sizes[kind],
+        size:
+          sizes[kind],
 
         footprint:
           footprints[kind],
@@ -540,7 +610,7 @@ function BrickMesh({
       }
       rotation={[
         0,
-        brick.rotationY,
+        brick.rotationY ?? 0,
         0
       ]}
       onClick={(e) => {
@@ -583,11 +653,6 @@ function BrickMesh({
             0,
             brick.size[1] / 2 +
               0.13,
-            0
-          ]}
-          rotation={[
-            0,
-            0,
             0
           ]}
         >
@@ -1067,8 +1132,7 @@ const cloneBricks = (
       ],
 
       rotationY:
-        b.rotationY ??
-        0
+        b.rotationY ?? 0
     })
   );
 
@@ -1396,14 +1460,13 @@ export default function Builder() {
   /**
    * Ruota il brick di 90°.
    *
-   * La geometria NON viene riscalata:
-   * la rotazione viene applicata realmente
-   * al group Three.js tramite rotationY.
+   * La geometria NON viene modificata.
+   * Il footprint canonico NON viene modificato.
    *
-   * Il footprint logico viene invece scambiato
-   * quando il brick è ruotato di 90°/270°,
-   * così collisioni e stacking continuano
-   * a usare la griglia corretta.
+   * La sola proprietà che cambia è rotationY.
+   *
+   * BrickMesh applica poi realmente la rotazione
+   * al group Three.js.
    */
   const rotateSelected =
     useCallback(
@@ -1432,39 +1495,12 @@ export default function Builder() {
           selectedBrick.rotationY ??
           0;
 
-        const nextRotation =
-          currentRotation +
-          Math.PI / 2;
-
         const normalizedRotation =
           (
-            nextRotation %
-            (Math.PI * 2) +
-            Math.PI * 2
+            currentRotation +
+            Math.PI / 2
           ) %
-          (Math.PI * 2);
-
-        const quarterTurn =
-          Math.round(
-            normalizedRotation /
-              (Math.PI / 2)
-          ) %
-            2 !==
-          0;
-
-        const originalFootprint =
-          selectedBrick.footprint;
-
-        const nextFootprint =
-          quarterTurn
-            ? [
-                originalFootprint[1],
-                originalFootprint[0]
-              ]
-            : [
-                originalFootprint[0],
-                originalFootprint[1]
-              ];
+            (Math.PI * 2);
 
         const next =
           bricks.map(
@@ -1475,13 +1511,7 @@ export default function Builder() {
                     ...b,
 
                     rotationY:
-                      normalizedRotation,
-
-                    footprint:
-                      nextFootprint as [
-                        number,
-                        number
-                      ]
+                      normalizedRotation
                   }
                 : b
           );
@@ -1493,6 +1523,13 @@ export default function Builder() {
               selectedId
           )!;
 
+        /**
+         * La collisione utilizza
+         * getRotatedFootprint(),
+         * quindi il brick viene verificato
+         * con la footprint corretta per
+         * l'orientamento corrente.
+         */
         if (
           validPlacement(
             changed,
@@ -1807,8 +1844,7 @@ export default function Builder() {
             ...b,
 
             rotationY:
-              b.rotationY ??
-              0
+              b.rotationY ?? 0
           })
         )
       );
