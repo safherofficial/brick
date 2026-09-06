@@ -273,10 +273,13 @@ function Scene({
           if (draggingId !== null) onDragMove(e.ray);
           else onPointer(e.point);
         }}
-        onClick={(e: ThreeEvent<PointerEvent>) => {
-          e.stopPropagation();
-          if (draggingId === null) onPlace(e.point);
-        }}
+       onClick={(e: ThreeEvent<PointerEvent>) => {
+  e.stopPropagation();
+  if (draggingId !== null) return;
+  if (ignorePlace.current) return;
+  if (e.delta > 4) return;
+  onPlace(e.point);
+}}
         receiveShadow
       >
         <planeGeometry args={[32, 32]} />
@@ -345,15 +348,26 @@ function Scene({
 
       <CameraController viewMode={viewMode} />
       <CaptureBridge onReady={onCaptureReady} />
-      <OrbitControls
-        enabled={draggingId === null}
-        makeDefault
-        enableDamping
-        dampingFactor={0.075}
-        target={[0, 0.9, 0]}
-        minDistance={4}
-        maxDistance={25}
-      />
+<OrbitControls
+  enabled={draggingId === null}
+  makeDefault
+  enableDamping
+  dampingFactor={0.08}
+  target={[0, 0.9, 0]}
+  minDistance={1.2}
+  maxDistance={90}
+  zoomSpeed={1.35}
+  minPolarAngle={0.08}
+  maxPolarAngle={Math.PI / 2.05}
+  onStart={() => {
+    ignorePlace.current = true;
+  }}
+  onEnd={() => {
+    window.setTimeout(() => {
+      ignorePlace.current = false;
+    }, 220);
+  }}
+/>
       <GizmoHelper alignment="bottom-right" margin={[60, 60]}>
         <GizmoViewport
           axisColors={["#f87171", "#4ade80", "#60a5fa"]}
