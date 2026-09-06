@@ -39,7 +39,7 @@ import {
   exportVox,
   importVox
 } from "@/lib/voxelExport";
-import { VoxelCloud, type VoxelHit } from "@/components/builder/VoxelCloud";
+import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
 const TOOLS: { id: Tool; label: string; key: string }[] = [
@@ -52,18 +52,26 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
   { id: "box", label: "BOX", key: "U" }
 ];
 
-function CameraRig({ view, size }: { view: ViewMode; size: number }) {
+function CameraRig({
+  view,
+  size,
+  focus
+}: {
+  view: ViewMode;
+  size: number;
+  focus: [number, number, number];
+}) {
   const { camera } = useThree();
   useEffect(() => {
-    const [cx, cy, cz] = volumeCenter(size);
     const dist = size * 1.35;
+    const [cx, cy, cz] = focus;
     if (view === "top") camera.position.set(cx, dist, cz + 0.01);
     else if (view === "front") camera.position.set(cx, cy + size * 0.2, cz + dist);
     else if (view === "side") camera.position.set(cx + dist, cy + size * 0.2, cz);
     else camera.position.set(cx + dist * 0.7, cy + dist * 0.55, cz + dist * 0.7);
     camera.lookAt(cx, cy, cz);
     camera.updateProjectionMatrix();
-  }, [camera, size, view]);
+  }, [camera, focus, size, view]);
   return null;
 }
 
@@ -220,6 +228,8 @@ export default function Builder() {
   const [hover, setHover] = useState<VoxelHit | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
+  const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
+  const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -257,6 +267,7 @@ export default function Builder() {
     volumeRef.current.load(draft);
     setTitle(draft.title || "UNTITLED");
     if (draft.palette?.length) setPalette(clonePalette(draft.palette));
+    setFocus(volumeCenter(draft.size || 64));
     bump();
   }, [bump]);
 
@@ -418,13 +429,18 @@ export default function Builder() {
 
   const resize = useCallback(
     (size: number) => {
-      volumeRef.current.resize(size);
-      historyRef.current.reset();
-      setSelected(new Set());
-      setBoxStart(null);
+      const v = volumeRef.current;
+      if (size === v.size) return;
+      const doomed = v
+        .voxels()
+        .filter((vx) => vx.x >= size || vx.y >= size || vx.z >= size)
+        .map((vx) => ({ x: vx.x, y: vx.y, z: vx.z }));
+      if (doomed.length) applyNow(doomed, null, false);
+      v.resize(size);
+      setClip((c) => ({ ...c, value: Math.min(c.value, size - 1) }));
       bump();
     },
-    [bump]
+    [applyNow, bump]
   );
 
   const selectedCells = useCallback(
@@ -446,9 +462,9 @@ export default function Builder() {
   }, [applyNow, color, selectedCells]);
 
   const copySelected = useCallback(() => {
-    const clip = selectionClipboard(volumeRef.current, selected);
-    setClipboard(clip);
-    notify(clip.length ? `COPIED ${clip.length}` : "NOTHING SELECTED");
+    const clipSel = selectionClipboard(volumeRef.current, selected);
+    setClipboard(clipSel);
+    notify(clipSel.length ? `COPIED ${clipSel.length}` : "NOTHING SELECTED");
   }, [notify, selected]);
 
   const pasteClipboard = useCallback(
@@ -478,9 +494,9 @@ export default function Builder() {
   );
 
   const duplicateSelected = useCallback(() => {
-    const clip = selectionClipboard(volumeRef.current, selected);
-    if (!clip.length) return;
-    setClipboard(clip);
+    const clipSel = selectionClipboard(volumeRef.current, selected);
+    if (!clipSel.length) return;
+    setClipboard(clipSel);
     const cells = selectedCells();
     const minX = Math.min(...cells.map((c) => c.x));
     const minY = Math.min(...cells.map((c) => c.y));
@@ -564,6 +580,7 @@ export default function Builder() {
         historyRef.current.reset();
         setSelected(new Set());
         setBoxStart(null);
+        setFocus(volumeCenter(volumeRef.current.size));
         bump();
         notify("PROJECT LOADED");
       } catch {
@@ -585,6 +602,34 @@ export default function Builder() {
         setSelected(new Set());
         strokeRef.current = null;
         return;
+      }
+      if (k === "f") {
+        e.preventDefault();
+        const cells = selected.size
+          ? [...selected].map((key) => {
+              const [x, y, z] = key.split(":").map(Number);
+              return { x, y, z };
+            })
+          : ghost
+            ? [ghost]
+            : [];
+        if (cells.length) {
+          setFocus([
+            cells.reduce((s, c) => s + c.x, 0) / cells.length,
+            cells.reduce((s, c) => s + c.y, 0) / cells.length,
+            cells.reduce((s, c) => s + c.z, 0) / cells.length
+          ]);
+        }
+        return;
+      }
+      if (clip.axis && k === ",") {
+        setClip((c) => ({ ...c, value: Math.max(0, c.value - 1) }));
+      }
+      if (clip.axis && k === ".") {
+        setClip((c) => ({
+          ...c,
+          value: Math.min(volume.size - 1, c.value + 1)
+        }));
       }
       if (mod && k === "z") {
         e.preventDefault();
@@ -622,7 +667,7 @@ export default function Builder() {
       if (k === "x") setMirror((m) => ({ ...m, x: !m.x }));
       if (k === "y" && !mod) setMirror((m) => ({ ...m, y: !m.y }));
       if (k === "z" && !mod) setMirror((m) => ({ ...m, z: !m.z }));
-      if (k === "[" ) setBrush((n) => Math.max(1, n - 1));
+      if (k === "[") setBrush((n) => Math.max(1, n - 1));
       if (k === "]") setBrush((n) => Math.min(5, n + 1));
       if (k === "delete" || k === "backspace") deleteSelected();
       if (e.key === "ArrowLeft") moveSelected(-1, 0, 0);
@@ -635,13 +680,17 @@ export default function Builder() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
+    clip.axis,
     copySelected,
     deleteSelected,
     duplicateSelected,
+    ghost,
     moveSelected,
     pasteClipboard,
     redo,
-    undo
+    selected,
+    undo,
+    volume.size
   ]);
 
   const [cx, , cz] = volumeCenter(volume.size);
@@ -782,15 +831,9 @@ export default function Builder() {
 
         <section className="viewport">
           <Canvas
-            key={view === "iso" ? "persp" : `ortho-${view}`}
             shadows
             dpr={[1, 1.75]}
-            orthographic={view !== "iso"}
-            camera={
-              view === "iso"
-                ? { position: [40, 28, 40], fov: 42, near: 0.1, far: 2000 }
-                : { position: [40, 80, 40], zoom: 14, near: -2000, far: 2000 }
-            }
+            camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}
           >
             <color attach="background" args={["#070a11"]} />
             <ambientLight intensity={0.72} />
@@ -816,6 +859,7 @@ export default function Builder() {
               palette={palette}
               revision={rev}
               selected={selected}
+              clip={clip}
               onHit={onHit}
               onHover={onHover}
             />
@@ -832,12 +876,12 @@ export default function Builder() {
             {tool !== "box" && clipboard.length > 0 && ghost && (
               <OffsetGhost items={clipboard} origin={ghost} />
             )}
-            <CameraRig view={view} size={volume.size} />
+            <CameraRig view={view} size={volume.size} focus={focus} />
             <OrbitControls
               makeDefault
               enableDamping
               dampingFactor={0.08}
-              target={volumeCenter(volume.size)}
+              target={focus}
               mouseButtons={{
                 LEFT: undefined,
                 MIDDLE: THREE.MOUSE.PAN,
@@ -852,9 +896,10 @@ export default function Builder() {
             <span className="hudChip">
               {tool.toUpperCase()} · BRUSH {brush} · {count} VX · {volume.size}³
               {boxStart ? " · BOX…" : ""}
+              {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
             </span>
             <span className="hudHelp">
-              LMB STROKE · RMB ORBIT · ESC CANCEL · ⌘C/V/D · OPEN VOX/JSON
+              LMB STROKE · RMB ORBIT · ESC · F FOCUS · ,/. CLIP
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
@@ -876,6 +921,34 @@ export default function Builder() {
           <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>
             GRID {grid ? "ON" : "OFF"}
           </button>
+          <p className="category">CLIP</p>
+          <div className="viewRow">
+            {([null, "x", "y", "z"] as const).map((axis) => (
+              <button
+                key={String(axis)}
+                className={clip.axis === axis ? "modeOn" : ""}
+                onClick={() =>
+                  setClip({
+                    axis,
+                    value: axis ? Math.floor(volume.size / 2) : volume.size - 1
+                  })
+                }
+              >
+                {axis ? axis.toUpperCase() : "OFF"}
+              </button>
+            ))}
+          </div>
+          {clip.axis && (
+            <input
+              type="range"
+              min={0}
+              max={volume.size - 1}
+              value={clip.value}
+              onChange={(e) =>
+                setClip((c) => ({ ...c, value: Number(e.target.value) }))
+              }
+            />
+          )}
           <p className="category">PALETTE</p>
           <div className="colorRow dense">
             {palette.slice(0, 64).map((hex, i) => (
