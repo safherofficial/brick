@@ -1,35 +1,17 @@
 import Link from "next/link";
 import ShowcaseThumb from "@/components/showcase/ShowcaseThumb";
-import { findCreation } from "@/lib/creations";
+import { creations as catalog, findCreation } from "@/lib/creations";
 
-const creations = [
-  {
-    title: "Cyberpunk Megacity",
-    author: "@future_builder",
-    slug: "cyberpunk-megacity",
-    likes: "8.9K"
-  },
-  {
-    title: "Orbital Command Station",
-    author: "@orbitalworks",
-    slug: "orbital-command-station",
-    likes: "7.4K"
-  },
-  {
-    title: "Imperial Japanese Castle",
-    author: "@heritage_builder",
-    slug: "imperial-japanese-castle",
-    likes: "10.2K"
-  },
-  {
-    title: "Steampunk Airship",
-    author: "@clockworklab",
-    slug: "steampunk-airship",
-    likes: "6.8K"
-  }
+const featured = [
+  "solana-emblem",
+  "world-orb",
+  "cyberpunk-megacity",
+  "imperial-japanese-castle"
 ];
 
 export default function Home() {
+  const hero = findCreation("solana-emblem");
+
   return (
     <main>
       <header className="siteHeader">
@@ -64,7 +46,6 @@ export default function Home() {
             <Link className="primaryButton" href="/build">
               START BUILDING →
             </Link>
-
             <Link className="secondaryButton" href="/gallery">
               EXPLORE GALLERY
             </Link>
@@ -75,17 +56,14 @@ export default function Home() {
               <strong>12.5K+</strong>
               <span>CREATIONS</span>
             </div>
-
             <div>
               <strong>8.2K+</strong>
               <span>CREATORS</span>
             </div>
-
             <div>
               <strong>95.7K+</strong>
               <span>LIKES</span>
             </div>
-
             <div>
               <strong>2.1M+</strong>
               <span>VIEWS</span>
@@ -94,16 +72,7 @@ export default function Home() {
         </div>
 
         <div className="heroArtwork">
-          <div className="floatingBrick b1">◆</div>
-          <div className="floatingBrick b2">◆</div>
-          <div className="floatingBrick b3">◆</div>
-
-          <div className="island">
-            <div className="tree treeA">🌳</div>
-            <div className="house">🏠</div>
-            <div className="tree treeB">🌳</div>
-            <div className="waterfall" />
-          </div>
+          {hero && <ShowcaseThumb creation={hero} />}
         </div>
       </section>
 
@@ -113,31 +82,28 @@ export default function Home() {
             <p className="eyebrow">COMMUNITY</p>
             <h2>EXPLORE CREATIONS</h2>
           </div>
-
           <Link href="/gallery" className="textLink">
             VIEW ALL →
           </Link>
         </div>
 
         <div className="creationGrid">
-          {creations.map(({ title, author, slug, likes }) => {
+          {featured.map((slug) => {
             const creation = findCreation(slug);
-
+            if (!creation) return null;
             return (
-              <article className="creationCard" key={title}>
-                <div className="cardArtwork">
-                  {creation && (
+              <article className="creationCard" key={creation.slug}>
+                <Link href={`/creation/${creation.slug}`}>
+                  <div className="cardArtwork">
                     <ShowcaseThumb creation={creation} />
-                  )}
-                </div>
-
+                  </div>
+                </Link>
                 <div className="cardMeta">
                   <div>
-                    <h3>{title}</h3>
-                    <p>{author}</p>
+                    <h3>{creation.title}</h3>
+                    <p>{creation.author}</p>
                   </div>
-
-                  <span>♥ {likes}</span>
+                  <span>♥ {creation.likes}</span>
                 </div>
               </article>
             );
