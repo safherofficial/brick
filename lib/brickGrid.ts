@@ -64,7 +64,14 @@ export const brickDefs: Record<
   cone: { footprint: [1, 1], shape: "cone", label: "CONE" }
 };
 
-export const basicKinds: BrickKind[] = ["voxel", "1x1", "1x2", "2x2", "2x4", "2x6"];
+export const basicKinds: BrickKind[] = [
+  "voxel",
+  "1x1",
+  "1x2",
+  "2x2",
+  "2x4",
+  "2x6"
+];
 export const specialKinds: BrickKind[] = ["round", "cone"];
 
 let idSeq = 1;
@@ -87,12 +94,18 @@ export function sizeFor(footprint: Footprint, kind?: BrickKind): Vec3 {
   return [footprint[0] * STUD, unitHeight(kind), footprint[1] * STUD];
 }
 
-export function effectiveFootprint(kind: BrickKind, rotation: Rotation): Footprint {
+export function effectiveFootprint(
+  kind: BrickKind,
+  rotation: Rotation
+): Footprint {
   const [w, d] = brickDefs[kind].footprint;
   return rotation % 180 === 0 ? [w, d] : [d, w];
 }
 
-export function cellAnchor(position: Vec3, footprint: Footprint): [number, number] {
+export function cellAnchor(
+  position: Vec3,
+  footprint: Footprint
+): [number, number] {
   return [
     Math.round(position[0] - (footprint[0] - 1) / 2),
     Math.round(position[2] - (footprint[1] - 1) / 2)
@@ -114,7 +127,11 @@ export function cellKey(x: number, y: number, z: number) {
 }
 
 export function voxelCell(brick: Pick<Brick, "position" | "layer">) {
-  return cellKey(Math.round(brick.position[0]), brick.layer, Math.round(brick.position[2]));
+  return cellKey(
+    Math.round(brick.position[0]),
+    brick.layer,
+    Math.round(brick.position[2])
+  );
 }
 
 export function yFromLayer(layer: number, kind?: BrickKind) {
@@ -161,20 +178,23 @@ export function supportCount(
       ? 1
       : 0;
   }
-  return cellsFor(candidate).filter((cell) => map.has(`${candidate.layer - 1}:${cell}`)).length;
+  return cellsFor(candidate).filter((cell) =>
+    map.has(`${candidate.layer - 1}:${cell}`)
+  ).length;
 }
 
 export function isClear(candidate: Brick, bricks: Brick[]) {
   const map = occupied3(bricks, candidate.id);
   if (candidate.kind === "voxel") return !map.has(voxelCell(candidate));
-  return cellsFor(candidate).every((cell) => !map.has(`${candidate.layer}:${cell}`));
+  return cellsFor(candidate).every(
+    (cell) => !map.has(`${candidate.layer}:${cell}`)
+  );
 }
 
 export function isValid(candidate: Brick, bricks: Brick[]) {
   const map = occupied3(bricks, candidate.id);
-  const clear = isClear(candidate, bricks);
-  const supported = candidate.layer === 0 || supportCount(candidate, map) >= 1;
-  return clear && supported;
+  return isClear(candidate, bricks) &&
+    (candidate.layer === 0 || supportCount(candidate, map) >= 1);
 }
 
 export function canPlace(candidate: Brick, bricks: Brick[], sculpt = false) {
@@ -198,6 +218,7 @@ export function highestSupportedLayer(candidate: Brick, bricks: Brick[]) {
             )
           )
         : cells.some((cell) => map.has(`${test - 1}:${cell}`)));
+
     const clear =
       candidate.kind === "voxel"
         ? !map.has(
@@ -265,6 +286,7 @@ export function stackLayerAt(
     color: "#000000",
     layer: 0
   };
+
   if (sculpt) {
     const max = bricks.reduce((m, b) => {
       const same =
@@ -276,6 +298,7 @@ export function stackLayerAt(
     }, -1);
     return Math.min(MAX_LAYER, max + 1);
   }
+
   return highestSupportedLayer(probe, bricks);
 }
 
@@ -314,8 +337,7 @@ function buildBrick(
     layer: 0
   };
   const layer =
-    opts?.layer ??
-    stackLayerAt(point, bricks, kind, rotation, !!opts?.sculpt);
+    opts?.layer ?? stackLayerAt(point, bricks, kind, rotation, !!opts?.sculpt);
   return withLayer({ ...provisional, position: center }, layer);
 }
 
@@ -354,7 +376,8 @@ export function loadDraft(): {
   creator: string;
 } | null {
   if (typeof window === "undefined") return null;
-  const raw = localStorage.getItem(DRAFT_KEY) ?? localStorage.getItem(DRAFT_KEY_LEGACY);
+  const raw =
+    localStorage.getItem(DRAFT_KEY) ?? localStorage.getItem(DRAFT_KEY_LEGACY);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as DraftV2 | Brick[];
