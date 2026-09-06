@@ -1,6 +1,6 @@
 import type { Cell } from "@/lib/voxelEngine";
 
-export type ImageMode = "flat" | "extrude";
+export type ImageMode = "flat" | "extrude" | "model";
 
 export type ImageVoxel = Cell & { c: number };
 
@@ -85,6 +85,38 @@ function loadImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
+function distanceField(mask: Uint8Array, w: number, h: number) {
+  const INF = w + h + 8;
+  const d = new Float32Array(w * h);
+  for (let i = 0; i < d.length; i++) d[i] = mask[i] ? INF : 0;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!mask[i]) continue;
+      let best = d[i];
+      if (x > 0) best = Math.min(best, d[i - 1] + 1);
+      if (y > 0) best = Math.min(best, d[i - w] + 1);
+      if (x > 0 && y > 0) best = Math.min(best, d[i - w - 1] + 1.414);
+      if (x + 1 < w && y > 0) best = Math.min(best, d[i - w + 1] + 1.414);
+      d[i] = best;
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      if (!mask[i]) continue;
+      let best = d[i];
+      if (x + 1 < w) best = Math.min(best, d[i + 1] + 1);
+      if (y + 1 < h) best = Math.min(best, d[i + w] + 1);
+      if (x + 1 < w && y + 1 < h) best = Math.min(best, d[i + w + 1] + 1.414);
+      if (x > 0 && y + 1 < h) best = Math.min(best, d[i + w - 1] + 1.414);
+      d[i] = best;
+    }
+  }
+  return d;
+}
+
 export async function imageToVoxels(
   file: File,
   options: {
@@ -109,19 +141,31 @@ export async function imageToVoxels(
   ctx.drawImage(img, 0, 0, w, h);
   const data = ctx.getImageData(0, 0, w, h).data;
 
+  const mask = new Uint8Array(w * h);
   const unique = new Set<number>();
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 16) continue;
-    unique.add(pack(data[i], data[i + 1], data[i + 2]));
+  for (let pz = 0; pz < h; pz++) {
+    for (let px = 0; px < w; px++) {
+      const i = (pz * w + px) * 4;
+      if (data[i + 3] < 16) continue;
+      mask[pz * w + px] = 1;
+      unique.add(pack(data[i], data[i + 1], data[i + 2]));
+    }
   }
+
   const colors = quantize([...unique], 256);
   const palette = Array.from({ length: 256 }, (_, i) =>
     colors[i] ? hexOf(...colors[i]) : "#000000"
   );
 
+  const field = options.mode === "model" ? distanceField(mask, w, h) : null;
+  let fieldMax = 1;
+  if (field) {
+    for (let i = 0; i < field.length; i++) if (field[i] > fieldMax) fieldMax = field[i];
+  }
+
   const ox = Math.floor((options.volumeSize - w) / 2);
   const oz = Math.floor((options.volumeSize - h) / 2);
-  const heightMax = Math.max(1, Math.min(options.heightMax, options.volumeSize));
+  const heightMax = Math.max(2, Math.min(options.heightMax, options.volumeSize));
   const voxels: ImageVoxel[] = [];
 
   for (let pz = 0; pz < h; pz++) {
@@ -133,10 +177,15 @@ export async function imageToVoxels(
       const b = data[i + 2];
       const c = nearestIndex(r, g, b, colors);
       const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) * (data[i + 3] / 255);
-      const tall =
-        options.mode === "flat"
-          ? 1
-          : Math.max(1, Math.round((luma / 255) * heightMax));
+
+      let tall = 1;
+      if (options.mode === "extrude") {
+        tall = Math.max(1, Math.round((luma / 255) * heightMax));
+      } else if (options.mode === "model" && field) {
+        const t = field[pz * w + px] / fieldMax;
+        tall = Math.max(2, Math.round(2 + t * (heightMax - 2)));
+      }
+
       const x = ox + px;
       const z = oz + (h - 1 - pz);
       for (let y = 0; y < tall; y++) voxels.push({ x, y, z, c });
