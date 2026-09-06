@@ -32,7 +32,13 @@ import {
   type Tool,
   type ViewMode
 } from "@/lib/voxelEngine";
-import { downloadBytes, downloadText, exportObj, exportVox } from "@/lib/voxelExport";
+import {
+  downloadBytes,
+  downloadText,
+  exportObj,
+  exportVox,
+  importVox
+} from "@/lib/voxelExport";
 import { VoxelCloud, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -76,10 +82,27 @@ function Ground({
       position={[(size - 1) / 2, -0.5, (size - 1) / 2]}
       onPointerDown={(e) => {
         e.stopPropagation();
-        onHit({ kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } }, e);
+        onHit(
+          {
+            kind: "empty",
+            cell: {
+              x: Math.round(e.point.x),
+              y: 0,
+              z: Math.round(e.point.z)
+            }
+          },
+          e
+        );
       }}
       onPointerMove={(e) => {
-        onHover({ kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } });
+        onHover({
+          kind: "empty",
+          cell: {
+            x: Math.round(e.point.x),
+            y: 0,
+            z: Math.round(e.point.z)
+          }
+        });
       }}
     >
       <planeGeometry args={[size + 8, size + 8]} />
@@ -88,7 +111,15 @@ function Ground({
   );
 }
 
-function Ghost({ cell, color, valid }: { cell: Cell; color: string; valid: boolean }) {
+function Ghost({
+  cell,
+  color,
+  valid
+}: {
+  cell: Cell;
+  color: string;
+  valid: boolean;
+}) {
   return (
     <mesh position={[cell.x, cell.y, cell.z]} raycast={() => {}}>
       <boxGeometry args={[0.98, 0.98, 0.98]} />
@@ -120,19 +151,43 @@ function BoxPreview({ a, b }: { a: Cell; b: Cell }) {
   );
 }
 
+function OffsetGhost({
+  items,
+  origin
+}: {
+  items: { dx: number; dy: number; dz: number }[];
+  origin: Cell;
+}) {
+  return (
+    <group raycast={() => {}}>
+      {items.slice(0, 800).map((item, i) => (
+        <mesh
+          key={i}
+          position={[origin.x + item.dx, origin.y + item.dy, origin.z + item.dz]}
+        >
+          <boxGeometry args={[1.02, 1.02, 1.02]} />
+          <meshBasicMaterial color="#e9d5ff" wireframe transparent opacity={0.7} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function VolumeFrame({ size }: { size: number }) {
   const points = useMemo(() => {
     const s = size - 1;
     return [
-      0,0,0, s,0,0, s,0,s, 0,0,s, 0,0,0,
-      0,s,0, s,s,0, s,s,s, 0,s,s, 0,s,0,
-      s,s,0, s,0,0, s,0,s, s,s,s, 0,s,s, 0,0,s
+      0, 0, 0, s, 0, 0, s, 0, s, 0, 0, s, 0, 0, 0, 0, s, 0, s, s, 0, s, s, s, 0,
+      s, s, 0, s, 0, s, s, 0, s, 0, 0, s, 0, s, s, s, s, 0, s, s, 0, 0, s
     ];
   }, [size]);
   return (
     <line>
       <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[new Float32Array(points), 3]} />
+        <bufferAttribute
+          attach="attributes-position"
+          args={[new Float32Array(points), 3]}
+        />
       </bufferGeometry>
       <lineBasicMaterial color="#334155" />
     </line>
@@ -149,13 +204,13 @@ export default function Builder() {
   const volumeRef = useRef(new VoxelVolume(64));
   const historyRef = useRef(new History());
   const strokeRef = useRef<{ seen: Set<string>; deltas: Delta[] } | null>(null);
-  const boxStartRef = useRef<Cell | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [rev, setRev] = useState(0);
   const [title, setTitle] = useState("UNTITLED");
   const [tool, setTool] = useState<Tool>("attach");
   const [boxMode, setBoxMode] = useState<BoxMode>("fill");
+  const [boxStart, setBoxStart] = useState<Cell | null>(null);
   const [brush, setBrush] = useState(1);
   const [color, setColor] = useState(6);
   const [palette, setPalette] = useState(() => clonePalette());
@@ -191,7 +246,11 @@ export default function Builder() {
     if (!draft) {
       const v = volumeRef.current;
       const mid = Math.floor(v.size / 2);
-      applyCells(v, [{ x: mid, y: 0, z: mid }], 6, { x: false, y: false, z: false });
+      applyCells(v, [{ x: mid, y: 0, z: mid }], 6, {
+        x: false,
+        y: false,
+        z: false
+      });
       bump();
       return;
     }
@@ -242,7 +301,9 @@ export default function Builder() {
 
       if (tool === "eyedrop") {
         if (hit.kind === "voxel") {
-          setColor(volumeRef.current.get(hit.cell.x, hit.cell.y, hit.cell.z) ?? color);
+          setColor(
+            volumeRef.current.get(hit.cell.x, hit.cell.y, hit.cell.z) ?? color
+          );
         }
         return;
       }
@@ -259,16 +320,20 @@ export default function Builder() {
       }
 
       if (tool === "box") {
-        if (!boxStartRef.current) {
-          boxStartRef.current = cell;
+        if (!boxStart) {
+          setBoxStart(cell);
           notify("BOX START");
           return;
         }
-        const cells = boxCells(boxStartRef.current, cell);
-        boxStartRef.current = null;
+        const cells = boxCells(boxStart, cell);
+        setBoxStart(null);
         if (boxMode === "select") {
           setSelected(
-            new Set(cells.filter((c) => volumeRef.current.has(c.x, c.y, c.z)).map(cellKey))
+            new Set(
+              cells
+                .filter((c) => volumeRef.current.has(c.x, c.y, c.z))
+                .map(cellKey)
+            )
           );
           return;
         }
@@ -303,7 +368,7 @@ export default function Builder() {
       }
       applyNow(fresh, color, true);
     },
-    [applyNow, beginStroke, boxMode, brush, color, notify, tool]
+    [applyNow, beginStroke, boxMode, boxStart, brush, color, notify, tool]
   );
 
   const onHit = useCallback(
@@ -318,7 +383,8 @@ export default function Builder() {
     (hit: VoxelHit | null) => {
       setHover(hit);
       if (!hit || !strokeRef.current) return;
-      if (tool === "box" || tool === "fill" || tool === "select" || tool === "eyedrop") return;
+      if (tool === "box" || tool === "fill" || tool === "select" || tool === "eyedrop")
+        return;
       applyHit(hit, false);
     },
     [applyHit, tool]
@@ -334,6 +400,7 @@ export default function Builder() {
     historyRef.current.undo(volumeRef.current);
     bump();
   }, [bump]);
+
   const redo = useCallback(() => {
     historyRef.current.redo(volumeRef.current);
     bump();
@@ -346,6 +413,7 @@ export default function Builder() {
       false
     );
     setSelected(new Set());
+    setBoxStart(null);
   }, [applyNow]);
 
   const resize = useCallback(
@@ -353,6 +421,7 @@ export default function Builder() {
       volumeRef.current.resize(size);
       historyRef.current.reset();
       setSelected(new Set());
+      setBoxStart(null);
       bump();
     },
     [bump]
@@ -385,8 +454,18 @@ export default function Builder() {
   const pasteClipboard = useCallback(
     (origin?: Cell) => {
       if (!clipboard.length) return;
-      const base = origin ?? ghost ?? { x: Math.floor(volume.size / 2), y: 0, z: Math.floor(volume.size / 2) };
-      const cells = clipboard.map((v) => ({ x: base.x + v.dx, y: base.y + v.dy, z: base.z + v.dz }));
+      const base =
+        origin ??
+        ghost ?? {
+          x: Math.floor(volume.size / 2),
+          y: 0,
+          z: Math.floor(volume.size / 2)
+        };
+      const cells = clipboard.map((v) => ({
+        x: base.x + v.dx,
+        y: base.y + v.dy,
+        z: base.z + v.dz
+      }));
       const deltas: Delta[] = [];
       clipboard.forEach((v, i) => {
         deltas.push(...applyCells(volumeRef.current, [cells[i]], v.c, mirror));
@@ -402,9 +481,10 @@ export default function Builder() {
     const clip = selectionClipboard(volumeRef.current, selected);
     if (!clip.length) return;
     setClipboard(clip);
-    const minX = Math.min(...selectedCells().map((c) => c.x));
-    const minY = Math.min(...selectedCells().map((c) => c.y));
-    const minZ = Math.min(...selectedCells().map((c) => c.z));
+    const cells = selectedCells();
+    const minX = Math.min(...cells.map((c) => c.x));
+    const minY = Math.min(...cells.map((c) => c.y));
+    const minZ = Math.min(...cells.map((c) => c.z));
     pasteClipboard({ x: minX + 1, y: minY, z: minZ });
   }, [pasteClipboard, selected, selectedCells]);
 
@@ -418,15 +498,22 @@ export default function Builder() {
       const deltas = [
         ...applyCells(v, items, null, { x: false, y: false, z: false }),
         ...items.flatMap((item) =>
-          applyCells(v, [{ x: item.x + dx, y: item.y + dy, z: item.z + dz }], item.c, {
-            x: false,
-            y: false,
-            z: false
-          })
+          applyCells(
+            v,
+            [{ x: item.x + dx, y: item.y + dy, z: item.z + dz }],
+            item.c,
+            { x: false, y: false, z: false }
+          )
         )
       ];
       historyRef.current.push(deltas);
-      setSelected(new Set(items.map((item) => cellKey({ x: item.x + dx, y: item.y + dy, z: item.z + dz }))));
+      setSelected(
+        new Set(
+          items.map((item) =>
+            cellKey({ x: item.x + dx, y: item.y + dy, z: item.z + dz })
+          )
+        )
+      );
       bump();
     },
     [bump, color, selectedCells]
@@ -444,7 +531,11 @@ export default function Builder() {
         return;
       }
       if (kind === "vox") {
-        downloadBytes(exportVox(volumeRef.current, palette), `${name}.vox`, "application/octet-stream");
+        downloadBytes(
+          exportVox(volumeRef.current, palette),
+          `${name}.vox`,
+          "application/octet-stream"
+        );
         return;
       }
       const { obj, mtl } = exportObj(volumeRef.current, palette);
@@ -456,15 +547,28 @@ export default function Builder() {
 
   const openProject = useCallback(
     async (file: File) => {
-      const parsed = JSON.parse(await file.text()) as DraftV1;
-      if (!Array.isArray(parsed.voxels)) return;
-      volumeRef.current.load(parsed);
-      setTitle(parsed.title || file.name.replace(/\.json$/i, ""));
-      if (parsed.palette?.length) setPalette(clonePalette(parsed.palette));
-      historyRef.current.reset();
-      setSelected(new Set());
-      bump();
-      notify("PROJECT LOADED");
+      try {
+        const lower = file.name.toLowerCase();
+        if (lower.endsWith(".vox")) {
+          const model = importVox(await file.arrayBuffer());
+          volumeRef.current.load({ size: model.size, voxels: model.voxels });
+          setPalette(clonePalette(model.palette));
+          setTitle(file.name.replace(/\.vox$/i, ""));
+        } else {
+          const parsed = JSON.parse(await file.text()) as DraftV1;
+          if (!Array.isArray(parsed.voxels)) throw new Error("Invalid project");
+          volumeRef.current.load(parsed);
+          setTitle(parsed.title || file.name.replace(/\.json$/i, ""));
+          if (parsed.palette?.length) setPalette(clonePalette(parsed.palette));
+        }
+        historyRef.current.reset();
+        setSelected(new Set());
+        setBoxStart(null);
+        bump();
+        notify("PROJECT LOADED");
+      } catch {
+        notify("OPEN FAILED");
+      }
     },
     [bump, notify]
   );
@@ -475,6 +579,13 @@ export default function Builder() {
       if (el?.tagName === "INPUT" || el?.tagName === "TEXTAREA") return;
       const k = e.key.toLowerCase();
       const mod = e.ctrlKey || e.metaKey;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setBoxStart(null);
+        setSelected(new Set());
+        strokeRef.current = null;
+        return;
+      }
       if (mod && k === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -505,30 +616,45 @@ export default function Builder() {
       if (k === "e") setTool("erase");
       if (k === "p") setTool("paint");
       if (k === "g") setTool("fill");
-      if (k === "i" || e.altKey) setTool("eyedrop");
+      if (k === "i") setTool("eyedrop");
       if (k === "q") setTool("select");
       if (k === "u") setTool("box");
       if (k === "x") setMirror((m) => ({ ...m, x: !m.x }));
       if (k === "y" && !mod) setMirror((m) => ({ ...m, y: !m.y }));
       if (k === "z" && !mod) setMirror((m) => ({ ...m, z: !m.z }));
-      if (k === "[" || k === "9") setBrush((n) => Math.max(1, n - 1));
-      if (k === "]" || k === "0") setBrush((n) => Math.min(5, n + 1));
+      if (k === "[" ) setBrush((n) => Math.max(1, n - 1));
+      if (k === "]") setBrush((n) => Math.min(5, n + 1));
       if (k === "delete" || k === "backspace") deleteSelected();
       if (e.key === "ArrowLeft") moveSelected(-1, 0, 0);
       if (e.key === "ArrowRight") moveSelected(1, 0, 0);
-      if (e.key === "ArrowUp") moveSelected(0, e.shiftKey ? 1 : 0, e.shiftKey ? 0 : -1);
-      if (e.key === "ArrowDown") moveSelected(0, e.shiftKey ? -1 : 0, e.shiftKey ? 0 : 1);
+      if (e.key === "ArrowUp")
+        moveSelected(0, e.shiftKey ? 1 : 0, e.shiftKey ? 0 : -1);
+      if (e.key === "ArrowDown")
+        moveSelected(0, e.shiftKey ? -1 : 0, e.shiftKey ? 0 : 1);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [copySelected, deleteSelected, duplicateSelected, moveSelected, pasteClipboard, redo, undo]);
+  }, [
+    copySelected,
+    deleteSelected,
+    duplicateSelected,
+    moveSelected,
+    pasteClipboard,
+    redo,
+    undo
+  ]);
 
   const [cx, , cz] = volumeCenter(volume.size);
   const ghostValid = !ghost
     ? false
-    : tool === "erase" || tool === "paint" || tool === "fill" || tool === "select" || tool === "eyedrop"
+    : tool === "erase" ||
+        tool === "paint" ||
+        tool === "fill" ||
+        tool === "select" ||
+        tool === "eyedrop"
       ? volume.has(ghost.x, ghost.y, ghost.z)
-      : volume.inBounds(ghost.x, ghost.y, ghost.z) && !volume.has(ghost.x, ghost.y, ghost.z);
+      : volume.inBounds(ghost.x, ghost.y, ghost.z) &&
+        !volume.has(ghost.x, ghost.y, ghost.z);
 
   return (
     <main className="builderShell">
@@ -560,8 +686,12 @@ export default function Builder() {
           )}
         </div>
         <div className="builderActions">
-          <button onClick={undo} disabled={!canUndo}>UNDO</button>
-          <button onClick={redo} disabled={!canRedo}>REDO</button>
+          <button onClick={undo} disabled={!canUndo}>
+            UNDO
+          </button>
+          <button onClick={redo} disabled={!canRedo}>
+            REDO
+          </button>
           <button onClick={() => fileRef.current?.click()}>OPEN</button>
           <button onClick={() => exportFiles("json")}>PROJECT</button>
           <button onClick={() => exportFiles("vox")}>VOX</button>
@@ -569,7 +699,7 @@ export default function Builder() {
           <input
             ref={fileRef}
             type="file"
-            accept="application/json"
+            accept=".json,.vox,application/json"
             hidden
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -598,7 +728,11 @@ export default function Builder() {
           {tool === "box" && (
             <div className="viewRow">
               {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
-                <button key={mode} className={boxMode === mode ? "modeOn" : ""} onClick={() => setBoxMode(mode)}>
+                <button
+                  key={mode}
+                  className={boxMode === mode ? "modeOn" : ""}
+                  onClick={() => setBoxMode(mode)}
+                >
                   {mode.toUpperCase()}
                 </button>
               ))}
@@ -607,7 +741,11 @@ export default function Builder() {
           <p className="category">BRUSH {brush}</p>
           <div className="viewRow">
             {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>
+              <button
+                key={n}
+                className={brush === n ? "modeOn" : ""}
+                onClick={() => setBrush(n)}
+              >
                 {n}
               </button>
             ))}
@@ -627,12 +765,18 @@ export default function Builder() {
           <p className="category">VOLUME</p>
           <div className="viewRow">
             {SIZES.map((size) => (
-              <button key={size} className={volume.size === size ? "modeOn" : ""} onClick={() => resize(size)}>
+              <button
+                key={size}
+                className={volume.size === size ? "modeOn" : ""}
+                onClick={() => resize(size)}
+              >
                 {size}
               </button>
             ))}
           </div>
-          <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>HOLLOW</button>
+          <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>
+            HOLLOW
+          </button>
           <button onClick={clearAll}>CLEAR</button>
         </aside>
 
@@ -676,10 +820,17 @@ export default function Builder() {
               onHover={onHover}
             />
             {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
-              <Ghost cell={ghost} color={palette[color]} valid={ghostValid || tool !== "attach"} />
+              <Ghost
+                cell={ghost}
+                color={palette[color]}
+                valid={ghostValid || tool !== "attach"}
+              />
             )}
-            {tool === "box" && boxStartRef.current && ghost && (
-              <BoxPreview a={boxStartRef.current} b={ghost} />
+            {tool === "box" && boxStart && ghost && (
+              <BoxPreview a={boxStart} b={ghost} />
+            )}
+            {tool !== "box" && clipboard.length > 0 && ghost && (
+              <OffsetGhost items={clipboard} origin={ghost} />
             )}
             <CameraRig view={view} size={volume.size} />
             <OrbitControls
@@ -700,9 +851,10 @@ export default function Builder() {
           <div className="sceneHud">
             <span className="hudChip">
               {tool.toUpperCase()} · BRUSH {brush} · {count} VX · {volume.size}³
+              {boxStart ? " · BOX…" : ""}
             </span>
             <span className="hudHelp">
-              LMB STROKE · RMB ORBIT · ⌘C/V/D · [ ] BRUSH · X/Y/Z MIRROR
+              LMB STROKE · RMB ORBIT · ESC CANCEL · ⌘C/V/D · OPEN VOX/JSON
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
@@ -712,7 +864,11 @@ export default function Builder() {
           <p className="panelLabel">INSPECTOR</p>
           <div className="viewRow">
             {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
-              <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
+              <button
+                key={mode}
+                className={view === mode ? "modeOn" : ""}
+                onClick={() => setView(mode)}
+              >
                 {mode.toUpperCase()}
               </button>
             ))}
@@ -741,7 +897,11 @@ export default function Builder() {
             }}
           />
           <p className="hint">
-            {selected.size ? `${selected.size} SELECTED` : ghost ? `${ghost.x},${ghost.y},${ghost.z}` : "NO HIT"}
+            {selected.size
+              ? `${selected.size} SELECTED`
+              : ghost
+                ? `${ghost.x},${ghost.y},${ghost.z}`
+                : "NO HIT"}
           </p>
           {selected.size > 0 && (
             <>
@@ -751,7 +911,9 @@ export default function Builder() {
               <button onClick={deleteSelected}>DELETE SEL</button>
             </>
           )}
-          {clipboard.length > 0 && <button onClick={() => pasteClipboard()}>PASTE {clipboard.length}</button>}
+          {clipboard.length > 0 && (
+            <button onClick={() => pasteClipboard()}>PASTE {clipboard.length}</button>
+          )}
         </aside>
       </div>
     </main>
