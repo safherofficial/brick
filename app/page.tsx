@@ -1,17 +1,10 @@
 import Link from "next/link";
 import ShowcaseThumb from "@/components/showcase/ShowcaseThumb";
-import { creations as catalog, findCreation } from "@/lib/creations";
+import { creations } from "@/lib/creations";
 
-const featured = [
-  "solana-emblem",
-  "world-orb",
-  "cyberpunk-megacity",
-  "imperial-japanese-castle"
-];
+const featured = creations.slice(-4);
 
 export default function Home() {
-  const hero = findCreation("solana-emblem");
-
   return (
     <main>
       <header className="siteHeader">
@@ -46,6 +39,7 @@ export default function Home() {
             <Link className="primaryButton" href="/build">
               START BUILDING →
             </Link>
+
             <Link className="secondaryButton" href="/gallery">
               EXPLORE GALLERY
             </Link>
@@ -56,14 +50,17 @@ export default function Home() {
               <strong>12.5K+</strong>
               <span>CREATIONS</span>
             </div>
+
             <div>
               <strong>8.2K+</strong>
               <span>CREATORS</span>
             </div>
+
             <div>
               <strong>95.7K+</strong>
               <span>LIKES</span>
             </div>
+
             <div>
               <strong>2.1M+</strong>
               <span>VIEWS</span>
@@ -72,7 +69,16 @@ export default function Home() {
         </div>
 
         <div className="heroArtwork">
-          {hero && <ShowcaseThumb creation={hero} />}
+          <div className="floatingBrick b1">◆</div>
+          <div className="floatingBrick b2">◆</div>
+          <div className="floatingBrick b3">◆</div>
+
+          <div className="island">
+            <div className="tree treeA">🌳</div>
+            <div className="house">🏠</div>
+            <div className="tree treeB">🌳</div>
+            <div className="waterfall" />
+          </div>
         </div>
       </section>
 
@@ -82,32 +88,32 @@ export default function Home() {
             <p className="eyebrow">COMMUNITY</p>
             <h2>EXPLORE CREATIONS</h2>
           </div>
+
           <Link href="/gallery" className="textLink">
             VIEW ALL →
           </Link>
         </div>
 
         <div className="creationGrid">
-          {featured.map((slug) => {
-            const creation = findCreation(slug);
-            if (!creation) return null;
-            return (
-              <article className="creationCard" key={creation.slug}>
-                <Link href={`/creation/${creation.slug}`}>
-                  <div className="cardArtwork">
-                    <ShowcaseThumb creation={creation} />
-                  </div>
-                </Link>
-                <div className="cardMeta">
-                  <div>
-                    <h3>{creation.title}</h3>
-                    <p>{creation.author}</p>
-                  </div>
-                  <span>♥ {creation.likes}</span>
+          {featured.map((creation) => (
+            <article
+              className="creationCard"
+              key={creation.slug}
+            >
+              <div className="cardArtwork">
+                <ShowcaseThumb creation={creation} />
+              </div>
+
+              <div className="cardMeta">
+                <div>
+                  <h3>{creation.title}</h3>
+                  <p>{creation.author}</p>
                 </div>
-              </article>
-            );
-          })}
+
+                <span>♥ {creation.likes}</span>
+              </div>
+            </article>
+          ))}
         </div>
       </section>
     </main>
