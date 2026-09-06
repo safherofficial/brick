@@ -39,6 +39,7 @@ import {
   exportVox,
   importVox
 } from "@/lib/voxelExport";
+import { imageToVoxels, type ImageMode } from "@/lib/imageVoxel";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -230,6 +231,8 @@ export default function Builder() {
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
+  const [imageMode, setImageMode] = useState<ImageMode>("flat");
+  const [imageHeight, setImageHeight] = useState(8);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -565,6 +568,43 @@ export default function Builder() {
     async (file: File) => {
       try {
         const lower = file.name.toLowerCase();
+        if (
+          lower.endsWith(".png") ||
+          lower.endsWith(".jpg") ||
+          lower.endsWith(".jpeg") ||
+          lower.endsWith(".webp")
+        ) {
+          const result = await imageToVoxels(file, {
+            volumeSize: volumeRef.current.size,
+            mode: imageMode,
+            heightMax: imageHeight
+          });
+          if (!result.voxels.length) throw new Error("Empty image");
+          setPalette(result.palette);
+          const byColor = new Map<number, Cell[]>();
+          for (const vox of result.voxels) {
+            const list = byColor.get(vox.c) ?? [];
+            list.push({ x: vox.x, y: vox.y, z: vox.z });
+            byColor.set(vox.c, list);
+          }
+          const deltas: Delta[] = [];
+          for (const [c, cells] of byColor) {
+            deltas.push(
+              ...applyCells(volumeRef.current, cells, c, {
+                x: false,
+                y: false,
+                z: false
+              })
+            );
+          }
+          historyRef.current.push(deltas);
+          setTitle(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
+          setSelected(new Set());
+          setBoxStart(null);
+          bump();
+          notify(`IMAGE ${result.voxels.length} VX`);
+          return;
+        }
         if (lower.endsWith(".vox")) {
           const model = importVox(await file.arrayBuffer());
           volumeRef.current.load({ size: model.size, voxels: model.voxels });
@@ -587,7 +627,7 @@ export default function Builder() {
         notify("OPEN FAILED");
       }
     },
-    [bump, notify]
+    [bump, imageHeight, imageMode, notify]
   );
 
   useEffect(() => {
@@ -748,7 +788,7 @@ export default function Builder() {
           <input
             ref={fileRef}
             type="file"
-            accept=".json,.vox,application/json"
+            accept=".json,.vox,.png,.jpg,.jpeg,.webp,application/json,image/png,image/jpeg,image/webp"
             hidden
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -899,7 +939,7 @@ export default function Builder() {
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
             </span>
             <span className="hudHelp">
-              LMB STROKE · RMB ORBIT · ESC · F FOCUS · ,/. CLIP
+              LMB STROKE · RMB ORBIT · ESC · F FOCUS · OPEN PNG
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
@@ -948,6 +988,31 @@ export default function Builder() {
                 setClip((c) => ({ ...c, value: Number(e.target.value) }))
               }
             />
+          )}
+          <p className="category">IMAGE IMPORT</p>
+          <div className="viewRow">
+            {(["flat", "extrude"] as ImageMode[]).map((mode) => (
+              <button
+                key={mode}
+                className={imageMode === mode ? "modeOn" : ""}
+                onClick={() => setImageMode(mode)}
+              >
+                {mode.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          {imageMode === "extrude" && (
+            <div className="viewRow">
+              {[4, 8, 16, 24].map((n) => (
+                <button
+                  key={n}
+                  className={imageHeight === n ? "modeOn" : ""}
+                  onClick={() => setImageHeight(n)}
+                >
+                  H{n}
+                </button>
+              ))}
+            </div>
           )}
           <p className="category">PALETTE</p>
           <div className="colorRow dense">
