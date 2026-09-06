@@ -11,23 +11,18 @@ import {
   OrbitControls
 } from "@react-three/drei";
 import * as THREE from "three";
-import {
-  ChevronLeft,
-  ChevronRight,
-  Redo2,
-  Undo2
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Redo2, Undo2 } from "lucide-react";
 import { BrickVisual } from "@/components/builder/BrickVisual";
 import {
   BRICK_HEIGHT,
   HISTORY_LIMIT,
   STARTER_LIMIT,
-  STUD,
   STUD_HEIGHT,
   basicKinds,
   brickDefs,
   cloneBricks,
   effectiveFootprint,
+  isClear,
   isValid,
   loadDraft,
   makeBrick,
@@ -70,8 +65,8 @@ function initialScene(): Brick[] {
       kind,
       shape: brickDefs[kind].shape,
       footprint,
-      size: sizeFor(footprint),
-      position: [x, layer * BRICK_HEIGHT + BRICK_HEIGHT / 2, z],
+      size: sizeFor(footprint, kind),
+      position: [x, layer * (kind === "voxel" ? 0.9 : 0.48) + (kind === "voxel" ? 0.45 : 0.24), z],
       rotation,
       color,
       layer
@@ -79,12 +74,10 @@ function initialScene(): Brick[] {
   };
 
   const scene = [
-    add("2x4", "#168B4B", -1.5, 0, 0, 0, 101),
-    add("2x4", "#168B4B", 2.5, 0, 0, 0, 102),
-    add("2x2", "#0877B9", 0, 0, 1, 0, 103),
-    add("2x2", "#0877B9", 2, 0, 1, 0, 104),
-    add("2x2", "#F6B800", 1, 0, 2, 0, 105),
-    add("1x2", "#D84C9B", 1, 1, 3, 90, 106)
+    add("voxel", "#f4a0c4", -1, 0, 0, 0, 101),
+    add("voxel", "#7fe7ff", 0, 0, 0, 0, 102),
+    add("voxel", "#f3e07a", 1, 0, 0, 0, 103),
+    add("voxel", "#3aa0ff", 0, 0, 1, 0, 104)
   ];
   syncIdSeq(scene);
   return scene;
@@ -111,7 +104,7 @@ function BrickMesh({
   onDragMove: (ray: THREE.Ray) => void;
   onDragEnd: () => void;
 }) {
-  const size = sizeFor(brick.footprint);
+  const size = sizeFor(brick.footprint, brick.kind);
 
   return (
     <group
@@ -148,10 +141,11 @@ function BrickMesh({
         size={brick.size}
         footprint={brickDefs[brick.kind].footprint}
         color={brick.color}
+        studless={brick.kind === "voxel"}
         detail="editor"
       />
       {selected && (
-        <mesh position={[0, BRICK_HEIGHT / 2 + STUD_HEIGHT + 0.01, 0]}>
+        <mesh position={[0, size[1] / 2 + STUD_HEIGHT + 0.01, 0]}>
           <boxGeometry args={[size[0] + 0.11, 0.025, size[2] + 0.11]} />
           <meshBasicMaterial color="#8b5cf6" wireframe />
         </mesh>
@@ -162,7 +156,10 @@ function BrickMesh({
 
 function GhostBrick({ brick, valid }: { brick: Brick; valid: boolean }) {
   return (
-    <group position={brick.position} rotation-y={THREE.MathUtils.degToRad(brick.rotation)}>
+    <group
+      position={brick.position}
+      rotation-y={THREE.MathUtils.degToRad(brick.rotation)}
+    >
       <BrickVisual
         shape={brick.shape}
         size={brick.size}
@@ -178,7 +175,6 @@ function GhostBrick({ brick, valid }: { brick: Brick; valid: boolean }) {
 
 function CameraController({ viewMode }: { viewMode: ViewMode }) {
   const { camera } = useThree();
-
   useEffect(() => {
     const target = new THREE.Vector3(0, 0.9, 0);
     if (viewMode === "top") camera.position.set(0, 12, 0.01);
@@ -187,7 +183,6 @@ function CameraController({ viewMode }: { viewMode: ViewMode }) {
     else camera.position.set(8.5, 6.5, 9);
     camera.lookAt(target);
   }, [camera, viewMode]);
-
   return null;
 }
 
@@ -373,8 +368,9 @@ function BrickThumb({
 }
 
 export default function Builder() {
-  const [color, setColor] = useState(palette[0]);
-  const [kind, setKind] = useState<BrickKind>("2x2");
+  const [color, setColor] = useState<string>(palette[0]);
+  const [kind, setKind] = useState<BrickKind>("voxel");
+  const [sculptMode, setSculptMode] = useState(true);
   const [bricks, setBricks] = useState<Brick[]>(initialScene);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<number | null>(null);
@@ -403,10 +399,13 @@ export default function Builder() {
   );
 
   const ghost = useMemo(
-    () => (ghostPoint ? makeBrick(kind, color, ghostPoint, bricks) : null),
-    [ghostPoint, kind, color, bricks]
+    () =>
+      ghostPoint
+        ? makeBrick(kind, color, ghostPoint, bricks, 0, { sculpt: sculptMode })
+        : null,
+    [ghostPoint, kind, color, bricks, sculptMode]
   );
-  const ghostValid = !!ghost && isValid(ghost, bricks);
+  const ghostValid = !!ghost && (sculptMode ? isClear(ghost, bricks) : isValid(ghost, bricks));
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -417,9 +416,9 @@ export default function Builder() {
     (next: Brick[]) => {
       setHistory((h) => [...h.slice(-(HISTORY_LIMIT - 1)), cloneBricks(bricks)]);
       setFuture([]);
-      setBricks(settle(next));
+      setBricks(sculptMode ? next : settle(next));
     },
-    [bricks]
+    [bricks, sculptMode]
   );
 
   useEffect(() => {
@@ -446,15 +445,15 @@ export default function Builder() {
         notify("STARTER SET EMPTY");
         return;
       }
-      const next = makeBrick(kind, color, point, bricks);
-      if (!isValid(next, bricks)) {
-        notify("NO STUD SUPPORT HERE");
+      const next = makeBrick(kind, color, point, bricks, 0, { sculpt: sculptMode });
+      if (sculptMode ? !isClear(next, bricks) : !isValid(next, bricks)) {
+        notify(sculptMode ? "CELL OCCUPIED" : "NO STUD SUPPORT HERE");
         return;
       }
       commit([...bricks, next]);
       setSelectedId(next.id);
     },
-    [available, bricks, color, commit, kind, notify]
+    [available, bricks, color, commit, kind, notify, sculptMode]
   );
 
   const removeSelected = useCallback(() => {
@@ -472,16 +471,15 @@ export default function Builder() {
       ...selected,
       rotation: nextRotation,
       footprint,
-      size: sizeFor(footprint)
+      size: sizeFor(footprint, selected.kind)
     };
-    const settled = settle([...others, rotated]);
-    const candidate = settled.find((b) => b.id === selected.id);
-    if (!candidate || !isValid(candidate, others)) {
+    const candidate = sculptMode ? rotated : settle([...others, rotated]).find((b) => b.id === selected.id);
+    if (!candidate || !(sculptMode ? isClear(candidate, others) : isValid(candidate, others))) {
       notify("ROTATION BLOCKED");
       return;
     }
     commit([...others, candidate]);
-  }, [bricks, commit, notify, selected]);
+  }, [bricks, commit, notify, sculptMode, selected]);
 
   const moveSelected = useCallback(
     (dx: number, dz: number) => {
@@ -495,13 +493,31 @@ export default function Builder() {
           selected.position[2] + dz
         ]
       };
-      const settled = settle([...others, moved]);
-      const candidate = settled.find((b) => b.id === selected.id);
-      if (!candidate) {
-        notify("MOVE BLOCKED");
+      const next = sculptMode ? [...others, moved] : settle([...others, moved]);
+      commit(next);
+    },
+    [bricks, commit, sculptMode, selected]
+  );
+
+  const nudgeLayer = useCallback(
+    (dir: number) => {
+      if (!selected) return;
+      const others = bricks.filter((b) => b.id !== selected.id);
+      const candidate = {
+        ...selected,
+        layer: Math.max(0, selected.layer + dir)
+      };
+      candidate.position = [
+        selected.position[0],
+        (candidate.kind === "voxel" ? 0.9 : 0.48) * candidate.layer +
+          (candidate.kind === "voxel" ? 0.45 : 0.24),
+        selected.position[2]
+      ];
+      if (!isClear(candidate, others)) {
+        notify("CELL OCCUPIED");
         return;
       }
-      commit(settled);
+      commit([...others, candidate]);
     },
     [bricks, commit, notify, selected]
   );
@@ -520,10 +536,9 @@ export default function Builder() {
         selected.position[2]
       ]
     };
-    const settled = settle([...bricks, copy]);
-    commit(settled);
+    commit(sculptMode ? [...bricks, copy] : settle([...bricks, copy]));
     setSelectedId(copy.id);
-  }, [available, bricks, commit, notify, selected]);
+  }, [available, bricks, commit, notify, sculptMode, selected]);
 
   const startDragging = useCallback(
     (idValue: number, ray: THREE.Ray) => {
@@ -551,12 +566,9 @@ export default function Builder() {
       setBricks((current) => {
         const brick = current.find((b) => b.id === draggingId);
         if (!brick) return current;
-        const moved = {
-          ...brick,
-          position: [x, brick.position[1], z] as Vec3
-        };
+        const moved = { ...brick, position: [x, brick.position[1], z] as Vec3 };
         const others = current.filter((b) => b.id !== draggingId);
-        const next = settle([...others, moved]);
+        const next = sculptMode ? [...others, moved] : settle([...others, moved]);
         if (!dragHistoryCommitted.current) {
           dragHistoryCommitted.current = true;
           setHistory((h) => [...h.slice(-(HISTORY_LIMIT - 1)), cloneBricks(current)]);
@@ -565,7 +577,7 @@ export default function Builder() {
         return next;
       });
     },
-    [draggingId]
+    [draggingId, sculptMode]
   );
 
   const endDragging = useCallback(() => {
@@ -615,11 +627,13 @@ export default function Builder() {
       if (e.key === "ArrowRight") moveSelected(1, 0);
       if (e.key === "ArrowUp") moveSelected(0, -1);
       if (e.key === "ArrowDown") moveSelected(0, 1);
-      if (e.key === "1") setKind("1x1");
-      if (e.key === "2") setKind("1x2");
-      if (e.key === "3") setKind("2x2");
-      if (e.key === "4") setKind("2x4");
-      if (e.key === "5") setKind("2x6");
+      if (e.key === "PageUp") nudgeLayer(1);
+      if (e.key === "PageDown") nudgeLayer(-1);
+      if (e.key === "1") setKind("voxel");
+      if (e.key === "2") setKind("1x1");
+      if (e.key === "3") setKind("1x2");
+      if (e.key === "4") setKind("2x2");
+      if (e.key === "5") setKind("2x4");
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
         e.preventDefault();
@@ -642,7 +656,7 @@ export default function Builder() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [duplicateSelected, moveSelected, redo, removeSelected, rotateSelected, undo]);
+  }, [duplicateSelected, moveSelected, nudgeLayer, redo, removeSelected, rotateSelected, undo]);
 
   return (
     <main className="builderShell">
@@ -693,9 +707,7 @@ export default function Builder() {
 
       <div
         className="builderBody"
-        style={{
-          gridTemplateColumns: `${panelOpen ? 246 : 58}px 1fr 232px`
-        }}
+        style={{ gridTemplateColumns: `${panelOpen ? 246 : 58}px 1fr 232px` }}
       >
         <aside className={`brickPanel ${panelOpen ? "" : "panelCollapsed"}`}>
           <div className="panelHeaderRow">
@@ -706,7 +718,7 @@ export default function Builder() {
           </div>
           {panelOpen && (
             <>
-              <p className="category">BRICKS</p>
+              <p className="category">VOXELS & BRICKS</p>
               <div className="brickPalette proPalette">
                 {basicKinds.map((k) => (
                   <button
@@ -743,6 +755,11 @@ export default function Builder() {
                   />
                 ))}
               </div>
+              <input
+                type="color"
+                value={/^#[0-9a-fA-F]{6}$/.test(color) ? color : "#C91F2D"}
+                onChange={(e) => setColor(e.target.value)}
+              />
               <p className="hint">
                 {available} / {STARTER_LIMIT} LEFT
               </p>
@@ -775,6 +792,9 @@ export default function Builder() {
           <button onClick={() => setGridVisible((v) => !v)}>
             GRID {gridVisible ? "ON" : "OFF"}
           </button>
+          <button onClick={() => setSculptMode((v) => !v)}>
+            SCULPT {sculptMode ? "ON" : "OFF"}
+          </button>
           <div className="viewRow">
             {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
               <button
@@ -790,11 +810,13 @@ export default function Builder() {
             <>
               <p className="category">{brickDefs[selected.kind].label}</p>
               <button onClick={rotateSelected}>ROTATE (R)</button>
+              <button onClick={() => nudgeLayer(1)}>LAYER + (PgUp)</button>
+              <button onClick={() => nudgeLayer(-1)}>LAYER − (PgDn)</button>
               <button onClick={duplicateSelected}>DUPLICATE (⌘D)</button>
               <button onClick={removeSelected}>DELETE</button>
             </>
           ) : (
-            <p className="hint">Select a brick to edit.</p>
+            <p className="hint">SCULPT ON: stack with PageUp / PageDown.</p>
           )}
         </aside>
       </div>
@@ -838,9 +860,6 @@ export default function Builder() {
                 <div className="saveSuccess">✓</div>
                 <p className="eyebrow">SAVED</p>
                 <h2>READY FOR THE SHOWCASE</h2>
-                <p className="modalText">
-                  Draft v2 stored locally. PostgreSQL publishing can come later.
-                </p>
                 <div className="modalActions">
                   <Link href="/gallery" className="primaryButton">
                     OPEN GALLERY →
