@@ -1146,6 +1146,30 @@ function Scene({
 
   gridVisible: boolean;
 }) {
+  const controlsRef = useRef<any>(null);
+
+  const handleDragStart = (
+    idValue: number,
+    ray: THREE.Ray
+  ) => {
+    if (controlsRef.current) {
+      controlsRef.current.enabled = false;
+    }
+
+    onDragStart(
+      idValue,
+      ray
+    );
+  };
+
+  const handleDragEnd = () => {
+    onDragEnd();
+
+    if (controlsRef.current) {
+      controlsRef.current.enabled = true;
+    }
+  };
+
   const groundHover = (
     e: ThreeEvent<PointerEvent>
   ) => {
@@ -1358,13 +1382,13 @@ function Scene({
               onPlace
             }
             onDragStart={
-              onDragStart
+              handleDragStart
             }
             onDragMove={
               onDragMove
             }
             onDragEnd={
-              onDragEnd
+              handleDragEnd
             }
           />
         )
@@ -1401,6 +1425,7 @@ function Scene({
        * completamente disabilitato.
        */}
       <OrbitControls
+        ref={controlsRef}
         enabled={
           draggingId ===
           null
