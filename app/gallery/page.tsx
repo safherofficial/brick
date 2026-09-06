@@ -4,6 +4,13 @@ import { findCreation } from "@/lib/creations";
 
 const creations = [
   {
+    title: "World Orb",
+    author: "@world",
+    slug: "world-orb",
+    likes: "12.4K",
+    views: "68.1K"
+  },
+  {
     title: "Cyberpunk Megacity",
     author: "@future_builder",
     slug: "cyberpunk-megacity",
@@ -47,9 +54,7 @@ export default function GalleryPage() {
             GALLERY
           </Link>
           <a href="/#about">ABOUT</a>
-          <button className="walletButton">
-            CONNECT WALLET
-          </button>
+          <button className="walletButton">CONNECT WALLET</button>
         </nav>
       </header>
 
@@ -69,54 +74,37 @@ export default function GalleryPage() {
           <button className="filterActive">TRENDING</button>
           <button>LATEST</button>
           <button>MOST LIKED</button>
-
           <span className="filterSpacer" />
-
           <input placeholder="Search creations..." />
-
           <button>ALL CATEGORIES</button>
         </div>
 
         <div className="creationGrid large">
-          {creations.map(
-            ({ title, author, slug, likes, views }) => {
-              const creation = findCreation(slug);
+          {creations.map(({ title, author, slug, likes, views }) => {
+            const creation = findCreation(slug);
 
-              return (
-                <article
-                  className="creationCard"
-                  key={title}
+            return (
+              <article className="creationCard" key={title}>
+                <Link
+                  href={creation ? `/creation/${creation.slug}` : "/gallery"}
                 >
-                  <Link
-                    href={
-                      creation
-                        ? `/creation/${creation.slug}`
-                        : "/gallery"
-                    }
-                  >
-                    <div className="cardArtwork">
-                      {creation && (
-                        <ShowcaseThumb
-                          creation={creation}
-                        />
-                      )}
-                    </div>
-                  </Link>
-
-                  <div className="cardMeta">
-                    <div>
-                      <h3>{title}</h3>
-                      <p>{author}</p>
-                    </div>
-
-                    <span>
-                      ♥ {likes} · ◉ {views}
-                    </span>
+                  <div className="cardArtwork">
+                    {creation && <ShowcaseThumb creation={creation} />}
                   </div>
-                </article>
-              );
-            }
-          )}
+                </Link>
+
+                <div className="cardMeta">
+                  <div>
+                    <h3>{title}</h3>
+                    <p>{author}</p>
+                  </div>
+                  <span>
+                    ♥ {likes} · ◉ {views}
+                  </span>
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section>
     </main>
