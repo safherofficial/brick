@@ -2,131 +2,166 @@
 
 import { useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
-import { STUD, type Brick } from "@/lib/brickGrid";
+import type { ThreeEvent } from "@react-three/fiber";
+import {
+  dominantNormal,
+  type Cell,
+  type VoxelVolume
+} from "@/lib/voxelEngine";
+
+export type VoxelHit =
+  | { kind: "voxel"; cell: Cell; place: Cell }
+  | { kind: "empty"; cell: Cell };
 
 type Props = {
-  voxels: Brick[];
-  selectedId: number | null;
-  draggingId: number | null;
-  onSelect: (id: number) => void;
-  onHover: (point: THREE.Vector3) => void;
-  onDragStart: (id: number, ray: THREE.Ray) => void;
-  onDragMove: (ray: THREE.Ray) => void;
-  onDragEnd: () => void;
+  volume: VoxelVolume;
+  palette: string[];
+  revision: number;
+  selected: Set<string>;
+  onHit: (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => void;
+  onHover: (hit: VoxelHit | null) => void;
 };
 
 export function VoxelCloud({
-  voxels,
-  selectedId,
-  draggingId,
-  onSelect,
-  onHover,
-  onDragStart,
-  onDragMove,
-  onDragEnd
+  volume,
+  palette,
+  revision,
+  selected,
+  onHit,
+  onHover
 }: Props) {
   const groups = useMemo(() => {
-    const map = new Map<string, Brick[]>();
-    for (const voxel of voxels) {
-      if (voxel.id === draggingId) continue;
-      const list = map.get(voxel.color) ?? [];
-      list.push(voxel);
-      map.set(voxel.color, list);
-    }
-    return [...map.entries()];
-  }, [voxels, draggingId]);
+    void revision;
+    return [...volume.groups().entries()];
+  }, [volume, revision]);
 
   return (
     <>
-      {groups.map(([color, list]) => (
+      {groups.map(([colorIndex, cells]) => (
         <ColorBatch
-          key={color}
-          color={color}
-          list={list}
-          selectedId={selectedId}
-          onSelect={onSelect}
+          key={`${colorIndex}:${cells.length}:${revision}`}
+          color={palette[colorIndex] ?? "#ffffff"}
+          cells={cells}
+          onHit={onHit}
           onHover={onHover}
-          onDragStart={onDragStart}
-          onDragMove={onDragMove}
-          onDragEnd={onDragEnd}
         />
       ))}
+      {selected.size > 0 && (
+        <SelectionBatch keys={selected} revision={revision} />
+      )}
     </>
   );
 }
 
 function ColorBatch({
   color,
-  list,
-  selectedId,
-  onSelect,
-  onHover,
-  onDragStart,
-  onDragMove,
-  onDragEnd
+  cells,
+  onHit,
+  onHover
 }: {
   color: string;
-  list: Brick[];
-  selectedId: number | null;
-  onSelect: (id: number) => void;
-  onHover: (point: THREE.Vector3) => void;
-  onDragStart: (id: number, ray: THREE.Ray) => void;
-  onDragMove: (ray: THREE.Ray) => void;
-  onDragEnd: () => void;
+  cells: Cell[];
+  onHit: (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => void;
+  onHover: (hit: VoxelHit | null) => void;
 }) {
   const mesh = useRef<THREE.InstancedMesh>(null);
-  const ids = useRef<number[]>([]);
   const dummy = useMemo(() => new THREE.Object3D(), []);
+  const cellsRef = useRef(cells);
+  cellsRef.current = cells;
 
   useLayoutEffect(() => {
     const inst = mesh.current;
     if (!inst) return;
-    ids.current = list.map((b) => b.id);
-    list.forEach((brick, i) => {
-      dummy.position.set(brick.position[0], brick.position[1], brick.position[2]);
-      dummy.scale.set(1, 1, 1);
+    cells.forEach((cell, i) => {
+      dummy.position.set(cell.x, cell.y, cell.z);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
     });
-    inst.count = list.length;
+    inst.count = cells.length;
     inst.instanceMatrix.needsUpdate = true;
-  }, [dummy, list]);
+  }, [cells, dummy]);
+
+  const resolve = (e: ThreeEvent<PointerEvent>): VoxelHit | null => {
+    const i = e.instanceId;
+    if (i == null) return null;
+    const cell = cellsRef.current[i];
+    if (!cell) return null;
+    const n = e.face?.normal ?? new THREE.Vector3(0, 1, 0);
+    const dir = dominantNormal(n.x, n.y, n.z);
+    return {
+      kind: "voxel",
+      cell,
+      place: { x: cell.x + dir.x, y: cell.y + dir.y, z: cell.z + dir.z }
+    };
+  };
 
   return (
     <instancedMesh
       ref={mesh}
-      args={[undefined, undefined, Math.max(list.length, 1)]}
-      castShadow={false}
-      receiveShadow={false}
+      args={[undefined, undefined, Math.max(cells.length, 1)]}
+      castShadow
+      receiveShadow
       frustumCulled={false}
-      onClick={(e) => {
-        e.stopPropagation();
-        const id = ids.current[e.instanceId ?? -1];
-        if (id != null) onSelect(id);
-      }}
       onPointerDown={(e) => {
+        const hit = resolve(e);
+        if (!hit) return;
         e.stopPropagation();
-        if (e.button !== 0) return;
-        const id = ids.current[e.instanceId ?? -1];
-        if (id == null) return;
-        onSelect(id);
-        onDragStart(id, e.ray);
+        onHit(hit, e);
       }}
       onPointerMove={(e) => {
+        const hit = resolve(e);
+        if (!hit) return;
         e.stopPropagation();
-        onHover(e.point);
+        onHover(hit);
       }}
-      onPointerUp={(e) => {
-        e.stopPropagation();
-        onDragEnd();
-      }}
+      onPointerOut={() => onHover(null)}
     >
-      <boxGeometry args={[STUD * 0.96, STUD * 0.96, STUD * 0.96]} />
-      <meshStandardMaterial
-        color={color}
-        roughness={0.42}
-        metalness={0.04}
-      />
+      <boxGeometry args={[0.96, 0.96, 0.96]} />
+      <meshStandardMaterial color={color} roughness={0.38} metalness={0.04} />
+    </instancedMesh>
+  );
+}
+
+function SelectionBatch({
+  keys,
+  revision
+}: {
+  keys: Set<string>;
+  revision: number;
+}) {
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const cells = useMemo(() => {
+    void revision;
+    return [...keys].map((key) => {
+      const [x, y, z] = key.split(":").map(Number);
+      return { x, y, z };
+    });
+  }, [keys, revision]);
+
+  useLayoutEffect(() => {
+    const inst = mesh.current;
+    if (!inst) return;
+    cells.forEach((cell, i) => {
+      dummy.position.set(cell.x, cell.y, cell.z);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+    });
+    inst.count = cells.length;
+    inst.instanceMatrix.needsUpdate = true;
+  }, [cells, dummy]);
+
+  if (!cells.length) return null;
+
+  return (
+    <instancedMesh
+      ref={mesh}
+      args={[undefined, undefined, Math.max(cells.length, 1)]}
+      frustumCulled={false}
+      raycast={() => {}}
+    >
+      <boxGeometry args={[1.04, 1.04, 1.04]} />
+      <meshBasicMaterial color="#c4b5fd" wireframe transparent opacity={0.9} />
     </instancedMesh>
   );
 }
