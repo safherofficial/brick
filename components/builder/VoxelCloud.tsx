@@ -5,6 +5,7 @@ import * as THREE from "three";
 import type { ThreeEvent } from "@react-three/fiber";
 import {
   dominantNormal,
+  keyOf,
   type Cell,
   type VoxelVolume
 } from "@/lib/voxelEngine";
@@ -13,41 +14,82 @@ export type VoxelHit =
   | { kind: "voxel"; cell: Cell; place: Cell }
   | { kind: "empty"; cell: Cell };
 
+export type Clip = {
+  axis: "x" | "y" | "z" | null;
+  value: number;
+};
+
 type Props = {
   volume: VoxelVolume;
   palette: string[];
   revision: number;
   selected: Set<string>;
+  clip: Clip;
   onHit: (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => void;
   onHover: (hit: VoxelHit | null) => void;
 };
+
+function visible(cell: Cell, clip: Clip) {
+  if (!clip.axis) return true;
+  return cell[clip.axis] <= clip.value;
+}
+
+function shadeHex(hex: string, buried: number) {
+  const n = parseInt(hex.replace("#", "").padStart(6, "0").slice(0, 6), 16);
+  const k = 1 - buried * 0.09;
+  const ch = (shift: number) =>
+    Math.max(0, Math.min(255, Math.round(((n >> shift) & 255) * k)));
+  return `#${[ch(16), ch(8), ch(0)]
+    .map((v) => v.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
 
 export function VoxelCloud({
   volume,
   palette,
   revision,
   selected,
+  clip,
   onHit,
   onHover
 }: Props) {
   const groups = useMemo(() => {
     void revision;
-    return [...volume.groups().entries()];
-  }, [volume, revision]);
+    const raw = volume.raw();
+    const next = new Map<string, Cell[]>();
+    for (const [key, c] of raw) {
+      const [x, y, z] = key.split(":").map(Number);
+      const cell = { x, y, z };
+      if (!visible(cell, clip)) continue;
+      let buried = 0;
+      if (raw.has(keyOf(x - 1, y, z))) buried++;
+      if (raw.has(keyOf(x + 1, y, z))) buried++;
+      if (raw.has(keyOf(x, y - 1, z))) buried++;
+      if (raw.has(keyOf(x, y + 1, z))) buried++;
+      if (raw.has(keyOf(x, y, z - 1))) buried++;
+      if (raw.has(keyOf(x, y, z + 1))) buried++;
+      const hex = shadeHex(palette[c] ?? "#ffffff", buried);
+      const list = next.get(hex) ?? [];
+      list.push(cell);
+      next.set(hex, list);
+    }
+    return [...next.entries()];
+  }, [clip, palette, revision, volume]);
 
   return (
     <>
-      {groups.map(([colorIndex, cells]) => (
+      {groups.map(([color, cells]) => (
         <ColorBatch
-          key={`${colorIndex}:${cells.length}:${revision}`}
-          color={palette[colorIndex] ?? "#ffffff"}
+          key={color}
+          color={color}
           cells={cells}
+          capacity={Math.max(cells.length, 64)}
           onHit={onHit}
           onHover={onHover}
         />
       ))}
       {selected.size > 0 && (
-        <SelectionBatch keys={selected} revision={revision} />
+        <SelectionBatch keys={selected} revision={revision} clip={clip} />
       )}
     </>
   );
@@ -56,11 +98,13 @@ export function VoxelCloud({
 function ColorBatch({
   color,
   cells,
+  capacity,
   onHit,
   onHover
 }: {
   color: string;
   cells: Cell[];
+  capacity: number;
   onHit: (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => void;
   onHover: (hit: VoxelHit | null) => void;
 }) {
@@ -98,7 +142,7 @@ function ColorBatch({
   return (
     <instancedMesh
       ref={mesh}
-      args={[undefined, undefined, Math.max(cells.length, 1)]}
+      args={[undefined, undefined, Math.max(capacity, cells.length, 1)]}
       castShadow
       receiveShadow
       frustumCulled={false}
@@ -117,27 +161,31 @@ function ColorBatch({
       onPointerOut={() => onHover(null)}
     >
       <boxGeometry args={[0.96, 0.96, 0.96]} />
-      <meshStandardMaterial color={color} roughness={0.38} metalness={0.04} />
+      <meshStandardMaterial color={color} roughness={0.42} metalness={0.03} />
     </instancedMesh>
   );
 }
 
 function SelectionBatch({
   keys,
-  revision
+  revision,
+  clip
 }: {
   keys: Set<string>;
   revision: number;
+  clip: Clip;
 }) {
   const mesh = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const cells = useMemo(() => {
     void revision;
-    return [...keys].map((key) => {
-      const [x, y, z] = key.split(":").map(Number);
-      return { x, y, z };
-    });
-  }, [keys, revision]);
+    return [...keys]
+      .map((key) => {
+        const [x, y, z] = key.split(":").map(Number);
+        return { x, y, z };
+      })
+      .filter((cell) => visible(cell, clip));
+  }, [clip, keys, revision]);
 
   useLayoutEffect(() => {
     const inst = mesh.current;
