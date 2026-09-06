@@ -14,37 +14,42 @@ import * as THREE from "three";
 import { ChevronLeft, ChevronRight, Redo2, Undo2 } from "lucide-react";
 import { BrickVisual } from "@/components/builder/BrickVisual";
 import {
-  BRICK_HEIGHT,
   HISTORY_LIMIT,
   STARTER_LIMIT,
   STUD_HEIGHT,
   basicKinds,
   brickDefs,
+  canPlace,
   cloneBricks,
   effectiveFootprint,
-  isClear,
-  isValid,
-  loadDraft,
   makeBrick,
   nextId,
+  previewBrick,
   saveDraft,
   settle,
   sizeFor,
+  snapXZ,
   specialKinds,
+  stackLayerAt,
   syncIdSeq,
+  unitHeight,
+  withLayer,
   type Brick,
   type BrickKind,
   type Footprint,
   type Rotation,
   type Vec3,
-  palette
+  palette,
+  loadDraft
 } from "@/lib/brickGrid";
 
 type ViewMode = "iso" | "top" | "front" | "side";
 type Snapshot = Brick[];
 
-function dragPlanePoint(ray: THREE.Ray) {
-  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const DRAG_THRESHOLD = 0.18;
+
+function dragPlanePoint(ray: THREE.Ray, y = 0) {
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -y);
   const point = new THREE.Vector3();
   return ray.intersectPlane(plane, point);
 }
@@ -56,28 +61,30 @@ function initialScene(): Brick[] {
     x: number,
     z: number,
     layer: number,
-    rotation: Rotation = 0,
-    idValue = nextId()
+    idValue: number
   ): Brick => {
-    const footprint = effectiveFootprint(kind, rotation);
-    return {
-      id: idValue,
-      kind,
-      shape: brickDefs[kind].shape,
-      footprint,
-      size: sizeFor(footprint, kind),
-      position: [x, layer * (kind === "voxel" ? 0.9 : 0.48) + (kind === "voxel" ? 0.45 : 0.24), z],
-      rotation,
-      color,
+    const footprint = effectiveFootprint(kind, 0);
+    return withLayer(
+      {
+        id: idValue,
+        kind,
+        shape: brickDefs[kind].shape,
+        footprint,
+        size: sizeFor(footprint, kind),
+        position: [x, 0, z],
+        rotation: 0,
+        color,
+        layer
+      },
       layer
-    };
+    );
   };
 
   const scene = [
-    add("voxel", "#f4a0c4", -1, 0, 0, 0, 101),
-    add("voxel", "#7fe7ff", 0, 0, 0, 0, 102),
-    add("voxel", "#f3e07a", 1, 0, 0, 0, 103),
-    add("voxel", "#3aa0ff", 0, 0, 1, 0, 104)
+    add("voxel", "#f4a0c4", -1, 0, 0, 101),
+    add("voxel", "#7fe7ff", 0, 0, 0, 102),
+    add("voxel", "#f3e07a", 1, 0, 0, 103),
+    add("voxel", "#3aa0ff", 0, 0, 1, 104)
   ];
   syncIdSeq(scene);
   return scene;
@@ -89,7 +96,7 @@ function BrickMesh({
   dragging,
   onSelect,
   onHover,
-  onPlace,
+  onStack,
   onDragStart,
   onDragMove,
   onDragEnd
@@ -99,7 +106,7 @@ function BrickMesh({
   dragging: boolean;
   onSelect: (id: number) => void;
   onHover: (point: THREE.Vector3) => void;
-  onPlace: (point: THREE.Vector3) => void;
+  onStack: (point: THREE.Vector3) => void;
   onDragStart: (id: number, ray: THREE.Ray) => void;
   onDragMove: (ray: THREE.Ray) => void;
   onDragEnd: () => void;
@@ -113,7 +120,8 @@ function BrickMesh({
       onClick={(e) => {
         e.stopPropagation();
         if (dragging) return;
-        if (e.shiftKey) onPlace(e.point);
+        const top = brick.position[1] + size[1] / 2;
+        if (e.shiftKey || e.point.y >= top - 0.08) onStack(e.point);
         else onSelect(brick.id);
       }}
       onPointerDown={(e) => {
@@ -315,7 +323,7 @@ function Scene({
           dragging={draggingId === brick.id}
           onSelect={onSelect}
           onHover={onPointer}
-          onPlace={onPlace}
+          onStack={onPlace}
           onDragStart={onDragStart}
           onDragMove={onDragMove}
           onDragEnd={onDragEnd}
@@ -370,12 +378,14 @@ function BrickThumb({
 export default function Builder() {
   const [color, setColor] = useState<string>(palette[0]);
   const [kind, setKind] = useState<BrickKind>("voxel");
+  const [pendingRotation, setPendingRotation] = useState<Rotation>(0);
   const [sculptMode, setSculptMode] = useState(true);
   const [bricks, setBricks] = useState<Brick[]>(initialScene);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const dragOffset = useRef({ x: 0, z: 0 });
-  const dragHistoryCommitted = useRef(false);
+  const dragOrigin = useRef<Brick | null>(null);
+  const dragActive = useRef(false);
   const saveTimer = useRef<number | null>(null);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
@@ -401,11 +411,13 @@ export default function Builder() {
   const ghost = useMemo(
     () =>
       ghostPoint
-        ? makeBrick(kind, color, ghostPoint, bricks, 0, { sculpt: sculptMode })
+        ? previewBrick(kind, color, ghostPoint, bricks, pendingRotation, {
+            sculpt: sculptMode
+          })
         : null,
-    [ghostPoint, kind, color, bricks, sculptMode]
+    [ghostPoint, kind, color, bricks, sculptMode, pendingRotation]
   );
-  const ghostValid = !!ghost && (sculptMode ? isClear(ghost, bricks) : isValid(ghost, bricks));
+  const ghostValid = !!ghost && canPlace(ghost, bricks, sculptMode);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -416,7 +428,7 @@ export default function Builder() {
     (next: Brick[]) => {
       setHistory((h) => [...h.slice(-(HISTORY_LIMIT - 1)), cloneBricks(bricks)]);
       setFuture([]);
-      setBricks(sculptMode ? next : settle(next));
+      setBricks(sculptMode ? next.map(snapXZ) : settle(next));
     },
     [bricks, sculptMode]
   );
@@ -445,15 +457,17 @@ export default function Builder() {
         notify("STARTER SET EMPTY");
         return;
       }
-      const next = makeBrick(kind, color, point, bricks, 0, { sculpt: sculptMode });
-      if (sculptMode ? !isClear(next, bricks) : !isValid(next, bricks)) {
+      const next = makeBrick(kind, color, point, bricks, pendingRotation, {
+        sculpt: sculptMode
+      });
+      if (!canPlace(next, bricks, sculptMode)) {
         notify(sculptMode ? "CELL OCCUPIED" : "NO STUD SUPPORT HERE");
         return;
       }
       commit([...bricks, next]);
       setSelectedId(next.id);
     },
-    [available, bricks, color, commit, kind, notify, sculptMode]
+    [available, bricks, color, commit, kind, notify, pendingRotation, sculptMode]
   );
 
   const removeSelected = useCallback(() => {
@@ -463,57 +477,53 @@ export default function Builder() {
   }, [bricks, commit, selectedId]);
 
   const rotateSelected = useCallback(() => {
-    if (!selected) return;
+    if (!selected) {
+      setPendingRotation((r) => ((r + 90) % 360) as Rotation);
+      return;
+    }
     const nextRotation = ((selected.rotation + 90) % 360) as Rotation;
     const footprint = effectiveFootprint(selected.kind, nextRotation);
     const others = bricks.filter((b) => b.id !== selected.id);
-    const rotated: Brick = {
+    const rotated = snapXZ({
       ...selected,
       rotation: nextRotation,
       footprint,
       size: sizeFor(footprint, selected.kind)
-    };
-    const candidate = sculptMode ? rotated : settle([...others, rotated]).find((b) => b.id === selected.id);
-    if (!candidate || !(sculptMode ? isClear(candidate, others) : isValid(candidate, others))) {
+    });
+    if (!canPlace(rotated, others, sculptMode)) {
       notify("ROTATION BLOCKED");
       return;
     }
-    commit([...others, candidate]);
+    commit([...others, rotated]);
   }, [bricks, commit, notify, sculptMode, selected]);
 
   const moveSelected = useCallback(
     (dx: number, dz: number) => {
       if (!selected) return;
       const others = bricks.filter((b) => b.id !== selected.id);
-      const moved: Brick = {
+      const moved = snapXZ({
         ...selected,
         position: [
           selected.position[0] + dx,
           selected.position[1],
           selected.position[2] + dz
         ]
-      };
-      const next = sculptMode ? [...others, moved] : settle([...others, moved]);
-      commit(next);
+      });
+      if (!canPlace(moved, others, sculptMode)) {
+        notify("MOVE BLOCKED");
+        return;
+      }
+      commit([...others, moved]);
     },
-    [bricks, commit, sculptMode, selected]
+    [bricks, commit, notify, sculptMode, selected]
   );
 
   const nudgeLayer = useCallback(
     (dir: number) => {
       if (!selected) return;
       const others = bricks.filter((b) => b.id !== selected.id);
-      const candidate = {
-        ...selected,
-        layer: Math.max(0, selected.layer + dir)
-      };
-      candidate.position = [
-        selected.position[0],
-        (candidate.kind === "voxel" ? 0.9 : 0.48) * candidate.layer +
-          (candidate.kind === "voxel" ? 0.45 : 0.24),
-        selected.position[2]
-      ];
-      if (!isClear(candidate, others)) {
+      const candidate = withLayer(selected, selected.layer + dir);
+      if (!canPlace(candidate, others, true)) {
         notify("CELL OCCUPIED");
         return;
       }
@@ -527,7 +537,7 @@ export default function Builder() {
       if (available <= 0) notify("STARTER SET EMPTY");
       return;
     }
-    const copy: Brick = {
+    const copy = snapXZ({
       ...cloneBricks([selected])[0],
       id: nextId(),
       position: [
@@ -535,21 +545,26 @@ export default function Builder() {
         selected.position[1],
         selected.position[2]
       ]
-    };
-    commit(sculptMode ? [...bricks, copy] : settle([...bricks, copy]));
+    });
+    if (!canPlace(copy, bricks, sculptMode)) {
+      notify("NO SPACE TO DUPLICATE");
+      return;
+    }
+    commit([...bricks, copy]);
     setSelectedId(copy.id);
   }, [available, bricks, commit, notify, sculptMode, selected]);
 
   const startDragging = useCallback(
     (idValue: number, ray: THREE.Ray) => {
       const brick = bricks.find((b) => b.id === idValue);
-      const point = dragPlanePoint(ray);
+      const point = dragPlanePoint(ray, brick?.position[1] ?? 0);
       if (!brick || !point) return;
       dragOffset.current = {
         x: brick.position[0] - point.x,
         z: brick.position[2] - point.z
       };
-      dragHistoryCommitted.current = false;
+      dragOrigin.current = cloneBricks([brick])[0];
+      dragActive.current = false;
       setSelectedId(idValue);
       setDraggingId(idValue);
     },
@@ -559,30 +574,58 @@ export default function Builder() {
   const moveDragging = useCallback(
     (ray: THREE.Ray) => {
       if (draggingId === null) return;
-      const point = dragPlanePoint(ray);
-      if (!point) return;
-      const x = point.x + dragOffset.current.x;
-      const z = point.z + dragOffset.current.z;
+      const origin = dragOrigin.current;
+      const point = dragPlanePoint(ray, origin?.position[1] ?? 0);
+      if (!point || !origin) return;
+      const rawX = point.x + dragOffset.current.x;
+      const rawZ = point.z + dragOffset.current.z;
+      if (
+        !dragActive.current &&
+        Math.hypot(rawX - origin.position[0], rawZ - origin.position[2]) <
+          DRAG_THRESHOLD
+      ) {
+        return;
+      }
+      dragActive.current = true;
       setBricks((current) => {
         const brick = current.find((b) => b.id === draggingId);
         if (!brick) return current;
-        const moved = { ...brick, position: [x, brick.position[1], z] as Vec3 };
+        const moved = snapXZ({
+          ...brick,
+          position: [rawX, brick.position[1], rawZ]
+        });
         const others = current.filter((b) => b.id !== draggingId);
-        const next = sculptMode ? [...others, moved] : settle([...others, moved]);
-        if (!dragHistoryCommitted.current) {
-          dragHistoryCommitted.current = true;
-          setHistory((h) => [...h.slice(-(HISTORY_LIMIT - 1)), cloneBricks(current)]);
-          setFuture([]);
-        }
-        return next;
+        if (!canPlace(moved, others, true)) return current;
+        return [...others, moved];
       });
     },
-    [draggingId, sculptMode]
+    [draggingId]
   );
 
   const endDragging = useCallback(() => {
+    if (draggingId !== null && dragActive.current && dragOrigin.current) {
+      const origin = dragOrigin.current;
+      setBricks((current) => {
+        const brick = current.find((b) => b.id === draggingId);
+        if (!brick) return current;
+        const others = current.filter((b) => b.id !== draggingId);
+        const snapped = snapXZ(brick);
+        if (!canPlace(snapped, others, sculptMode)) {
+          notify("DROP BLOCKED");
+          return current.map((b) => (b.id === origin.id ? origin : b));
+        }
+        setHistory((h) => [...h.slice(-(HISTORY_LIMIT - 1)), cloneBricks(
+          current.map((b) => (b.id === origin.id ? origin : b))
+        )]);
+        setFuture([]);
+        const next = [...others, snapped];
+        return sculptMode ? next : settle(next);
+      });
+    }
+    dragActive.current = false;
+    dragOrigin.current = null;
     setDraggingId(null);
-  }, []);
+  }, [draggingId, notify, sculptMode]);
 
   const undo = useCallback(() => {
     const previous = history.at(-1);
@@ -620,6 +663,10 @@ export default function Builder() {
         e.preventDefault();
       }
 
+      if (e.key === " " && ghost && ghostValid) {
+        e.preventDefault();
+        addAt(new THREE.Vector3(ghost.position[0], ghost.position[1], ghost.position[2]));
+      }
       if (e.key === "Delete" || e.key === "Backspace") removeSelected();
       if (e.key.toLowerCase() === "r") rotateSelected();
       if (e.key === "Escape") setSelectedId(null);
@@ -656,7 +703,18 @@ export default function Builder() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [duplicateSelected, moveSelected, nudgeLayer, redo, removeSelected, rotateSelected, undo]);
+  }, [
+    addAt,
+    duplicateSelected,
+    ghost,
+    ghostValid,
+    moveSelected,
+    nudgeLayer,
+    redo,
+    removeSelected,
+    rotateSelected,
+    undo
+  ]);
 
   return (
     <main className="builderShell">
@@ -816,7 +874,10 @@ export default function Builder() {
               <button onClick={removeSelected}>DELETE</button>
             </>
           ) : (
-            <p className="hint">SCULPT ON: stack with PageUp / PageDown.</p>
+            <p className="hint">
+              Click a brick top or press Space to stack. R rotates the ghost.
+              Sculpt OFF uses gravity.
+            </p>
           )}
         </aside>
       </div>
