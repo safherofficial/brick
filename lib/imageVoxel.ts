@@ -33,8 +33,7 @@ function nearestIndex(
   let dist = Infinity;
   for (let i = 0; i < colors.length; i++) {
     const [pr, pg, pb] = colors[i];
-    const d =
-      (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb);
+    const d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
     if (d < dist) {
       dist = d;
       best = i;
@@ -44,9 +43,7 @@ function nearestIndex(
 }
 
 function quantize(unique: number[], maxColors: number) {
-  if (unique.length <= maxColors) {
-    return unique.map((n) => unpack(n));
-  }
+  if (unique.length <= maxColors) return unique.map((n) => unpack(n));
   const buckets = new Map<number, { n: number; r: number; g: number; b: number }>();
   const shift = unique.length > 1024 ? 3 : 2;
   for (const p of unique) {
@@ -59,17 +56,17 @@ function quantize(unique: number[], maxColors: number) {
     cur.b += b;
     buckets.set(key, cur);
   }
-  const ranked = [...buckets.values()]
+  return [...buckets.values()]
     .sort((a, b) => b.n - a.n)
     .slice(0, maxColors)
-    .map((c) =>
-      [
-        Math.round(c.r / c.n),
-        Math.round(c.g / c.n),
-        Math.round(c.b / c.n)
-      ] as [number, number, number]
+    .map(
+      (c) =>
+        [
+          Math.round(c.r / c.n),
+          Math.round(c.g / c.n),
+          Math.round(c.b / c.n)
+        ] as [number, number, number]
     );
-  return ranked;
 }
 
 function loadImage(file: File): Promise<HTMLImageElement> {
