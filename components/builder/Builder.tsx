@@ -802,7 +802,8 @@ function BrickModel({
         footprint={
           brickDefs[
             brick.kind
-          ].footprint
+          ]?.footprint ??
+          brick.footprint
         }
         color={
           materialColor
@@ -1146,30 +1147,6 @@ function Scene({
 
   gridVisible: boolean;
 }) {
-  const controlsRef = useRef<any>(null);
-
-  const handleDragStart = (
-    idValue: number,
-    ray: THREE.Ray
-  ) => {
-    if (controlsRef.current) {
-      controlsRef.current.enabled = false;
-    }
-
-    onDragStart(
-      idValue,
-      ray
-    );
-  };
-
-  const handleDragEnd = () => {
-    onDragEnd();
-
-    if (controlsRef.current) {
-      controlsRef.current.enabled = true;
-    }
-  };
-
   const groundHover = (
     e: ThreeEvent<PointerEvent>
   ) => {
@@ -1382,13 +1359,13 @@ function Scene({
               onPlace
             }
             onDragStart={
-              handleDragStart
+              onDragStart
             }
             onDragMove={
               onDragMove
             }
             onDragEnd={
-              handleDragEnd
+              onDragEnd
             }
           />
         )
@@ -1425,7 +1402,6 @@ function Scene({
        * completamente disabilitato.
        */}
       <OrbitControls
-        ref={controlsRef}
         enabled={
           draggingId ===
           null
@@ -2432,14 +2408,42 @@ export default function Builder() {
           raw
         ) as Brick[];
 
-      if (
+      /*
+       * Un pezzo salvato da una versione precedente
+       * (es. il vecchio "MICRO") potrebbe non esistere
+       * più in brickDefs. Se lo teniamo, il render
+       * crasha subito con "Cannot read properties of
+       * undefined (reading 'footprint')". Lo scartiamo
+       * qui invece di lasciarlo passare.
+       */
+      const valid =
         Array.isArray(
           parsed
-        ) &&
-        parsed.length
+        )
+          ? parsed.filter(
+              (b) =>
+                b &&
+                brickDefs[
+                  b.kind
+                ]
+            )
+          : [];
+
+      if (
+        valid.length
       ) {
         setBricks(
-          parsed
+          valid
+        );
+      } else if (
+        parsed?.length
+      ) {
+        /*
+         * C'erano dati ma nessun pezzo era più
+         * valido: ripuliamo il draft corrotto.
+         */
+        localStorage.removeItem(
+          "brick-builder-draft-state"
         );
       }
     } catch {
@@ -2447,6 +2451,9 @@ export default function Builder() {
        * Ignore malformed
        * local draft.
        */
+      localStorage.removeItem(
+        "brick-builder-draft-state"
+      );
     }
   }, []);
 
