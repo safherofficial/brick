@@ -16,7 +16,9 @@ export default function GalleryPage() {
             GALLERY
           </Link>
           <a href="/#about">ABOUT</a>
-          <button className="walletButton">CONNECT WALLET</button>
+          <button className="walletButton">
+            CONNECT WALLET
+          </button>
         </nav>
       </header>
 
@@ -26,6 +28,7 @@ export default function GalleryPage() {
             <p className="eyebrow">THE SHOWCASE</p>
             <h1>EXPLORE CREATIONS</h1>
           </div>
+
           <Link href="/build" className="primaryButton">
             CREATE YOURS →
           </Link>
@@ -35,24 +38,32 @@ export default function GalleryPage() {
           <button className="filterActive">TRENDING</button>
           <button>LATEST</button>
           <button>MOST LIKED</button>
+
           <span className="filterSpacer" />
+
           <input placeholder="Search creations..." />
+
           <button>ALL CATEGORIES</button>
         </div>
 
         <div className="creationGrid large">
           {creations.map((creation) => (
-            <article className="creationCard" key={creation.slug}>
+            <article
+              className="creationCard"
+              key={creation.slug}
+            >
               <Link href={`/creation/${creation.slug}`}>
                 <div className="cardArtwork">
                   <ShowcaseThumb creation={creation} />
                 </div>
               </Link>
+
               <div className="cardMeta">
                 <div>
                   <h3>{creation.title}</h3>
                   <p>{creation.author}</p>
                 </div>
+
                 <span>
                   ♥ {creation.likes} · ◉ {creation.views}
                 </span>
