@@ -36,6 +36,153 @@ function b(
 
 const BRICK_H = 0.45;
 
+// Deve combaciare con STUD in components/builder/BrickVisual.tsx,
+// così i pezzi tassellati qui si allineano alla stessa griglia
+// usata dal Builder.
+const STUD = 0.9;
+
+/*
+ * Hash deterministico (niente Math.random): stessa scena identica
+ * lato server e lato client, senza mismatch di idratazione.
+ */
+function hash(n: number): number {
+  const s = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function shade(hex: string, amount: number): string {
+  const num = parseInt(hex.slice(1), 16);
+
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const bl = num & 255;
+
+  const mix = (channel: number) =>
+    Math.round(
+      Math.min(255, Math.max(0, channel + amount * 255))
+    )
+      .toString(16)
+      .padStart(2, "0");
+
+  return `#${mix(r)}${mix(g)}${mix(bl)}`;
+}
+
+/**
+ * Tassella un'area rettangolare (w × d, in world units) con tanti
+ * piccoli brick invece di un'unica lastra solida: è il modo in cui
+ * aumentiamo la "risoluzione voxel" dei modelli, con una leggera
+ * variazione di tono pezzo per pezzo per dare texture.
+ */
+function tileArea(
+  w: number,
+  d: number,
+  cx: number,
+  cz: number,
+  y: number,
+  height: number,
+  baseColor: string,
+  opts?: {
+    unit?: number;
+    gap?: number;
+    jitter?: number;
+    seed?: number;
+    studless?: boolean;
+  }
+): ShowcaseBrick[] {
+  const unit = opts?.unit ?? STUD;
+  const gap = opts?.gap ?? 0.06;
+  const jitter = opts?.jitter ?? 0.05;
+  const seed = opts?.seed ?? 0;
+
+  const cols = Math.max(1, Math.round(w / unit));
+  const rows = Math.max(1, Math.round(d / unit));
+
+  const cellW = w / cols;
+  const cellD = d / rows;
+
+  const brickW = Math.max(0.1, cellW - gap);
+  const brickD = Math.max(0.1, cellD - gap);
+
+  const bricks: ShowcaseBrick[] = [];
+
+  for (let ix = 0; ix < cols; ix++) {
+    for (let iz = 0; iz < rows; iz++) {
+      const x = cx - w / 2 + cellW / 2 + ix * cellW;
+      const z = cz - d / 2 + cellD / 2 + iz * cellD;
+
+      const n = hash(ix * 13.1 + iz * 7.7 + seed * 91.7);
+      const color = shade(baseColor, (n - 0.5) * jitter);
+
+      bricks.push(
+        b(
+          [brickW, height, brickD],
+          [x, y, z],
+          color,
+          opts?.studless ? { studless: true } : undefined
+        )
+      );
+    }
+  }
+
+  return bricks;
+}
+
+// ------------------------------------------------------------
+// Gradiente arcobaleno in stile Solana, usato dall'emblema qui
+// sotto. Interpolazione lineare RGB tra alcuni stop di colore.
+// ------------------------------------------------------------
+
+const SOLANA_STOPS: Array<[number, string]> = [
+  [0.0, "#7B3FE4"],
+  [0.16, "#4C6FEF"],
+  [0.32, "#2FB8E8"],
+  [0.48, "#2FE0C0"],
+  [0.62, "#8FE457"],
+  [0.76, "#F3DE4B"],
+  [0.88, "#F5993D"],
+  [1.0, "#F35E9E"]
+];
+
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function rgbToHex(rgb: [number, number, number]): string {
+  return `#${rgb
+    .map((v) =>
+      Math.round(Math.min(255, Math.max(0, v)))
+        .toString(16)
+        .padStart(2, "0")
+    )
+    .join("")}`;
+}
+
+function solanaGradient(t: number): string {
+  const tt = Math.min(1, Math.max(0, t));
+
+  for (let i = 0; i < SOLANA_STOPS.length - 1; i++) {
+    const [t0, c0] = SOLANA_STOPS[i];
+    const [t1, c1] = SOLANA_STOPS[i + 1];
+
+    if (tt >= t0 && tt <= t1) {
+      const localT = (tt - t0) / (t1 - t0);
+      const rgb0 = hexToRgb(c0);
+      const rgb1 = hexToRgb(c1);
+
+      const mixed: [number, number, number] = [
+        rgb0[0] + (rgb1[0] - rgb0[0]) * localT,
+        rgb0[1] + (rgb1[1] - rgb0[1]) * localT,
+        rgb0[2] + (rgb1[2] - rgb0[2]) * localT
+      ];
+
+      return rgbToHex(mixed);
+    }
+  }
+
+  return SOLANA_STOPS[SOLANA_STOPS.length - 1][1];
+}
+
 function tower(
   x: number,
   z: number,
@@ -102,7 +249,9 @@ function cyberpunkCity(): ShowcaseBrick[] {
   const road = "#0b1220";
 
   bricks.push(
-    b([12.6, 0.45, 10.8], [0, 0.225, 0], road)
+    ...tileArea(12.6, 10.8, 0, 0, 0.225, 0.45, road, {
+      seed: 1
+    })
   );
 
   bricks.push(
@@ -140,10 +289,15 @@ function cyberpunkCity(): ShowcaseBrick[] {
 
     for (let i = 0; i < levels; i++) {
       bricks.push(
-        b(
-          [w, BRICK_H, d],
-          [x, 0.45 + i * BRICK_H, z],
-          index % 2 ? dark2 : dark
+        ...tileArea(
+          w,
+          d,
+          x,
+          z,
+          0.45 + i * BRICK_H,
+          BRICK_H,
+          index % 2 ? dark2 : dark,
+          { seed: index * 97 + i }
         )
       );
 
@@ -246,17 +400,28 @@ function spaceStation(): ShowcaseBrick[] {
   const glass = "#38bdf8";
 
   bricks.push(
-    b([4.8, 0.45, 4.8], [0, 0.225, 0], grey)
+    ...tileArea(4.8, 4.8, 0, 0, 0.225, 0.45, grey, {
+      seed: 2
+    })
   );
+
+  let hubLevel = 0;
 
   for (let y = 0; y < 3.6; y += BRICK_H) {
     bricks.push(
-      b(
-        [2.7, BRICK_H, 2.7],
-        [0, 0.45 + y, 0],
-        white
+      ...tileArea(
+        2.7,
+        2.7,
+        0,
+        0,
+        0.45 + y,
+        BRICK_H,
+        white,
+        { seed: 200 + hubLevel }
       )
     );
+
+    hubLevel += 1;
   }
 
   bricks.push(
@@ -383,7 +548,9 @@ function japaneseCastle(): ShowcaseBrick[] {
   const gold = "#d4a72c";
 
   bricks.push(
-    b([11, 0.45, 9], [0, 0.225, 0], stone)
+    ...tileArea(11, 9, 0, 0, 0.225, 0.45, stone, {
+      seed: 3
+    })
   );
 
   const levels = [
@@ -398,14 +565,15 @@ function japaneseCastle(): ShowcaseBrick[] {
 
     for (let i = 0; i < count; i++) {
       bricks.push(
-        b(
-          [level.w, BRICK_H, level.d],
-          [
-            0,
-            level.y + i * BRICK_H + BRICK_H / 2,
-            0
-          ],
-          li % 2 ? stone2 : stone
+        ...tileArea(
+          level.w,
+          level.d,
+          0,
+          0,
+          level.y + i * BRICK_H + BRICK_H / 2,
+          BRICK_H,
+          li % 2 ? stone2 : stone,
+          { seed: li * 61 + i }
         )
       );
     }
@@ -506,7 +674,9 @@ function airship(): ShowcaseBrick[] {
   const cream = "#ead9b6";
 
   bricks.push(
-    b([7.2, 0.45, 3.0], [0, 2.0, 0], dark)
+    ...tileArea(7.2, 3.0, 0, 0, 2.0, 0.45, dark, {
+      seed: 4
+    })
   );
 
   for (let x = -3; x <= 3; x += 1) {
@@ -558,7 +728,9 @@ function airship(): ShowcaseBrick[] {
   }
 
   bricks.push(
-    b([2.8, 0.4, 1.8], [0, 0.1, 0], dark)
+    ...tileArea(2.8, 1.8, 0, 0, 0.1, 0.4, dark, {
+      seed: 5
+    })
   );
 
   bricks.push(
@@ -604,6 +776,91 @@ function airship(): ShowcaseBrick[] {
       [0, 5.9, 0],
       brass,
       { shape: "cone", studless: true }
+    )
+  );
+
+  return bricks;
+}
+
+// ------------------------------------------------------------
+// SOLANA EMBLEM
+// ------------------------------------------------------------
+
+/**
+ * Una singola barra a parallelogramma: righe impilate lungo Y,
+ * ognuna traslata un po' lungo X rispetto a quella sotto — è
+ * questo shear per-riga che produce il profilo a parallelogramma
+ * (i lati obliqui) invece di un semplice rettangolo, restando
+ * comunque costruito da soli cubetti allineati alla griglia.
+ */
+function solanaBar(
+  columns: number,
+  rows: number,
+  xOffset: number,
+  yBase: number,
+  shearPerRow: number,
+  depth: number
+): ShowcaseBrick[] {
+  const unit = STUD;
+  const cell = unit - 0.06;
+
+  const bricks: ShowcaseBrick[] = [];
+
+  for (let r = 0; r < rows; r++) {
+    const rowShift = xOffset + r * shearPerRow;
+
+    for (let c = 0; c < columns; c++) {
+      const x = rowShift + (c - (columns - 1) / 2) * unit;
+      const y = yBase + r * unit + unit / 2;
+
+      const t = c / (columns - 1);
+      const color = solanaGradient(t);
+
+      bricks.push(
+        b([cell, cell, depth], [x, y, 0], color)
+      );
+    }
+  }
+
+  return bricks;
+}
+
+function solanaEmblem(): ShowcaseBrick[] {
+  const bricks: ShowcaseBrick[] = [];
+
+  const columns = 24;
+  const rows = 4;
+  const gapBetweenBars = 1.0;
+  const depth = 1.6;
+  const shearPerRow = 0.32;
+
+  const barPitch = rows * STUD + gapBetweenBars;
+
+  for (let barIndex = 0; barIndex < 3; barIndex++) {
+    bricks.push(
+      ...solanaBar(
+        columns,
+        rows,
+        0,
+        barIndex * barPitch,
+        shearPerRow,
+        depth
+      )
+    );
+  }
+
+  const totalWidth = columns * STUD + shearPerRow * rows + 2.4;
+
+  bricks.push(
+    ...tileArea(
+      totalWidth,
+      depth + 2.0,
+      shearPerRow * rows * 0.5,
+      0,
+      -0.75,
+      0.55,
+      "#090b12",
+      { seed: 11, studless: true, jitter: 0.03 }
     )
   );
 
@@ -658,6 +915,18 @@ export const creations: ShowcaseCreation[] = [
     bricks: airship(),
     camera: [12, 7, 14],
     target: [0, 2.5, 0]
+  },
+  {
+    slug: "solana-emblem",
+    title: "Solana Emblem",
+    author: "@onchain_builder",
+    description:
+      "A high-resolution voxel sculpture of three sheared, gradient-lit bars — a brick tribute to the Solana mark.",
+    likes: "9.1K",
+    views: "44.3K",
+    bricks: solanaEmblem(),
+    camera: [26, 14, 28],
+    target: [0.6, 6.0, 0]
   }
 ];
 
