@@ -1,4 +1,4 @@
-import { keyOf, type VoxelVolume } from "@/lib/voxelEngine";
+import { keyOf, type Voxel, type VoxelVolume } from "@/lib/voxelEngine";
 
 function u32(n: number) {
   const b = new Uint8Array(4);
@@ -34,6 +34,14 @@ function hexRgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
+function rgbHex(r: number, g: number, b: number) {
+  return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function readI32(view: DataView, offset: number) {
+  return view.getInt32(offset, true);
+}
+
 export function exportVox(volume: VoxelVolume, palette: string[]) {
   const voxels = volume.voxels();
   const xyzi = new Uint8Array(4 + voxels.length * 4);
@@ -64,6 +72,83 @@ export function exportVox(volume: VoxelVolume, palette: string[]) {
   ]);
 
   return concat([new TextEncoder().encode("VOX "), u32(150), main]);
+}
+
+export type VoxModel = {
+  size: number;
+  voxels: Voxel[];
+  palette: string[];
+};
+
+export function importVox(buffer: ArrayBuffer): VoxModel {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+  if (magic !== "VOX ") throw new Error("Not a VOX file");
+
+  let sizeX = 1;
+  let sizeY = 1;
+  let sizeZ = 1;
+  let voxels: Voxel[] = [];
+  const palette = Array.from({ length: 256 }, () => "#000000");
+  let hasPalette = false;
+
+  const walk = (offset: number, end: number) => {
+    let o = offset;
+    while (o + 12 <= end) {
+      const id = String.fromCharCode(
+        bytes[o],
+        bytes[o + 1],
+        bytes[o + 2],
+        bytes[o + 3]
+      );
+      const content = readI32(view, o + 4);
+      const children = readI32(view, o + 8);
+      const contentStart = o + 12;
+      const contentEnd = contentStart + content;
+      const childEnd = contentEnd + children;
+
+      if (id === "SIZE") {
+        sizeX = readI32(view, contentStart);
+        sizeZ = readI32(view, contentStart + 4);
+        sizeY = readI32(view, contentStart + 8);
+      } else if (id === "XYZI") {
+        const n = readI32(view, contentStart);
+        voxels = [];
+        for (let i = 0; i < n; i++) {
+          const p = contentStart + 4 + i * 4;
+          voxels.push({
+            x: bytes[p],
+            z: bytes[p + 1],
+            y: bytes[p + 2],
+            c: Math.max(0, bytes[p + 3] - 1)
+          });
+        }
+      } else if (id === "RGBA") {
+        hasPalette = true;
+        for (let i = 0; i < 256; i++) {
+          const p = contentStart + i * 4;
+          palette[i] = rgbHex(bytes[p], bytes[p + 1], bytes[p + 2]);
+        }
+      } else if (id === "MAIN" && children > 0) {
+        walk(contentEnd, childEnd);
+      }
+
+      if (children > 0 && id !== "MAIN") walk(contentEnd, childEnd);
+      o = childEnd;
+    }
+  };
+
+  walk(8, bytes.length);
+
+  const need = Math.max(sizeX, sizeY, sizeZ, 1);
+  const size = [32, 64, 128, 256].find((n) => n >= need) ?? Math.max(need, 32);
+
+  return {
+    size,
+    voxels: voxels.filter((v) => v.x < size && v.y < size && v.z < size),
+    palette: hasPalette ? palette : palette
+  };
 }
 
 type Face = {
