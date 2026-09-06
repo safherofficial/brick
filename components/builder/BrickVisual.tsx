@@ -2,20 +2,17 @@
 
 import { RoundedBox } from "@react-three/drei";
 import type { ReactNode } from "react";
+import {
+  BRICK_HEIGHT,
+  STUD,
+  STUD_HEIGHT,
+  STUD_RADIUS,
+  type BrickShape
+} from "@/lib/brickGrid";
 
-export type BrickShape =
-  | "box"
-  | "cone"
-  | "cylinder";
+export type { BrickShape };
+export { STUD, BRICK_HEIGHT };
 
-export const STUD = 0.9;
-
-// Altezza standard del brick.
-export const BRICK_HEIGHT = 1.08;
-
-/**
- * Materiale plastico ABS.
- */
 function PlasticMaterial({
   color,
   opacity = 1
@@ -24,12 +21,10 @@ function PlasticMaterial({
   opacity?: number;
 }) {
   return (
-    <meshPhysicalMaterial
+    <meshStandardMaterial
       color={color}
-      roughness={0.2}
-      metalness={0}
-      clearcoat={0.7}
-      clearcoatRoughness={0.14}
+      roughness={0.28}
+      metalness={0.02}
       transparent={opacity < 1}
       opacity={opacity}
       depthWrite={opacity >= 1}
@@ -37,50 +32,30 @@ function PlasticMaterial({
   );
 }
 
-/**
- * Stud superiore.
- */
 export function Stud({
   color,
-  radius = 0.145,
-  height = 0.105
+  radius = STUD_RADIUS,
+  height = STUD_HEIGHT,
+  castShadow = false
 }: {
   color: string;
   radius?: number;
   height?: number;
+  castShadow?: boolean;
 }) {
   return (
-    <mesh
-      position={[0, height / 2, 0]}
-      castShadow
-      receiveShadow
-    >
-      <cylinderGeometry
-        args={[
-          radius,
-          radius,
-          height,
-          20
-        ]}
-      />
-
+    <mesh position={[0, height / 2, 0]} castShadow={castShadow}>
+      <cylinderGeometry args={[radius, radius, height, 12]} />
       <PlasticMaterial color={color} />
     </mesh>
   );
 }
 
-/**
- * Anello/tubo inferiore.
- *
- * Il dettaglio rimane completamente all'interno
- * del volume del brick e quindi non modifica
- * collisioni, footprint o snapping.
- */
 function BottomTube({
   color,
   position,
   radius = 0.255,
-  height = 0.72
+  height = 0.32
 }: {
   color: string;
   position: [number, number, number];
@@ -88,34 +63,13 @@ function BottomTube({
   height?: number;
 }) {
   return (
-    <mesh
-      position={position}
-      castShadow
-      receiveShadow
-    >
-      <cylinderGeometry
-        args={[
-          radius,
-          radius,
-          height,
-          20,
-          1,
-          true
-        ]}
-      />
-
+    <mesh position={position}>
+      <cylinderGeometry args={[radius, radius, height, 12, 1, true]} />
       <PlasticMaterial color={color} />
     </mesh>
   );
 }
 
-/**
- * Struttura interna inferiore.
- *
- * Per brick 1x1 e 2x2 viene mantenuta una geometria
- * semplice e centrata. Per brick più grandi vengono
- * distribuiti più tubi interni.
- */
 function BrickUnderside({
   color,
   footprint,
@@ -126,70 +80,28 @@ function BrickUnderside({
   height: number;
 }) {
   const [w, d] = footprint;
-
-  const tubeHeight =
-    Math.min(
-      0.72,
-      Math.max(
-        0.45,
-        height - 0.25
-      )
-    );
-
+  const tubeHeight = Math.min(0.32, Math.max(0.2, height - 0.16));
   const tubes: ReactNode[] = [];
 
-  /**
-   * Un tubo centrale per i piccoli brick.
-   */
   if (w === 1 || d === 1) {
     tubes.push(
       <BottomTube
         key="center"
         color={color}
-        position={[
-          0,
-          -height / 2 +
-            tubeHeight / 2 +
-            0.035,
-          0
-        ]}
+        position={[0, -height / 2 + tubeHeight / 2 + 0.02, 0]}
         height={tubeHeight}
       />
     );
   } else {
-    /**
-     * Per brick più grandi:
-     * un tubo tra ogni coppia di file.
-     */
-    for (
-      let ix = 0;
-      ix < w - 1;
-      ix++
-    ) {
-      for (
-        let iz = 0;
-        iz < d - 1;
-        iz++
-      ) {
-        const x =
-          -((w - 1) * STUD) / 2 +
-          (ix + 0.5) * STUD;
-
-        const z =
-          -((d - 1) * STUD) / 2 +
-          (iz + 0.5) * STUD;
-
+    for (let ix = 0; ix < w - 1; ix++) {
+      for (let iz = 0; iz < d - 1; iz++) {
+        const x = -((w - 1) * STUD) / 2 + (ix + 0.5) * STUD;
+        const z = -((d - 1) * STUD) / 2 + (iz + 0.5) * STUD;
         tubes.push(
           <BottomTube
             key={`${ix}-${iz}`}
             color={color}
-            position={[
-              x,
-              -height / 2 +
-                tubeHeight / 2 +
-                0.035,
-              z
-            ]}
+            position={[x, -height / 2 + tubeHeight / 2 + 0.02, z]}
             height={tubeHeight}
           />
         );
@@ -197,66 +109,40 @@ function BrickUnderside({
     }
   }
 
-  return (
-    <group>
-      {tubes}
-    </group>
-  );
+  return <group>{tubes}</group>;
 }
 
-/**
- * Corpo principale del brick.
- */
 function BoxBrick({
   size,
   color,
   opacity,
   footprint,
+  detail,
   children
 }: {
   size: [number, number, number];
   color: string;
   opacity: number;
   footprint: [number, number];
+  detail: "editor" | "hero";
   children?: ReactNode;
 }) {
-  const minDim =
-    Math.min(
-      size[0],
-      size[1],
-      size[2]
-    );
-
-  const radius =
-    Math.min(
-      0.055,
-      minDim * 0.055
-    );
-
-  const showUnderside =
-    opacity >= 1;
+  const minDim = Math.min(size[0], size[1], size[2]);
+  const radius = Math.min(0.055, minDim * 0.055);
 
   return (
     <group>
-      {/* Corpo principale */}
       <RoundedBox
         args={size}
         radius={radius}
-        smoothness={3}
-        castShadow
-        receiveShadow
+        smoothness={2}
+        castShadow={opacity >= 1}
+        receiveShadow={opacity >= 1}
       >
-        <PlasticMaterial
-          color={color}
-          opacity={opacity}
-        />
+        <PlasticMaterial color={color} opacity={opacity} />
       </RoundedBox>
-
-      {/* Stud superiori */}
       {children}
-
-      {/* Dettaglio inferiore */}
-      {showUnderside && (
+      {detail === "hero" && opacity >= 1 && (
         <BrickUnderside
           color={color}
           footprint={footprint}
@@ -267,25 +153,14 @@ function BoxBrick({
   );
 }
 
-/**
- * Corpo di un brick in stile LEGO.
- *
- * STUD = 0.9 world units.
- *
- * 1x1 = 0.9 × 0.9
- * 2x2 = 1.8 × 1.8
- * 2x4 = 3.6 × 1.8
- *
- * Altezza standard:
- * 1.08 world units.
- */
 export function BrickVisual({
   shape,
   size,
   footprint,
   color,
   opacity = 1,
-  studless = false
+  studless = false,
+  detail = "hero"
 }: {
   shape: BrickShape;
   size: [number, number, number];
@@ -293,123 +168,48 @@ export function BrickVisual({
   color: string;
   opacity?: number;
   studless?: boolean;
+  detail?: "editor" | "hero";
 }) {
-  const showStuds =
-    opacity >= 1 &&
-    !studless;
+  const showStuds = opacity >= 1 && !studless;
 
-  /**
-   * CONE
-   */
   if (shape === "cone") {
     return (
-      <mesh
-        castShadow
-        receiveShadow
-      >
-        <coneGeometry
-          args={[
-            size[0] * 0.42,
-            size[1],
-            28
-          ]}
-        />
-
-        <PlasticMaterial
-          color={color}
-          opacity={opacity}
-        />
+      <mesh castShadow={opacity >= 1} receiveShadow={opacity >= 1}>
+        <coneGeometry args={[size[0] * 0.42, size[1], 20]} />
+        <PlasticMaterial color={color} opacity={opacity} />
       </mesh>
     );
   }
 
-  /**
-   * CYLINDER / ROUND
-   */
   if (shape === "cylinder") {
     return (
       <group>
-        <mesh
-          castShadow
-          receiveShadow
-        >
+        <mesh castShadow={opacity >= 1} receiveShadow={opacity >= 1}>
           <cylinderGeometry
-            args={[
-              size[0] * 0.42,
-              size[0] * 0.42,
-              size[1],
-              32
-            ]}
+            args={[size[0] * 0.42, size[0] * 0.42, size[1], 24]}
           />
-
-          <PlasticMaterial
-            color={color}
-            opacity={opacity}
-          />
+          <PlasticMaterial color={color} opacity={opacity} />
         </mesh>
-
         {showStuds && (
-          <group
-            position={[
-              0,
-              size[1] / 2,
-              0
-            ]}
-          >
-            <Stud
-              color={color}
-              radius={0.145}
-              height={0.105}
-            />
+          <group position={[0, size[1] / 2, 0]}>
+            <Stud color={color} />
           </group>
         )}
       </group>
     );
   }
 
-  /**
-   * BOX BRICK
-   */
-  const [w, d] =
-    footprint;
-
+  const [w, d] = footprint;
   const studs: ReactNode[] = [];
 
   if (showStuds) {
-    for (
-      let ix = 0;
-      ix < w;
-      ix++
-    ) {
-      for (
-        let iz = 0;
-        iz < d;
-        iz++
-      ) {
-        const x =
-          -size[0] / 2 +
-          STUD / 2 +
-          ix * STUD;
-
-        const z =
-          -size[2] / 2 +
-          STUD / 2 +
-          iz * STUD;
-
+    for (let ix = 0; ix < w; ix++) {
+      for (let iz = 0; iz < d; iz++) {
+        const x = -size[0] / 2 + STUD / 2 + ix * STUD;
+        const z = -size[2] / 2 + STUD / 2 + iz * STUD;
         studs.push(
-          <group
-            key={`stud-${ix}-${iz}`}
-            position={[
-              x,
-              size[1] / 2,
-              z
-            ]}
-          >
-            <Stud
-              color={color}
-              radius={0.145}
-              height={0.105}
-            />
+          <group key={`stud-${ix}-${iz}`} position={[x, size[1] / 2, z]}>
+            <Stud color={color} />
           </group>
         );
       }
@@ -422,6 +222,7 @@ export function BrickVisual({
       color={color}
       opacity={opacity}
       footprint={footprint}
+      detail={detail}
     >
       {studs}
     </BoxBrick>
