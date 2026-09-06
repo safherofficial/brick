@@ -35,7 +35,7 @@ export const HISTORY_LIMIT = 40;
 export const DRAFT_KEY = "brick-builder-draft-v2";
 export const DRAFT_KEY_LEGACY = "brick-builder-draft-state";
 
-export const palette = [
+export const palette: string[] = [
   "#C91F2D",
   "#E35B19",
   "#F6B800",
@@ -48,7 +48,7 @@ export const palette = [
   "#D84C9B",
   "#111827",
   "#F2F0E8"
-] as const;
+];
 
 export const brickDefs: Record<
   BrickKind,
@@ -208,7 +208,11 @@ export type DraftV2 = {
   creator?: string;
 };
 
-export function loadDraft(): { bricks: Brick[]; title: string; creator: string } | null {
+export function loadDraft(): {
+  bricks: Brick[];
+  title: string;
+  creator: string;
+} | null {
   if (typeof window === "undefined") return null;
 
   const rawV2 = localStorage.getItem(DRAFT_KEY);
