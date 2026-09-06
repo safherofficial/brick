@@ -131,15 +131,31 @@ export function yFromLayer(layer: number, kind?: BrickKind) {
 }
 
 export function withLayer(brick: Brick, layer: number): Brick {
+  const safe = Math.max(0, Math.min(MAX_LAYER, layer));
   return {
     ...brick,
-    layer,
+    layer: safe,
     position: [
       brick.position[0],
-      yFromLayer(layer, brick.kind),
+      yFromLayer(safe, brick.kind),
       brick.position[2]
     ],
     size: sizeFor(brick.footprint, brick.kind)
+  };
+}
+
+export function snapCenter(value: number, span: number) {
+  const offset = (span - 1) / 2;
+  return Math.round(value - offset) + offset;
+}
+
+export function snapXZ(brick: Brick): Brick {
+  const [w, d] = brick.footprint;
+  const x = snapCenter(brick.position[0], w);
+  const z = snapCenter(brick.position[2], d);
+  return {
+    ...brick,
+    position: [x, brick.position[1], z]
   };
 }
 
@@ -180,6 +196,14 @@ export function isValid(candidate: Brick, bricks: Brick[]) {
   return clear && supported;
 }
 
+export function canPlace(
+  candidate: Brick,
+  bricks: Brick[],
+  sculpt: boolean
+) {
+  return sculpt ? isClear(candidate, bricks) : isValid(candidate, bricks);
+}
+
 export function highestSupportedLayer(candidate: Brick, bricks: Brick[]) {
   const cells = cellsFor(candidate);
   const map = occupied(bricks, candidate.id);
@@ -202,14 +226,92 @@ export function settle(bricks: Brick[]) {
   );
   const out: Brick[] = [];
   for (const brick of ordered) {
-    out.push(withLayer(brick, highestSupportedLayer(brick, out)));
+    const snapped = snapXZ(brick);
+    out.push(withLayer(snapped, highestSupportedLayer(snapped, out)));
   }
   return out;
 }
 
-export function snapCenter(value: number, span: number) {
-  const offset = (span - 1) / 2;
-  return Math.round(value - offset) + offset;
+export function stackLayerAt(
+  point: { x: number; y?: number; z: number },
+  bricks: Brick[],
+  kind: BrickKind,
+  rotation: Rotation,
+  sculpt: boolean
+) {
+  const footprint = effectiveFootprint(kind, rotation);
+  const [w, d] = footprint;
+  const ax = Math.round(point.x - (w - 1) / 2);
+  const az = Math.round(point.z - (d - 1) / 2);
+  const center: Vec3 = [ax + (w - 1) / 2, 0, az + (d - 1) / 2];
+  const cells: string[] = [];
+  for (let x = ax; x < ax + w; x++) {
+    for (let z = az; z < az + d; z++) cells.push(`${x}:${z}`);
+  }
+
+  let topLayer = -1;
+  for (const brick of bricks) {
+    if (cellsFor(brick).some((cell) => cells.includes(cell))) {
+      if (brick.layer > topLayer) topLayer = brick.layer;
+    }
+  }
+
+  if (sculpt) {
+    if (topLayer >= 0) return Math.min(MAX_LAYER, topLayer + 1);
+    if (typeof point.y === "number" && point.y > unitHeight(kind) * 0.35) {
+      return Math.max(
+        0,
+        Math.min(MAX_LAYER, Math.round(point.y / unitHeight(kind) - 0.5))
+      );
+    }
+    return 0;
+  }
+
+  const provisional: Brick = {
+    id: -1,
+    kind,
+    shape: brickDefs[kind].shape,
+    footprint,
+    size: sizeFor(footprint, kind),
+    position: center,
+    rotation,
+    color: "#000000",
+    layer: 0
+  };
+  return highestSupportedLayer(provisional, bricks);
+}
+
+export function previewBrick(
+  kind: BrickKind,
+  color: string,
+  point: { x: number; y?: number; z: number },
+  bricks: Brick[],
+  rotation: Rotation = 0,
+  opts?: { sculpt?: boolean; layer?: number }
+): Brick {
+  const footprint = effectiveFootprint(kind, rotation);
+  const [w, d] = footprint;
+  const ax = Math.round(point.x - (w - 1) / 2);
+  const az = Math.round(point.z - (d - 1) / 2);
+  const center: Vec3 = [ax + (w - 1) / 2, 0, az + (d - 1) / 2];
+  const layer =
+    opts?.layer ??
+    stackLayerAt(point, bricks, kind, rotation, !!opts?.sculpt);
+
+  return withLayer(
+    {
+      id: -1,
+      kind,
+      shape: brickDefs[kind].shape,
+      footprint,
+      size: sizeFor(footprint, kind),
+      position: center,
+      rotation,
+      color,
+      layer
+    },
+    layer
+  );
 }
 
 export function cloneBricks(bricks: Brick[]): Brick[] {
@@ -273,32 +375,13 @@ export function saveDraft(draft: DraftV2) {
 export function makeBrick(
   kind: BrickKind,
   color: string,
-  point: { x: number; z: number },
+  point: { x: number; y?: number; z: number },
   bricks: Brick[],
   rotation: Rotation = 0,
   opts?: { sculpt?: boolean; layer?: number }
 ): Brick {
-  const footprint = effectiveFootprint(kind, rotation);
-  const [w, d] = footprint;
-  const ax = Math.round(point.x - (w - 1) / 2);
-  const az = Math.round(point.z - (d - 1) / 2);
-  const center: Vec3 = [ax + (w - 1) / 2, 0, az + (d - 1) / 2];
-
-  const provisional: Brick = {
-    id: nextId(),
-    kind,
-    shape: brickDefs[kind].shape,
-    footprint,
-    size: sizeFor(footprint, kind),
-    position: center,
-    rotation,
-    color,
-    layer: 0
+  return {
+    ...previewBrick(kind, color, point, bricks, rotation, opts),
+    id: nextId()
   };
-
-  const layer =
-    opts?.layer ??
-    (opts?.sculpt ? 0 : highestSupportedLayer(provisional, bricks));
-
-  return withLayer({ ...provisional, position: center }, layer);
 }
