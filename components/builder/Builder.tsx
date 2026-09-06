@@ -231,8 +231,8 @@ export default function Builder() {
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
-  const [imageMode, setImageMode] = useState<ImageMode>("flat");
-  const [imageHeight, setImageHeight] = useState(8);
+  const [imageMode, setImageMode] = useState<ImageMode>("model");
+  const [imageHeight, setImageHeight] = useState(16);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -934,12 +934,12 @@ export default function Builder() {
           </Canvas>
           <div className="sceneHud">
             <span className="hudChip">
-              {tool.toUpperCase()} · BRUSH {brush} · {count} VX · {volume.size}³
+              {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³
               {boxStart ? " · BOX…" : ""}
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
             </span>
             <span className="hudHelp">
-              LMB STROKE · RMB ORBIT · ESC · F FOCUS · OPEN PNG
+              OPEN PNG · MODEL AUTO · LMB STROKE · RMB ORBIT
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
@@ -991,7 +991,7 @@ export default function Builder() {
           )}
           <p className="category">IMAGE IMPORT</p>
           <div className="viewRow">
-            {(["flat", "extrude"] as ImageMode[]).map((mode) => (
+            {(["model", "flat", "extrude"] as ImageMode[]).map((mode) => (
               <button
                 key={mode}
                 className={imageMode === mode ? "modeOn" : ""}
@@ -1001,9 +1001,9 @@ export default function Builder() {
               </button>
             ))}
           </div>
-          {imageMode === "extrude" && (
+          {(imageMode === "extrude" || imageMode === "model") && (
             <div className="viewRow">
-              {[4, 8, 16, 24].map((n) => (
+              {[8, 16, 24, 32].map((n) => (
                 <button
                   key={n}
                   className={imageHeight === n ? "modeOn" : ""}
