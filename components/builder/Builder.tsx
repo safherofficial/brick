@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
@@ -15,6 +9,7 @@ import type { ThreeEvent } from "@react-three/fiber";
 import {
   applyCells,
   boxCells,
+  brushCells,
   cellKey,
   clonePalette,
   floodCells,
@@ -22,13 +17,17 @@ import {
   History,
   loadDraft,
   MAX_SAFE,
-  SIZES,
+  projectFromVolume,
   saveDraft,
+  selectionClipboard,
+  SIZES,
   volumeCenter,
   VoxelVolume,
   type BoxMode,
   type Cell,
+  type ClipboardVoxel,
   type DraftV1,
+  type Delta,
   type Mirror,
   type Tool,
   type ViewMode
@@ -47,13 +46,7 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
   { id: "box", label: "BOX", key: "U" }
 ];
 
-function CameraRig({
-  view,
-  size
-}: {
-  view: ViewMode;
-  size: number;
-}) {
+function CameraRig({ view, size }: { view: ViewMode; size: number }) {
   const { camera } = useThree();
   useEffect(() => {
     const [cx, cy, cz] = volumeCenter(size);
@@ -70,12 +63,10 @@ function CameraRig({
 
 function Ground({
   size,
-  tool,
   onHit,
   onHover
 }: {
   size: number;
-  tool: Tool;
   onHit: (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => void;
   onHover: (hit: VoxelHit | null) => void;
 }) {
@@ -85,20 +76,10 @@ function Ground({
       position={[(size - 1) / 2, -0.5, (size - 1) / 2]}
       onPointerDown={(e) => {
         e.stopPropagation();
-        const cell = {
-          x: Math.round(e.point.x),
-          y: 0,
-          z: Math.round(e.point.z)
-        };
-        onHit({ kind: "empty", cell }, e);
+        onHit({ kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } }, e);
       }}
       onPointerMove={(e) => {
-        const cell = {
-          x: Math.round(e.point.x),
-          y: tool === "attach" ? 0 : 0,
-          z: Math.round(e.point.z)
-        };
-        onHover({ kind: "empty", cell });
+        onHover({ kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } });
       }}
     >
       <planeGeometry args={[size + 8, size + 8]} />
@@ -121,24 +102,37 @@ function Ghost({ cell, color, valid }: { cell: Cell; color: string; valid: boole
   );
 }
 
+function BoxPreview({ a, b }: { a: Cell; b: Cell }) {
+  const x0 = Math.min(a.x, b.x);
+  const y0 = Math.min(a.y, b.y);
+  const z0 = Math.min(a.z, b.z);
+  const sx = Math.abs(a.x - b.x) + 1;
+  const sy = Math.abs(a.y - b.y) + 1;
+  const sz = Math.abs(a.z - b.z) + 1;
+  return (
+    <mesh
+      position={[x0 + (sx - 1) / 2, y0 + (sy - 1) / 2, z0 + (sz - 1) / 2]}
+      raycast={() => {}}
+    >
+      <boxGeometry args={[sx, sy, sz]} />
+      <meshBasicMaterial color="#a78bfa" wireframe transparent opacity={0.85} />
+    </mesh>
+  );
+}
+
 function VolumeFrame({ size }: { size: number }) {
   const points = useMemo(() => {
     const s = size - 1;
-    const p = [
-      [0, 0, 0], [s, 0, 0], [s, 0, s], [0, 0, s], [0, 0, 0],
-      [0, s, 0], [s, s, 0], [s, s, s], [0, s, s], [0, s, 0],
-      [s, s, 0], [s, 0, 0], [s, 0, s], [s, s, s], [0, s, s], [0, 0, s]
-    ] as [number, number, number][];
-    return p.flat();
+    return [
+      0,0,0, s,0,0, s,0,s, 0,0,s, 0,0,0,
+      0,s,0, s,s,0, s,s,s, 0,s,s, 0,s,0,
+      s,s,0, s,0,0, s,0,s, s,s,s, 0,s,s, 0,0,s
+    ];
   }, [size]);
-
   return (
     <line>
       <bufferGeometry>
-        <bufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array(points), 3]}
-        />
+        <bufferAttribute attach="attributes-position" args={[new Float32Array(points), 3]} />
       </bufferGeometry>
       <lineBasicMaterial color="#334155" />
     </line>
@@ -154,13 +148,15 @@ function targetCell(hit: VoxelHit, tool: Tool): Cell {
 export default function Builder() {
   const volumeRef = useRef(new VoxelVolume(64));
   const historyRef = useRef(new History());
-  const strokeRef = useRef<{ cells: Set<string> } | null>(null);
+  const strokeRef = useRef<{ seen: Set<string>; deltas: Delta[] } | null>(null);
   const boxStartRef = useRef<Cell | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const [rev, setRev] = useState(0);
   const [title, setTitle] = useState("UNTITLED");
   const [tool, setTool] = useState<Tool>("attach");
   const [boxMode, setBoxMode] = useState<BoxMode>("fill");
+  const [brush, setBrush] = useState(1);
   const [color, setColor] = useState(6);
   const [palette, setPalette] = useState(() => clonePalette());
   const [mirror, setMirror] = useState<Mirror>({ x: false, y: false, z: false });
@@ -168,6 +164,7 @@ export default function Builder() {
   const [grid, setGrid] = useState(true);
   const [hover, setHover] = useState<VoxelHit | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -207,39 +204,46 @@ export default function Builder() {
   useEffect(() => {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
-      const draft: DraftV1 = {
-        v: 1,
-        title,
-        size: volumeRef.current.size,
-        palette,
-        voxels: volumeRef.current.voxels()
-      };
-      saveDraft(draft);
+      saveDraft(projectFromVolume(title, volumeRef.current, palette));
     }, 250);
     return () => {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
   }, [title, palette, rev]);
 
-  const commitStroke = useCallback(
-    (cells: Cell[], nextColor: number | null) => {
+  const applyNow = useCallback(
+    (cells: Cell[], nextColor: number | null, recordStroke: boolean) => {
       if (volumeRef.current.count > MAX_SAFE && nextColor !== null) {
         notify("PERFORMANCE LIMIT");
         return;
       }
       const deltas = applyCells(volumeRef.current, cells, nextColor, mirror);
-      historyRef.current.push(deltas);
+      if (recordStroke && strokeRef.current) strokeRef.current.deltas.push(...deltas);
+      else historyRef.current.push(deltas);
       bump();
     },
     [bump, mirror, notify]
   );
+
+  const beginStroke = useCallback(() => {
+    if (!strokeRef.current) strokeRef.current = { seen: new Set(), deltas: [] };
+  }, []);
+
+  const endStroke = useCallback(() => {
+    const stroke = strokeRef.current;
+    strokeRef.current = null;
+    if (stroke?.deltas.length) historyRef.current.push(stroke.deltas);
+    bump();
+  }, [bump]);
 
   const applyHit = useCallback(
     (hit: VoxelHit, additive: boolean) => {
       const cell = targetCell(hit, tool);
 
       if (tool === "eyedrop") {
-        if (hit.kind === "voxel") setColor(volumeRef.current.get(hit.cell.x, hit.cell.y, hit.cell.z) ?? color);
+        if (hit.kind === "voxel") {
+          setColor(volumeRef.current.get(hit.cell.x, hit.cell.y, hit.cell.z) ?? color);
+        }
         return;
       }
 
@@ -263,37 +267,43 @@ export default function Builder() {
         const cells = boxCells(boxStartRef.current, cell);
         boxStartRef.current = null;
         if (boxMode === "select") {
-          setSelected(new Set(cells.filter((c) => volumeRef.current.has(c.x, c.y, c.z)).map(cellKey)));
+          setSelected(
+            new Set(cells.filter((c) => volumeRef.current.has(c.x, c.y, c.z)).map(cellKey))
+          );
           return;
         }
-        commitStroke(cells, boxMode === "erase" ? null : color);
+        applyNow(cells, boxMode === "erase" ? null : color, false);
         return;
       }
 
       if (tool === "fill") {
         if (hit.kind !== "voxel") return;
-        commitStroke(floodCells(volumeRef.current, hit.cell), color);
+        applyNow(floodCells(volumeRef.current, hit.cell), color, false);
         return;
       }
 
-      const key = cellKey(cell);
-      if (strokeRef.current?.cells.has(key)) return;
-      if (!strokeRef.current) strokeRef.current = { cells: new Set() };
-      strokeRef.current.cells.add(key);
+      beginStroke();
+      const patch = brush > 1 ? brushCells(cell, brush) : [cell];
+      const fresh = patch.filter((c) => {
+        const key = cellKey(c);
+        if (strokeRef.current?.seen.has(key)) return false;
+        strokeRef.current?.seen.add(key);
+        return true;
+      });
+      if (!fresh.length) return;
 
       if (tool === "erase") {
-        if (hit.kind !== "voxel" && !volumeRef.current.has(cell.x, cell.y, cell.z)) return;
-        commitStroke([hit.kind === "voxel" ? hit.cell : cell], null);
+        applyNow(fresh, null, true);
         return;
       }
       if (tool === "paint") {
         if (hit.kind !== "voxel") return;
-        commitStroke([hit.cell], color);
+        applyNow(fresh, color, true);
         return;
       }
-      commitStroke([cell], color);
+      applyNow(fresh, color, true);
     },
-    [boxMode, color, commitStroke, notify, tool]
+    [applyNow, beginStroke, boxMode, brush, color, notify, tool]
   );
 
   const onHit = useCallback(
@@ -315,28 +325,28 @@ export default function Builder() {
   );
 
   useEffect(() => {
-    const up = () => {
-      strokeRef.current = null;
-    };
+    const up = () => endStroke();
     window.addEventListener("pointerup", up);
     return () => window.removeEventListener("pointerup", up);
-  }, []);
+  }, [endStroke]);
 
   const undo = useCallback(() => {
     historyRef.current.undo(volumeRef.current);
     bump();
   }, [bump]);
-
   const redo = useCallback(() => {
     historyRef.current.redo(volumeRef.current);
     bump();
   }, [bump]);
 
   const clearAll = useCallback(() => {
-    const cells = volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z }));
-    commitStroke(cells, null);
+    applyNow(
+      volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z })),
+      null,
+      false
+    );
     setSelected(new Set());
-  }, [commitStroke]);
+  }, [applyNow]);
 
   const resize = useCallback(
     (size: number) => {
@@ -348,64 +358,91 @@ export default function Builder() {
     [bump]
   );
 
-  const hollow = useCallback(() => {
-    commitStroke(hollowCells(volumeRef.current), null);
-  }, [commitStroke]);
+  const selectedCells = useCallback(
+    () =>
+      [...selected].map((key) => {
+        const [x, y, z] = key.split(":").map(Number);
+        return { x, y, z };
+      }),
+    [selected]
+  );
 
   const deleteSelected = useCallback(() => {
-    const cells = [...selected].map((key) => {
-      const [x, y, z] = key.split(":").map(Number);
-      return { x, y, z };
-    });
-    commitStroke(cells, null);
+    applyNow(selectedCells(), null, false);
     setSelected(new Set());
-  }, [commitStroke, selected]);
+  }, [applyNow, selectedCells]);
 
   const paintSelected = useCallback(() => {
-    const cells = [...selected].map((key) => {
-      const [x, y, z] = key.split(":").map(Number);
-      return { x, y, z };
-    });
-    commitStroke(cells, color);
-  }, [color, commitStroke, selected]);
+    applyNow(selectedCells(), color, false);
+  }, [applyNow, color, selectedCells]);
+
+  const copySelected = useCallback(() => {
+    const clip = selectionClipboard(volumeRef.current, selected);
+    setClipboard(clip);
+    notify(clip.length ? `COPIED ${clip.length}` : "NOTHING SELECTED");
+  }, [notify, selected]);
+
+  const pasteClipboard = useCallback(
+    (origin?: Cell) => {
+      if (!clipboard.length) return;
+      const base = origin ?? ghost ?? { x: Math.floor(volume.size / 2), y: 0, z: Math.floor(volume.size / 2) };
+      const cells = clipboard.map((v) => ({ x: base.x + v.dx, y: base.y + v.dy, z: base.z + v.dz }));
+      const deltas: Delta[] = [];
+      clipboard.forEach((v, i) => {
+        deltas.push(...applyCells(volumeRef.current, [cells[i]], v.c, mirror));
+      });
+      historyRef.current.push(deltas);
+      setSelected(new Set(cells.map(cellKey)));
+      bump();
+    },
+    [bump, clipboard, ghost, mirror, volume.size]
+  );
+
+  const duplicateSelected = useCallback(() => {
+    const clip = selectionClipboard(volumeRef.current, selected);
+    if (!clip.length) return;
+    setClipboard(clip);
+    const minX = Math.min(...selectedCells().map((c) => c.x));
+    const minY = Math.min(...selectedCells().map((c) => c.y));
+    const minZ = Math.min(...selectedCells().map((c) => c.z));
+    pasteClipboard({ x: minX + 1, y: minY, z: minZ });
+  }, [pasteClipboard, selected, selectedCells]);
 
   const moveSelected = useCallback(
     (dx: number, dy: number, dz: number) => {
       const v = volumeRef.current;
-      const items = [...selected].map((key) => {
-        const [x, y, z] = key.split(":").map(Number);
-        return { x, y, z, c: v.get(x, y, z) ?? color };
-      });
+      const items = selectedCells().map((cell) => ({
+        ...cell,
+        c: v.get(cell.x, cell.y, cell.z) ?? color
+      }));
       const deltas = [
-        ...applyCells(
-          v,
-          items.map(({ x, y, z }) => ({ x, y, z })),
-          null,
-          { x: false, y: false, z: false }
-        ),
+        ...applyCells(v, items, null, { x: false, y: false, z: false }),
         ...items.flatMap((item) =>
-          applyCells(
-            v,
-            [{ x: item.x + dx, y: item.y + dy, z: item.z + dz }],
-            item.c,
-            { x: false, y: false, z: false }
-          )
+          applyCells(v, [{ x: item.x + dx, y: item.y + dy, z: item.z + dz }], item.c, {
+            x: false,
+            y: false,
+            z: false
+          })
         )
       ];
       historyRef.current.push(deltas);
-      setSelected(
-        new Set(
-          items.map((item) => cellKey({ x: item.x + dx, y: item.y + dy, z: item.z + dz }))
-        )
-      );
+      setSelected(new Set(items.map((item) => cellKey({ x: item.x + dx, y: item.y + dy, z: item.z + dz }))));
       bump();
     },
-    [bump, color, selected]
+    [bump, color, selectedCells]
   );
 
   const exportFiles = useCallback(
-    (kind: "vox" | "obj") => {
+    (kind: "vox" | "obj" | "json") => {
       const name = (title.trim() || "untitled").toLowerCase().replace(/\s+/g, "-");
+      if (kind === "json") {
+        downloadText(
+          JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2),
+          `${name}.json`,
+          "application/json"
+        );
+        return;
+      }
       if (kind === "vox") {
         downloadBytes(exportVox(volumeRef.current, palette), `${name}.vox`, "application/octet-stream");
         return;
@@ -417,44 +454,74 @@ export default function Builder() {
     [palette, title]
   );
 
+  const openProject = useCallback(
+    async (file: File) => {
+      const parsed = JSON.parse(await file.text()) as DraftV1;
+      if (!Array.isArray(parsed.voxels)) return;
+      volumeRef.current.load(parsed);
+      setTitle(parsed.title || file.name.replace(/\.json$/i, ""));
+      if (parsed.palette?.length) setPalette(clonePalette(parsed.palette));
+      historyRef.current.reset();
+      setSelected(new Set());
+      bump();
+      notify("PROJECT LOADED");
+    },
+    [bump, notify]
+  );
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (el?.tagName === "INPUT" || el?.tagName === "TEXTAREA") return;
       const k = e.key.toLowerCase();
-      if ((e.ctrlKey || e.metaKey) && k === "z") {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && k === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && k === "y") {
+      if (mod && k === "y") {
         e.preventDefault();
         redo();
+        return;
+      }
+      if (mod && k === "c") {
+        e.preventDefault();
+        copySelected();
+        return;
+      }
+      if (mod && k === "v") {
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if (mod && k === "d") {
+        e.preventDefault();
+        duplicateSelected();
         return;
       }
       if (k === "b") setTool("attach");
       if (k === "e") setTool("erase");
       if (k === "p") setTool("paint");
       if (k === "g") setTool("fill");
-      if (k === "i") setTool("eyedrop");
+      if (k === "i" || e.altKey) setTool("eyedrop");
       if (k === "q") setTool("select");
       if (k === "u") setTool("box");
       if (k === "x") setMirror((m) => ({ ...m, x: !m.x }));
-      if (k === "y" && !(e.ctrlKey || e.metaKey)) setMirror((m) => ({ ...m, y: !m.y }));
-      if (k === "z" && !(e.ctrlKey || e.metaKey)) setMirror((m) => ({ ...m, z: !m.z }));
+      if (k === "y" && !mod) setMirror((m) => ({ ...m, y: !m.y }));
+      if (k === "z" && !mod) setMirror((m) => ({ ...m, z: !m.z }));
+      if (k === "[" || k === "9") setBrush((n) => Math.max(1, n - 1));
+      if (k === "]" || k === "0") setBrush((n) => Math.min(5, n + 1));
       if (k === "delete" || k === "backspace") deleteSelected();
       if (e.key === "ArrowLeft") moveSelected(-1, 0, 0);
       if (e.key === "ArrowRight") moveSelected(1, 0, 0);
-      if (e.key === "ArrowUp") moveSelected(e.shiftKey ? 0 : 0, e.shiftKey ? 1 : 0, e.shiftKey ? 0 : -1);
+      if (e.key === "ArrowUp") moveSelected(0, e.shiftKey ? 1 : 0, e.shiftKey ? 0 : -1);
       if (e.key === "ArrowDown") moveSelected(0, e.shiftKey ? -1 : 0, e.shiftKey ? 0 : 1);
-      if (k === "[") setColor((c) => (c + palette.length - 1) % 64);
-      if (k === "]") setColor((c) => (c + 1) % 64);
-      if (e.altKey) setTool("eyedrop");
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [deleteSelected, moveSelected, palette.length, redo, undo]);
+  }, [copySelected, deleteSelected, duplicateSelected, moveSelected, pasteClipboard, redo, undo]);
 
   const [cx, , cz] = volumeCenter(volume.size);
   const ghostValid = !ghost
@@ -495,8 +562,21 @@ export default function Builder() {
         <div className="builderActions">
           <button onClick={undo} disabled={!canUndo}>UNDO</button>
           <button onClick={redo} disabled={!canRedo}>REDO</button>
+          <button onClick={() => fileRef.current?.click()}>OPEN</button>
+          <button onClick={() => exportFiles("json")}>PROJECT</button>
           <button onClick={() => exportFiles("vox")}>VOX</button>
           <button onClick={() => exportFiles("obj")}>OBJ</button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void openProject(file);
+              e.target.value = "";
+            }}
+          />
         </div>
       </header>
 
@@ -518,16 +598,20 @@ export default function Builder() {
           {tool === "box" && (
             <div className="viewRow">
               {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  className={boxMode === mode ? "modeOn" : ""}
-                  onClick={() => setBoxMode(mode)}
-                >
+                <button key={mode} className={boxMode === mode ? "modeOn" : ""} onClick={() => setBoxMode(mode)}>
                   {mode.toUpperCase()}
                 </button>
               ))}
             </div>
           )}
+          <p className="category">BRUSH {brush}</p>
+          <div className="viewRow">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>
+                {n}
+              </button>
+            ))}
+          </div>
           <p className="category">MIRROR</p>
           <div className="viewRow">
             {(["x", "y", "z"] as const).map((axis) => (
@@ -543,16 +627,12 @@ export default function Builder() {
           <p className="category">VOLUME</p>
           <div className="viewRow">
             {SIZES.map((size) => (
-              <button
-                key={size}
-                className={volume.size === size ? "modeOn" : ""}
-                onClick={() => resize(size)}
-              >
+              <button key={size} className={volume.size === size ? "modeOn" : ""} onClick={() => resize(size)}>
                 {size}
               </button>
             ))}
           </div>
-          <button onClick={hollow}>HOLLOW</button>
+          <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>HOLLOW</button>
           <button onClick={clearAll}>CLEAR</button>
         </aside>
 
@@ -585,7 +665,7 @@ export default function Builder() {
                 fadeDistance={volume.size * 2}
               />
             )}
-            <Ground size={volume.size} tool={tool} onHit={onHit} onHover={onHover} />
+            <Ground size={volume.size} onHit={onHit} onHover={onHover} />
             <VolumeFrame size={volume.size} />
             <VoxelCloud
               volume={volume}
@@ -595,8 +675,11 @@ export default function Builder() {
               onHit={onHit}
               onHover={onHover}
             />
-            {ghost && (tool === "attach" || tool === "box") && (
-              <Ghost cell={ghost} color={palette[color]} valid={ghostValid || tool === "box"} />
+            {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
+              <Ghost cell={ghost} color={palette[color]} valid={ghostValid || tool !== "attach"} />
+            )}
+            {tool === "box" && boxStartRef.current && ghost && (
+              <BoxPreview a={boxStartRef.current} b={ghost} />
             )}
             <CameraRig view={view} size={volume.size} />
             <OrbitControls
@@ -616,13 +699,10 @@ export default function Builder() {
           </Canvas>
           <div className="sceneHud">
             <span className="hudChip">
-              {tool.toUpperCase()} · {count} VX · {volume.size}³
-              {mirror.x || mirror.y || mirror.z
-                ? ` · M ${[mirror.x ? "X" : "", mirror.y ? "Y" : "", mirror.z ? "Z" : ""].join("")}`
-                : ""}
+              {tool.toUpperCase()} · BRUSH {brush} · {count} VX · {volume.size}³
             </span>
             <span className="hudHelp">
-              LMB SCULPT · RMB ORBIT · MMB PAN · ALT PICK · X/Y/Z MIRROR
+              LMB STROKE · RMB ORBIT · ⌘C/V/D · [ ] BRUSH · X/Y/Z MIRROR
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
@@ -632,11 +712,7 @@ export default function Builder() {
           <p className="panelLabel">INSPECTOR</p>
           <div className="viewRow">
             {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
-              <button
-                key={mode}
-                className={view === mode ? "modeOn" : ""}
-                onClick={() => setView(mode)}
-              >
+              <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
                 {mode.toUpperCase()}
               </button>
             ))}
@@ -669,11 +745,13 @@ export default function Builder() {
           </p>
           {selected.size > 0 && (
             <>
+              <button onClick={copySelected}>COPY</button>
+              <button onClick={duplicateSelected}>DUPLICATE</button>
               <button onClick={paintSelected}>PAINT SEL</button>
               <button onClick={deleteSelected}>DELETE SEL</button>
             </>
           )}
-          {count > 80_000 && <p className="hint">Heavy mesh. Export still ok.</p>}
+          {clipboard.length > 0 && <button onClick={() => pasteClipboard()}>PASTE {clipboard.length}</button>}
         </aside>
       </div>
     </main>
