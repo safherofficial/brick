@@ -1,5 +1,6 @@
 "use client";
-
+import { VoxelCloud } from "@/components/builder/VoxelCloud";
+import "./builder.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Canvas, useThree } from "@react-three/fiber";
