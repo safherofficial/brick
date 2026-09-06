@@ -1,3 +1,4 @@
+import { worldEmblem } from "@/lib/worldEmblem";
 import type { BrickShape } from "@/components/builder/BrickVisual";
 
 export type ShowcaseBrick = {
@@ -868,6 +869,18 @@ function solanaEmblem(): ShowcaseBrick[] {
 }
 
 export const creations: ShowcaseCreation[] = [
+    {
+    slug: "world-orb",
+    title: "World Orb",
+    author: "@world",
+    description:
+      "Voxel sculpture of the World orb: iridescent sphere, specular cross and wordmark built from cubic voxels.",
+    likes: "12.4K",
+    views: "68.1K",
+    bricks: worldEmblem(),
+    camera: [11, 6, 14],
+    target: [0.4, 2.3, 0]
+  },
   {
     slug: "cyberpunk-megacity",
     title: "Cyberpunk Megacity",
