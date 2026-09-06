@@ -341,3 +341,50 @@ export function volumeCenter(size: number): [number, number, number] {
   const c = (size - 1) / 2;
   return [c, c * 0.35, c];
 }
+export function brushCells(center: Cell, brush: number): Cell[] {
+  const r = Math.max(0, brush - 1);
+  const out: Cell[] = [];
+  for (let x = center.x - r; x <= center.x + r; x++) {
+    for (let y = center.y - r; y <= center.y + r; y++) {
+      for (let z = center.z - r; z <= center.z + r; z++) {
+        out.push({ x, y, z });
+      }
+    }
+  }
+  return out;
+}
+
+export type ClipboardVoxel = { dx: number; dy: number; dz: number; c: number };
+
+export function selectionClipboard(
+  volume: VoxelVolume,
+  keys: Iterable<string>
+): ClipboardVoxel[] {
+  const cells = [...keys].map(parseKey);
+  if (!cells.length) return [];
+  const ox = Math.min(...cells.map((c) => c.x));
+  const oy = Math.min(...cells.map((c) => c.y));
+  const oz = Math.min(...cells.map((c) => c.z));
+  return cells.map((cell) => ({
+    dx: cell.x - ox,
+    dy: cell.y - oy,
+    dz: cell.z - oz,
+    c: volume.get(cell.x, cell.y, cell.z) ?? 0
+  }));
+}
+
+export type ProjectV2 = DraftV1 & { v: 1 | 2 };
+
+export function projectFromVolume(
+  title: string,
+  volume: VoxelVolume,
+  palette: string[]
+): DraftV1 {
+  return {
+    v: 1,
+    title,
+    size: volume.size,
+    palette,
+    voxels: volume.voxels()
+  };
+}
