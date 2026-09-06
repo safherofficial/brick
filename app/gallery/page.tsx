@@ -1,44 +1,6 @@
 import Link from "next/link";
 import ShowcaseThumb from "@/components/showcase/ShowcaseThumb";
-import { findCreation } from "@/lib/creations";
-
-const creations = [
-  {
-    title: "World Orb",
-    author: "@world",
-    slug: "world-orb",
-    likes: "12.4K",
-    views: "68.1K"
-  },
-  {
-    title: "Cyberpunk Megacity",
-    author: "@future_builder",
-    slug: "cyberpunk-megacity",
-    likes: "8.9K",
-    views: "41.7K"
-  },
-  {
-    title: "Orbital Command Station",
-    author: "@orbitalworks",
-    slug: "orbital-command-station",
-    likes: "7.4K",
-    views: "36.8K"
-  },
-  {
-    title: "Imperial Japanese Castle",
-    author: "@heritage_builder",
-    slug: "imperial-japanese-castle",
-    likes: "10.2K",
-    views: "52.4K"
-  },
-  {
-    title: "Steampunk Airship",
-    author: "@clockworklab",
-    slug: "steampunk-airship",
-    likes: "6.8K",
-    views: "31.5K"
-  }
-];
+import { creations } from "@/lib/creations";
 
 export default function GalleryPage() {
   return (
@@ -64,7 +26,6 @@ export default function GalleryPage() {
             <p className="eyebrow">THE SHOWCASE</p>
             <h1>EXPLORE CREATIONS</h1>
           </div>
-
           <Link href="/build" className="primaryButton">
             CREATE YOURS →
           </Link>
@@ -80,31 +41,24 @@ export default function GalleryPage() {
         </div>
 
         <div className="creationGrid large">
-          {creations.map(({ title, author, slug, likes, views }) => {
-            const creation = findCreation(slug);
-
-            return (
-              <article className="creationCard" key={title}>
-                <Link
-                  href={creation ? `/creation/${creation.slug}` : "/gallery"}
-                >
-                  <div className="cardArtwork">
-                    {creation && <ShowcaseThumb creation={creation} />}
-                  </div>
-                </Link>
-
-                <div className="cardMeta">
-                  <div>
-                    <h3>{title}</h3>
-                    <p>{author}</p>
-                  </div>
-                  <span>
-                    ♥ {likes} · ◉ {views}
-                  </span>
+          {creations.map((creation) => (
+            <article className="creationCard" key={creation.slug}>
+              <Link href={`/creation/${creation.slug}`}>
+                <div className="cardArtwork">
+                  <ShowcaseThumb creation={creation} />
                 </div>
-              </article>
-            );
-          })}
+              </Link>
+              <div className="cardMeta">
+                <div>
+                  <h3>{creation.title}</h3>
+                  <p>{creation.author}</p>
+                </div>
+                <span>
+                  ♥ {creation.likes} · ◉ {creation.views}
+                </span>
+              </div>
+            </article>
+          ))}
         </div>
       </section>
     </main>
