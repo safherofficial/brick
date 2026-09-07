@@ -39,6 +39,7 @@ import {
   exportVox,
   importVox
 } from "@/lib/voxelExport";
+import { exportGlb } from "@/lib/voxelGlb";
 import { imageToVoxels, type ImageMode } from "@/lib/imageVoxel";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
@@ -539,29 +540,39 @@ export default function Builder() {
   );
 
   const exportFiles = useCallback(
-    (kind: "vox" | "obj" | "json") => {
+    async (kind: "vox" | "obj" | "json" | "glb") => {
       const name = (title.trim() || "untitled").toLowerCase().replace(/\s+/g, "-");
-      if (kind === "json") {
-        downloadText(
-          JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2),
-          `${name}.json`,
-          "application/json"
-        );
-        return;
+      try {
+        if (kind === "json") {
+          downloadText(
+            JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2),
+            `${name}.json`,
+            "application/json"
+          );
+          return;
+        }
+        if (kind === "vox") {
+          downloadBytes(
+            exportVox(volumeRef.current, palette),
+            `${name}.vox`,
+            "application/octet-stream"
+          );
+          return;
+        }
+        if (kind === "glb") {
+          const bytes = await exportGlb(volumeRef.current, palette);
+          downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
+          notify("GLB READY");
+          return;
+        }
+        const { obj, mtl } = exportObj(volumeRef.current, palette);
+        downloadText(obj, `${name}.obj`, "text/plain");
+        downloadText(mtl, `${name}.mtl`, "text/plain");
+      } catch {
+        notify("EXPORT FAILED");
       }
-      if (kind === "vox") {
-        downloadBytes(
-          exportVox(volumeRef.current, palette),
-          `${name}.vox`,
-          "application/octet-stream"
-        );
-        return;
-      }
-      const { obj, mtl } = exportObj(volumeRef.current, palette);
-      downloadText(obj, `${name}.obj`, "text/plain");
-      downloadText(mtl, `${name}.mtl`, "text/plain");
     },
-    [palette, title]
+    [notify, palette, title]
   );
 
   const openProject = useCallback(
@@ -782,9 +793,10 @@ export default function Builder() {
             REDO
           </button>
           <button onClick={() => fileRef.current?.click()}>OPEN</button>
-          <button onClick={() => exportFiles("json")}>PROJECT</button>
-          <button onClick={() => exportFiles("vox")}>VOX</button>
-          <button onClick={() => exportFiles("obj")}>OBJ</button>
+          <button onClick={() => void exportFiles("json")}>PROJECT</button>
+          <button onClick={() => void exportFiles("vox")}>VOX</button>
+          <button onClick={() => void exportFiles("glb")}>GLB</button>
+          <button onClick={() => void exportFiles("obj")}>OBJ</button>
           <input
             ref={fileRef}
             type="file"
@@ -939,7 +951,7 @@ export default function Builder() {
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
             </span>
             <span className="hudHelp">
-              OPEN PNG · MODEL AUTO · LMB STROKE · RMB ORBIT
+              OPEN PNG · GLB EXPORT · LMB STROKE · RMB ORBIT
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
