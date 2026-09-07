@@ -9,6 +9,7 @@ export type ImageImport = {
   palette: string[];
   width: number;
   height: number;
+  count: number;
 };
 
 function hexOf(r: number, g: number, b: number) {
@@ -231,6 +232,18 @@ function blurField(src: Float32Array, w: number, h: number) {
   return out;
 }
 
+function columnHeight(
+  mode: ImageMode,
+  luma: number,
+  fieldT: number,
+  heightMax: number
+) {
+  if (mode === "solid") return Math.max(1, Math.min(heightMax, 16));
+  if (mode === "relief") return Math.max(1, Math.round(1 + luma * Math.min(6, heightMax)));
+  if (mode === "model") return Math.max(2, Math.round(2 + fieldT * (Math.min(heightMax, 12) - 2)));
+  return 1;
+}
+
 export async function imageToVoxels(
   file: File,
   options: {
@@ -238,6 +251,7 @@ export async function imageToVoxels(
     mode: ImageMode;
     heightMax: number;
     maxEdge?: number;
+    maxVoxels?: number;
   }
 ): Promise<ImageImport> {
   const img = await loadImage(file);
@@ -264,10 +278,14 @@ export async function imageToVoxels(
   dropIslands(mask, w, h, 12);
 
   const unique = new Set<number>();
+  let visible = 0;
   for (let i = 0; i < w * h; i++) {
     if (!mask[i]) continue;
+    visible += 1;
     unique.add(pack(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]));
   }
+  if (!visible) throw new Error("Empty image");
+
   const colors = quantize([...unique], 256);
   const palette = Array.from({ length: 256 }, (_, i) =>
     colors[i] ? hexOf(...colors[i]) : "#000000"
@@ -280,9 +298,20 @@ export async function imageToVoxels(
     for (let i = 0; i < field.length; i++) if (field[i] > fieldMax) fieldMax = field[i];
   }
 
+  const heightMax = Math.max(1, Math.min(options.heightMax, options.volumeSize, 16));
+  const worst =
+    options.mode === "solid"
+      ? visible * heightMax
+      : options.mode === "model"
+        ? visible * Math.min(heightMax, 12)
+        : options.mode === "relief"
+          ? visible * Math.min(7, heightMax)
+          : visible;
+  const cap = options.maxVoxels ?? 80_000;
+  if (worst > cap) throw new Error("Image too dense");
+
   const ox = Math.floor((options.volumeSize - w) / 2);
   const oz = Math.floor((options.volumeSize - h) / 2);
-  const heightMax = Math.max(1, Math.min(options.heightMax, options.volumeSize));
   const voxels: ImageVoxel[] = [];
 
   for (let pz = 0; pz < h; pz++) {
@@ -294,21 +323,17 @@ export async function imageToVoxels(
       const b = data[i * 4 + 2];
       const c = nearestIndex(r, g, b, colors);
       const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-
-      let tall = 1;
-      if (options.mode === "solid") tall = heightMax;
-      else if (options.mode === "relief")
-        tall = Math.max(1, Math.round(1 + luma * Math.min(6, heightMax)));
-      else if (options.mode === "model" && field) {
-        const t = Math.sqrt(field[i] / fieldMax);
-        tall = Math.max(2, Math.round(2 + t * (Math.min(heightMax, 12) - 2)));
-      }
-
+      const t = field ? Math.sqrt(field[i] / fieldMax) : 0;
+      const tall = columnHeight(options.mode, luma, t, heightMax);
       const x = ox + px;
       const z = oz + (h - 1 - pz);
-      for (let y = 0; y < tall; y++) voxels.push({ x, y, z, c });
+      if (x < 0 || z < 0 || x >= options.volumeSize || z >= options.volumeSize) continue;
+      for (let y = 0; y < tall && y < options.volumeSize; y++) {
+        voxels.push({ x, y, z, c });
+        if (voxels.length > cap) throw new Error("Image too dense");
+      }
     }
   }
 
-  return { voxels, palette, width: w, height: h };
+  return { voxels, palette, width: w, height: h, count: voxels.length };
 }
