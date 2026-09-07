@@ -88,18 +88,26 @@ function colorAt(volume: VoxelVolume, x: number, y: number, z: number) {
 }
 
 export function greedyQuads(volume: VoxelVolume): GreedyQuad[] {
-  const size = volume.size;
+  const bounds = boundsOf(volume);
+  if (!bounds) return [];
+
   const quads: GreedyQuad[] = [];
-  const dims = [size, size, size];
+  const min = [bounds.minX, bounds.minY, bounds.minZ];
+  const max = [bounds.maxX, bounds.maxY, bounds.maxZ];
 
   for (let axis = 0; axis < 3; axis++) {
     const u = (axis + 1) % 3;
     const v = (axis + 2) % 3;
-    const du = dims[u];
-    const dv = dims[v];
-    const dw = dims[axis];
+    const u0 = min[u];
+    const v0 = min[v];
+    const u1 = max[u];
+    const v1 = max[v];
+    const w0 = min[axis];
+    const w1 = max[axis];
+    const du = u1 - u0 + 1;
+    const dv = v1 - v0 + 1;
 
-    for (let slice = 0; slice < dw; slice++) {
+    for (let slice = w0; slice <= w1; slice++) {
       for (const dir of [1, -1] as const) {
         const mask = new Int16Array(du * dv);
         mask.fill(-1);
@@ -107,15 +115,16 @@ export function greedyQuads(volume: VoxelVolume): GreedyQuad[] {
         for (let i = 0; i < du; i++) {
           for (let j = 0; j < dv; j++) {
             const pos = [0, 0, 0];
-            pos[u] = i;
-            pos[v] = j;
+            pos[u] = u0 + i;
+            pos[v] = v0 + j;
             pos[axis] = slice;
             const here = colorAt(volume, pos[0], pos[1], pos[2]);
             if (here === undefined) continue;
             const npos = [pos[0], pos[1], pos[2]];
             npos[axis] += dir;
-            const neigh = colorAt(volume, npos[0], npos[1], npos[2]);
-            if (neigh === undefined) mask[i + j * du] = here;
+            if (colorAt(volume, npos[0], npos[1], npos[2]) === undefined) {
+              mask[i + j * du] = here;
+            }
           }
         }
 
@@ -143,10 +152,10 @@ export function greedyQuads(volume: VoxelVolume): GreedyQuad[] {
               axis: axis as 0 | 1 | 2,
               dir,
               slice,
-              u0: i,
-              v0: j,
-              u1: i + w,
-              v1: j + h
+              u0: u0 + i,
+              v0: v0 + j,
+              u1: u0 + i + w,
+              v1: v0 + j + h
             });
           }
         }
