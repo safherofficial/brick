@@ -33,9 +33,10 @@ import {
   type ViewMode
 } from "@/lib/voxelEngine";
 import {
+  downloadAssetName,
   downloadBytes,
   downloadText,
-  exportObj,
+  exportObjArchive,
   exportVox,
   importVox
 } from "@/lib/voxelExport";
@@ -254,6 +255,17 @@ export default function Builder() {
   const volume = volumeRef.current;
   const count = volume.count;
   const ghost = hover ? targetCell(hover, tool) : null;
+  const [cx, , cz] = volumeCenter(volume.size);
+  const ghostValid = !ghost
+    ? false
+    : tool === "erase" ||
+        tool === "paint" ||
+        tool === "fill" ||
+        tool === "select" ||
+        tool === "eyedrop"
+      ? volume.has(ghost.x, ghost.y, ghost.z)
+      : volume.inBounds(ghost.x, ghost.y, ghost.z) &&
+        !volume.has(ghost.x, ghost.y, ghost.z);
 
   useEffect(() => {
     const draft = loadDraft();
@@ -541,14 +553,25 @@ export default function Builder() {
 
   const exportFiles = useCallback(
     async (kind: "vox" | "obj" | "json" | "glb") => {
-      const name = (title.trim() || "untitled").toLowerCase().replace(/\s+/g, "-");
+      const name = downloadAssetName(title);
+      const options = {
+        name,
+        unitMeters: 0.1,
+        pivot: "bottom-center" as const,
+        upAxis: "y" as const
+      };
       try {
         if (kind === "json") {
           downloadText(
-            JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2),
+            JSON.stringify(
+              projectFromVolume(title, volumeRef.current, palette),
+              null,
+              2
+            ),
             `${name}.json`,
             "application/json"
           );
+          notify("PROJECT READY");
           return;
         }
         if (kind === "vox") {
@@ -557,19 +580,25 @@ export default function Builder() {
             `${name}.vox`,
             "application/octet-stream"
           );
+          notify("VOX READY");
           return;
         }
         if (kind === "glb") {
-          const bytes = await exportGlb(volumeRef.current, palette);
+          const bytes = await exportGlb(volumeRef.current, palette, options);
           downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
           notify("GLB READY");
           return;
         }
-        const { obj, mtl } = exportObj(volumeRef.current, palette);
-        downloadText(obj, `${name}.obj`, "text/plain");
-        downloadText(mtl, `${name}.mtl`, "text/plain");
-      } catch {
-        notify("EXPORT FAILED");
+        downloadBytes(
+          exportObjArchive(volumeRef.current, palette, options),
+          `${name}-obj.zip`,
+          "application/zip"
+        );
+        notify("OBJ READY");
+      } catch (error) {
+        notify(
+          error instanceof Error ? error.message.toUpperCase() : "EXPORT FAILED"
+        );
       }
     },
     [notify, palette, title]
@@ -755,18 +784,6 @@ export default function Builder() {
     undo,
     volume.size
   ]);
-
-  const [cx, , cz] = volumeCenter(volume.size);
-  const ghostValid = !ghost
-    ? false
-    : tool === "erase" ||
-        tool === "paint" ||
-        tool === "fill" ||
-        tool === "select" ||
-        tool === "eyedrop"
-      ? volume.has(ghost.x, ghost.y, ghost.z)
-      : volume.inBounds(ghost.x, ghost.y, ghost.z) &&
-        !volume.has(ghost.x, ghost.y, ghost.z);
 
   return (
     <main className="builderShell">
@@ -963,7 +980,7 @@ export default function Builder() {
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
             </span>
             <span className="hudHelp">
-              OPEN PNG · GLB EXPORT · LMB STROKE · RMB ORBIT
+              OPEN PNG · GLB / VOX / OBJ ZIP · LMB STROKE · RMB ORBIT
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
