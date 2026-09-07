@@ -40,7 +40,11 @@ import {
   importVox
 } from "@/lib/voxelExport";
 import { exportGlb } from "@/lib/voxelGlb";
-import { imageToVoxels, type ImageMode } from "@/lib/imageVoxel";
+import {
+  imageToVoxels,
+  type ImageImport,
+  type ImageMode
+} from "@/lib/imageVoxel";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -234,6 +238,9 @@ export default function Builder() {
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
   const [imageMode, setImageMode] = useState<ImageMode>("flat");
   const [imageHeight, setImageHeight] = useState(8);
+  const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
+  const [pendingName, setPendingName] = useState("");
+  const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -612,8 +619,57 @@ export default function Builder() {
     [notify, palette, title]
   );
 
+  const cancelImage = useCallback(() => {
+    setPendingImage(null);
+    setPendingName("");
+    notify("IMPORT CANCELED");
+  }, [notify]);
+
+  const applyImage = useCallback(() => {
+    if (!pendingImage) return;
+    const result = pendingImage;
+    setPendingImage(null);
+    setPalette(result.palette);
+    const deltas: Delta[] = [];
+    const existing = volumeRef.current
+      .voxels()
+      .map((v) => ({ x: v.x, y: v.y, z: v.z }));
+    if (existing.length) {
+      deltas.push(
+        ...applyCells(volumeRef.current, existing, null, {
+          x: false,
+          y: false,
+          z: false
+        })
+      );
+    }
+    const byColor = new Map<number, Cell[]>();
+    for (const vox of result.voxels) {
+      const list = byColor.get(vox.c) ?? [];
+      list.push({ x: vox.x, y: vox.y, z: vox.z });
+      byColor.set(vox.c, list);
+    }
+    for (const [c, cells] of byColor) {
+      deltas.push(
+        ...applyCells(volumeRef.current, cells, c, {
+          x: false,
+          y: false,
+          z: false
+        })
+      );
+    }
+    historyRef.current.push(deltas);
+    if (pendingName) setTitle(pendingName);
+    setPendingName("");
+    setSelected(new Set());
+    setBoxStart(null);
+    bump();
+    notify(`IMAGE ${result.count ?? result.voxels.length} VX`);
+  }, [bump, notify, pendingImage, pendingName]);
+
   const openProject = useCallback(
     async (file: File) => {
+      setBusy(true);
       try {
         const lower = file.name.toLowerCase();
         if (
@@ -622,48 +678,18 @@ export default function Builder() {
           lower.endsWith(".jpeg") ||
           lower.endsWith(".webp")
         ) {
+          notify("IMPORTING IMAGE");
+          await new Promise((resolve) => window.setTimeout(resolve, 40));
           const result = await imageToVoxels(file, {
             volumeSize: volumeRef.current.size,
             mode: imageMode,
-            heightMax: imageHeight
+            heightMax: imageHeight,
+            maxVoxels: MAX_SAFE
           });
           if (!result.voxels.length) throw new Error("Empty image");
-          if (result.voxels.length > MAX_SAFE) throw new Error("Image too dense");
-          setPalette(result.palette);
-          const deltas: Delta[] = [];
-          const existing = volumeRef.current
-            .voxels()
-            .map((v) => ({ x: v.x, y: v.y, z: v.z }));
-          if (existing.length) {
-            deltas.push(
-              ...applyCells(volumeRef.current, existing, null, {
-                x: false,
-                y: false,
-                z: false
-              })
-            );
-          }
-          const byColor = new Map<number, Cell[]>();
-          for (const vox of result.voxels) {
-            const list = byColor.get(vox.c) ?? [];
-            list.push({ x: vox.x, y: vox.y, z: vox.z });
-            byColor.set(vox.c, list);
-          }
-          for (const [c, cells] of byColor) {
-            deltas.push(
-              ...applyCells(volumeRef.current, cells, c, {
-                x: false,
-                y: false,
-                z: false
-              })
-            );
-          }
-          historyRef.current.push(deltas);
-          setTitle(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
-          setSelected(new Set());
-          setBoxStart(null);
-          bump();
-          notify(`IMAGE ${result.voxels.length} VX`);
+          setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
+          setPendingImage(result);
+          notify(`${result.count ?? result.voxels.length} VX READY`);
           return;
         }
         if (lower.endsWith(".vox")) {
@@ -681,6 +707,7 @@ export default function Builder() {
         historyRef.current.reset();
         setSelected(new Set());
         setBoxStart(null);
+        setPendingImage(null);
         setFocus(volumeCenter(volumeRef.current.size));
         bump();
         notify("PROJECT LOADED");
@@ -688,6 +715,8 @@ export default function Builder() {
         notify(
           error instanceof Error ? error.message.toUpperCase() : "OPEN FAILED"
         );
+      } finally {
+        setBusy(false);
       }
     },
     [bump, imageHeight, imageMode, notify]
@@ -703,6 +732,8 @@ export default function Builder() {
         e.preventDefault();
         setBoxStart(null);
         setSelected(new Set());
+        setPendingImage(null);
+        setPendingName("");
         strokeRef.current = null;
         return;
       }
@@ -826,17 +857,27 @@ export default function Builder() {
           )}
         </div>
         <div className="builderActions">
-          <button onClick={undo} disabled={!canUndo}>
+          <button onClick={undo} disabled={!canUndo || busy}>
             UNDO
           </button>
-          <button onClick={redo} disabled={!canRedo}>
+          <button onClick={redo} disabled={!canRedo || busy}>
             REDO
           </button>
-          <button onClick={() => fileRef.current?.click()}>OPEN</button>
-          <button onClick={() => void exportFiles("json")}>PROJECT</button>
-          <button onClick={() => void exportFiles("vox")}>VOX</button>
-          <button onClick={() => void exportFiles("glb")}>GLB</button>
-          <button onClick={() => void exportFiles("obj")}>OBJ</button>
+          <button onClick={() => fileRef.current?.click()} disabled={busy}>
+            OPEN
+          </button>
+          <button onClick={() => void exportFiles("json")} disabled={busy}>
+            PROJECT
+          </button>
+          <button onClick={() => void exportFiles("vox")} disabled={busy}>
+            VOX
+          </button>
+          <button onClick={() => void exportFiles("glb")} disabled={busy}>
+            GLB
+          </button>
+          <button onClick={() => void exportFiles("obj")} disabled={busy}>
+            OBJ
+          </button>
           <input
             ref={fileRef}
             type="file"
@@ -989,12 +1030,29 @@ export default function Builder() {
               {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³
               {boxStart ? " · BOX…" : ""}
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
+              {busy ? " · BUSY" : ""}
             </span>
             <span className="hudHelp">
-              OPEN PNG · GLB / VOX / OBJ ZIP · LMB STROKE · RMB ORBIT
+              OPEN PNG · APPLY TO COMMIT · GLB / VOX / OBJ ZIP
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
+          {pendingImage && (
+            <div className="toast" style={{ bottom: 72, minWidth: 280 }}>
+              <div style={{ marginBottom: 8 }}>
+                APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX ·{" "}
+                {pendingImage.width}×{pendingImage.height} · {imageMode.toUpperCase()}
+              </div>
+              <div className="viewRow">
+                <button onClick={applyImage} disabled={busy}>
+                  APPLY
+                </button>
+                <button onClick={cancelImage} disabled={busy}>
+                  CANCEL
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         <aside className="inspector">
