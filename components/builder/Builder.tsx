@@ -33,10 +33,9 @@ import {
   type ViewMode
 } from "@/lib/voxelEngine";
 import {
-  downloadAssetName,
   downloadBytes,
   downloadText,
-  exportObjArchive,
+  exportObj,
   exportVox,
   importVox
 } from "@/lib/voxelExport";
@@ -553,13 +552,10 @@ export default function Builder() {
 
   const exportFiles = useCallback(
     async (kind: "vox" | "obj" | "json" | "glb") => {
-      const name = downloadAssetName(title);
-      const options = {
-        name,
-        unitMeters: 0.1,
-        pivot: "bottom-center" as const,
-        upAxis: "y" as const
-      };
+      const name = (title.trim() || "untitled")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "untitled";
       try {
         if (kind === "json") {
           downloadText(
@@ -584,16 +580,16 @@ export default function Builder() {
           return;
         }
         if (kind === "glb") {
-          const bytes = await exportGlb(volumeRef.current, palette, options);
+          notify("EXPORTING GLB");
+          await new Promise((resolve) => window.setTimeout(resolve, 40));
+          const bytes = await exportGlb(volumeRef.current, palette, { name });
           downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
           notify("GLB READY");
           return;
         }
-        downloadBytes(
-          exportObjArchive(volumeRef.current, palette, options),
-          `${name}-obj.zip`,
-          "application/zip"
-        );
+        const { obj, mtl } = exportObj(volumeRef.current, palette);
+        downloadText(obj, `${name}.obj`, "text/plain");
+        downloadText(mtl, `${name}.mtl`, "text/plain");
         notify("OBJ READY");
       } catch (error) {
         notify(
@@ -620,6 +616,7 @@ export default function Builder() {
             heightMax: imageHeight
           });
           if (!result.voxels.length) throw new Error("Empty image");
+          if (result.voxels.length > MAX_SAFE) throw new Error("Image too dense");
           setPalette(result.palette);
           const deltas: Delta[] = [];
           const existing = volumeRef.current
@@ -675,8 +672,10 @@ export default function Builder() {
         setFocus(volumeCenter(volumeRef.current.size));
         bump();
         notify("PROJECT LOADED");
-      } catch {
-        notify("OPEN FAILED");
+      } catch (error) {
+        notify(
+          error instanceof Error ? error.message.toUpperCase() : "OPEN FAILED"
+        );
       }
     },
     [bump, imageHeight, imageMode, notify]
@@ -980,7 +979,7 @@ export default function Builder() {
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
             </span>
             <span className="hudHelp">
-              OPEN PNG · GLB / VOX / OBJ ZIP · LMB STROKE · RMB ORBIT
+              OPEN PNG · GLB / VOX / OBJ · LMB STROKE · RMB ORBIT
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
