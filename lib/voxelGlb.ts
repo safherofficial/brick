@@ -36,10 +36,7 @@ export async function exportGlb(volume: VoxelVolume, palette: string[]) {
     maxZ = Math.max(maxZ, z);
     const rgb = hexRgb(palette[c] ?? "#ffffff");
     for (const face of FACES) {
-      const nx = x + face.n[0];
-      const ny = y + face.n[1];
-      const nz = z + face.n[2];
-      if (raw.has(keyOf(nx, ny, nz))) continue;
+      if (raw.has(keyOf(x + face.n[0], y + face.n[1], z + face.n[2]))) continue;
       const px = x + 0.5 + face.n[0] * 0.5;
       const py = y + 0.5 + face.n[1] * 0.5;
       const pz = z + 0.5 + face.n[2] * 0.5;
@@ -65,9 +62,8 @@ export async function exportGlb(volume: VoxelVolume, palette: string[]) {
           pz - face.u[2] * 0.5 + face.v[2] * 0.5
         ]
       ];
-      const idx = [0, 1, 2, 0, 2, 3];
-      for (const i of idx) {
-        positions.push(corners[i][0], corners[i][1], corners[i][2]);
+      for (const vi of [0, 1, 2, 0, 2, 3]) {
+        positions.push(corners[vi][0], corners[vi][1], corners[vi][2]);
         normals.push(face.n[0], face.n[1], face.n[2]);
         colors.push(rgb[0], rgb[1], rgb[2]);
       }
