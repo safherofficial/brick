@@ -232,8 +232,8 @@ export default function Builder() {
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
-  const [imageMode, setImageMode] = useState<ImageMode>("model");
-  const [imageHeight, setImageHeight] = useState(16);
+  const [imageMode, setImageMode] = useState<ImageMode>("solid");
+  const [imageHeight, setImageHeight] = useState(8);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -592,13 +592,25 @@ export default function Builder() {
           });
           if (!result.voxels.length) throw new Error("Empty image");
           setPalette(result.palette);
+          const deltas: Delta[] = [];
+          const existing = volumeRef.current
+            .voxels()
+            .map((v) => ({ x: v.x, y: v.y, z: v.z }));
+          if (existing.length) {
+            deltas.push(
+              ...applyCells(volumeRef.current, existing, null, {
+                x: false,
+                y: false,
+                z: false
+              })
+            );
+          }
           const byColor = new Map<number, Cell[]>();
           for (const vox of result.voxels) {
             const list = byColor.get(vox.c) ?? [];
             list.push({ x: vox.x, y: vox.y, z: vox.z });
             byColor.set(vox.c, list);
           }
-          const deltas: Delta[] = [];
           for (const [c, cells] of byColor) {
             deltas.push(
               ...applyCells(volumeRef.current, cells, c, {
@@ -1003,7 +1015,7 @@ export default function Builder() {
           )}
           <p className="category">IMAGE IMPORT</p>
           <div className="viewRow">
-            {(["model", "flat", "extrude"] as ImageMode[]).map((mode) => (
+            {(["solid", "flat", "relief", "model"] as ImageMode[]).map((mode) => (
               <button
                 key={mode}
                 className={imageMode === mode ? "modeOn" : ""}
@@ -1013,9 +1025,9 @@ export default function Builder() {
               </button>
             ))}
           </div>
-          {(imageMode === "extrude" || imageMode === "model") && (
+          {(imageMode === "solid" || imageMode === "relief" || imageMode === "model") && (
             <div className="viewRow">
-              {[8, 16, 24, 32].map((n) => (
+              {[4, 8, 12, 16].map((n) => (
                 <button
                   key={n}
                   className={imageHeight === n ? "modeOn" : ""}
