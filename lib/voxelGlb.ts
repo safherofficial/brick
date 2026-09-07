@@ -1,109 +1,117 @@
 import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
-import { keyOf, type VoxelVolume } from "@/lib/voxelEngine";
+import type { VoxelVolume } from "@/lib/voxelEngine";
+import {
+  assertExportable,
+  greedyQuads,
+  hexRgb,
+  pivotOrigin,
+  quadCorners,
+  quadNormal,
+  resolveExport,
+  transformNormal,
+  transformPoint,
+  type MeshExportOptions
+} from "@/lib/voxelMesh";
 
-const FACES: { n: [number, number, number]; u: [number, number, number]; v: [number, number, number] }[] = [
-  { n: [1, 0, 0], u: [0, 1, 0], v: [0, 0, 1] },
-  { n: [-1, 0, 0], u: [0, 1, 0], v: [0, 0, -1] },
-  { n: [0, 1, 0], u: [1, 0, 0], v: [0, 0, 1] },
-  { n: [0, -1, 0], u: [1, 0, 0], v: [0, 0, -1] },
-  { n: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0] },
-  { n: [0, 0, -1], u: [1, 0, 0], v: [0, -1, 0] }
-];
+export async function exportGlb(
+  volume: VoxelVolume,
+  palette: string[],
+  options?: MeshExportOptions
+) {
+  const bounds = assertExportable(volume);
+  const resolved = resolveExport(options);
+  const origin = pivotOrigin(bounds, resolved.pivot);
+  const quads = greedyQuads(volume);
+  if (!quads.length) throw new Error("Empty volume");
 
-function hexRgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.replace("#", "").padStart(6, "0").slice(0, 6), 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-}
+  const byColor = new Map<number, typeof quads>();
+  for (const quad of quads) {
+    const list = byColor.get(quad.c) ?? [];
+    list.push(quad);
+    byColor.set(quad.c, list);
+  }
 
-export async function exportGlb(volume: VoxelVolume, palette: string[]) {
-  const raw = volume.raw();
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const colors: number[] = [];
-  let minX = Infinity;
-  let minY = Infinity;
-  let minZ = Infinity;
-  let maxX = -Infinity;
-  let maxZ = -Infinity;
+  const root = new THREE.Group();
+  root.name = resolved.name;
+  root.userData = {
+    generator: "Brick Builder",
+    unitMeters: resolved.unitMeters,
+    pivot: resolved.pivot,
+    upAxis: resolved.upAxis,
+    voxelCount: volume.count
+  };
 
-  for (const [key, c] of raw) {
-    const [x, y, z] = key.split(":").map(Number);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    minZ = Math.min(minZ, z);
-    maxX = Math.max(maxX, x);
-    maxZ = Math.max(maxZ, z);
-    const rgb = hexRgb(palette[c] ?? "#ffffff");
-    for (const face of FACES) {
-      if (raw.has(keyOf(x + face.n[0], y + face.n[1], z + face.n[2]))) continue;
-      const px = x + 0.5 + face.n[0] * 0.5;
-      const py = y + 0.5 + face.n[1] * 0.5;
-      const pz = z + 0.5 + face.n[2] * 0.5;
-      const corners = [
-        [
-          px - face.u[0] * 0.5 - face.v[0] * 0.5,
-          py - face.u[1] * 0.5 - face.v[1] * 0.5,
-          pz - face.u[2] * 0.5 - face.v[2] * 0.5
-        ],
-        [
-          px + face.u[0] * 0.5 - face.v[0] * 0.5,
-          py + face.u[1] * 0.5 - face.v[1] * 0.5,
-          pz + face.u[2] * 0.5 - face.v[2] * 0.5
-        ],
-        [
-          px + face.u[0] * 0.5 + face.v[0] * 0.5,
-          py + face.u[1] * 0.5 + face.v[1] * 0.5,
-          pz + face.u[2] * 0.5 + face.v[2] * 0.5
-        ],
-        [
-          px - face.u[0] * 0.5 + face.v[0] * 0.5,
-          py - face.u[1] * 0.5 + face.v[1] * 0.5,
-          pz - face.u[2] * 0.5 + face.v[2] * 0.5
-        ]
-      ];
-      for (const vi of [0, 1, 2, 0, 2, 3]) {
-        positions.push(corners[vi][0], corners[vi][1], corners[vi][2]);
-        normals.push(face.n[0], face.n[1], face.n[2]);
-        colors.push(rgb[0], rgb[1], rgb[2]);
+  const disposables: { geometry: THREE.BufferGeometry; material: THREE.Material }[] =
+    [];
+
+  for (const [colorIndex, faces] of [...byColor.entries()].sort(
+    (a, b) => a[0] - b[0]
+  )) {
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const indices: number[] = [];
+
+    for (const face of faces) {
+      const base = positions.length / 3;
+      const n = transformNormal(...quadNormal(face), resolved.upAxis);
+      for (const corner of quadCorners(face)) {
+        const p = transformPoint(
+          corner[0],
+          corner[1],
+          corner[2],
+          origin,
+          resolved.unitMeters,
+          resolved.upAxis
+        );
+        positions.push(p[0], p[1], p[2]);
+        normals.push(n[0], n[1], n[2]);
       }
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
     }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(positions, 3)
+    );
+    geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+    geometry.setIndex(indices);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    const [r, g, b] = hexRgb(palette[colorIndex] ?? "#ffffff");
+    const material = new THREE.MeshStandardMaterial({
+      name: `voxel_${colorIndex}`,
+      color: new THREE.Color(r / 255, g / 255, b / 255),
+      roughness: 0.45,
+      metalness: 0.02,
+      side: THREE.FrontSide
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = `${resolved.name}_voxel_${colorIndex}`;
+    mesh.userData = { paletteIndex: colorIndex };
+    root.add(mesh);
+    disposables.push({ geometry, material });
   }
-
-  if (!positions.length) throw new Error("Empty volume");
-
-  const cx = (minX + maxX) / 2;
-  const cz = (minZ + maxZ) / 2;
-  for (let i = 0; i < positions.length; i += 3) {
-    positions[i] -= cx;
-    positions[i + 1] -= minY;
-    positions[i + 2] -= cz;
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-
-  const mesh = new THREE.Mesh(
-    geometry,
-    new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.55,
-      metalness: 0.02
-    })
-  );
-  mesh.name = "voxel";
 
   const scene = new THREE.Scene();
-  scene.add(mesh);
+  scene.name = resolved.name;
+  scene.add(root);
 
-  const exporter = new GLTFExporter();
-  const result = await exporter.parseAsync(scene, {
-    binary: true,
-    onlyVisible: true
-  });
-  geometry.dispose();
-  if (result instanceof ArrayBuffer) return result;
-  throw new Error("GLB export failed");
+  try {
+    const exporter = new GLTFExporter();
+    const result = await exporter.parseAsync(scene, {
+      binary: true,
+      onlyVisible: true
+    });
+    if (!(result instanceof ArrayBuffer)) throw new Error("GLB export failed");
+    return result;
+  } finally {
+    for (const item of disposables) {
+      item.geometry.dispose();
+      item.material.dispose();
+    }
+  }
 }
