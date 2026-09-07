@@ -1,4 +1,29 @@
-import { keyOf, type Voxel, type VoxelVolume } from "@/lib/voxelEngine";
+import {
+  DEFAULT_PALETTE,
+  SIZES,
+  type Voxel,
+  type VoxelVolume
+} from "@/lib/voxelEngine";
+import {
+  assertExportable,
+  assetSlug,
+  greedyQuads,
+  hexRgb,
+  pivotOrigin,
+  quadCorners,
+  quadNormal,
+  resolveExport,
+  rgbHex,
+  transformNormal,
+  transformPoint,
+  type MeshExportOptions
+} from "@/lib/voxelMesh";
+
+function u16(n: number) {
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, n & 0xffff, true);
+  return b;
+}
 
 function u32(n: number) {
   const b = new Uint8Array(4);
@@ -28,30 +53,110 @@ function chunk(id: string, content: Uint8Array, children: Uint8Array[] = []) {
   ]);
 }
 
-function hexRgb(hex: string): [number, number, number] {
-  const raw = hex.replace("#", "").padStart(6, "0").slice(0, 6);
-  const n = parseInt(raw, 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
-
-function rgbHex(r: number, g: number, b: number) {
-  return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function readI32(view: DataView, offset: number) {
+function readI32(view: DataView, offset: number, end: number) {
+  if (offset + 4 > end) throw new Error("Truncated VOX file");
   return view.getInt32(offset, true);
 }
 
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1 ? 0xedb88320 : 0) ^ (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    c = CRC_TABLE[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+export function zipStore(files: { name: string; data: Uint8Array }[]) {
+  const enc = new TextEncoder();
+  const locals: Uint8Array[] = [];
+  const centrals: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const name = enc.encode(file.name.replace(/\\/g, "/"));
+    const crc = crc32(file.data);
+    const local = concat([
+      u32(0x04034b50),
+      u16(20),
+      u16(0),
+      u16(0),
+      u16(0),
+      u16(0),
+      u32(crc),
+      u32(file.data.length),
+      u32(file.data.length),
+      u16(name.length),
+      u16(0),
+      name,
+      file.data
+    ]);
+    const central = concat([
+      u32(0x02014b50),
+      u16(20),
+      u16(20),
+      u16(0),
+      u16(0),
+      u16(0),
+      u16(0),
+      u32(crc),
+      u32(file.data.length),
+      u32(file.data.length),
+      u16(name.length),
+      u16(0),
+      u16(0),
+      u16(0),
+      u16(0),
+      u32(0),
+      u32(offset),
+      name
+    ]);
+    locals.push(local);
+    centrals.push(central);
+    offset += local.length;
+  }
+
+  const directory = concat(centrals);
+  const end = concat([
+    u32(0x06054b50),
+    u16(0),
+    u16(0),
+    u16(files.length),
+    u16(files.length),
+    u32(directory.length),
+    u32(offset),
+    u16(0)
+  ]);
+  return concat([...locals, directory, end]);
+}
+
 export function exportVox(volume: VoxelVolume, palette: string[]) {
+  const bounds = assertExportable(volume);
+  const sizeX = bounds.maxX - bounds.minX + 1;
+  const sizeY = bounds.maxY - bounds.minY + 1;
+  const sizeZ = bounds.maxZ - bounds.minZ + 1;
+  if (sizeX > 256 || sizeY > 256 || sizeZ > 256) {
+    throw new Error("VOX is limited to 256^3");
+  }
+
   const voxels = volume.voxels();
   const xyzi = new Uint8Array(4 + voxels.length * 4);
   new DataView(xyzi.buffer).setUint32(0, voxels.length, true);
   voxels.forEach((v, i) => {
     const o = 4 + i * 4;
-    xyzi[o] = v.x;
-    xyzi[o + 1] = v.z;
-    xyzi[o + 2] = v.y;
-    xyzi[o + 3] = Math.min(255, v.c + 1);
+    xyzi[o] = v.x - bounds.minX;
+    xyzi[o + 1] = v.z - bounds.minZ;
+    xyzi[o + 2] = v.y - bounds.minY;
+    xyzi[o + 3] = Math.min(255, Math.max(1, (v.c | 0) + 1));
   });
 
   const rgba = new Uint8Array(256 * 4);
@@ -64,7 +169,7 @@ export function exportVox(volume: VoxelVolume, palette: string[]) {
     rgba[o + 3] = 255;
   }
 
-  const size = concat([u32(volume.size), u32(volume.size), u32(volume.size)]);
+  const size = concat([u32(sizeX), u32(sizeZ), u32(sizeY)]);
   const main = chunk("MAIN", new Uint8Array(), [
     chunk("SIZE", size),
     chunk("XYZI", xyzi),
@@ -83,6 +188,8 @@ export type VoxModel = {
 export function importVox(buffer: ArrayBuffer): VoxModel {
   const bytes = new Uint8Array(buffer);
   const view = new DataView(buffer);
+  const end = bytes.length;
+  if (end < 8) throw new Error("Not a VOX file");
   const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
   if (magic !== "VOX ") throw new Error("Not a VOX file");
 
@@ -90,30 +197,38 @@ export function importVox(buffer: ArrayBuffer): VoxModel {
   let sizeY = 1;
   let sizeZ = 1;
   let voxels: Voxel[] = [];
-  const palette = Array.from({ length: 256 }, () => "#000000");
+  const palette = DEFAULT_PALETTE.slice(0, 256);
+  while (palette.length < 256) palette.push("#000000");
   let hasPalette = false;
 
-  const walk = (offset: number, end: number) => {
+  const walk = (offset: number, limit: number) => {
     let o = offset;
-    while (o + 12 <= end) {
+    while (o + 12 <= limit) {
       const id = String.fromCharCode(
         bytes[o],
         bytes[o + 1],
         bytes[o + 2],
         bytes[o + 3]
       );
-      const content = readI32(view, o + 4);
-      const children = readI32(view, o + 8);
+      const content = readI32(view, o + 4, limit);
+      const children = readI32(view, o + 8, limit);
+      if (content < 0 || children < 0) throw new Error("Invalid VOX chunk");
       const contentStart = o + 12;
       const contentEnd = contentStart + content;
       const childEnd = contentEnd + children;
+      if (contentEnd > limit || childEnd > limit) {
+        throw new Error("Truncated VOX chunk");
+      }
 
-      if (id === "SIZE") {
-        sizeX = readI32(view, contentStart);
-        sizeZ = readI32(view, contentStart + 4);
-        sizeY = readI32(view, contentStart + 8);
-      } else if (id === "XYZI") {
-        const n = readI32(view, contentStart);
+      if (id === "SIZE" && content >= 12) {
+        sizeX = readI32(view, contentStart, contentEnd);
+        sizeZ = readI32(view, contentStart + 4, contentEnd);
+        sizeY = readI32(view, contentStart + 8, contentEnd);
+      } else if (id === "XYZI" && content >= 4) {
+        const n = readI32(view, contentStart, contentEnd);
+        if (n < 0 || contentStart + 4 + n * 4 > contentEnd) {
+          throw new Error("Invalid VOX XYZI");
+        }
         voxels = [];
         for (let i = 0; i < n; i++) {
           const p = contentStart + 4 + i * 4;
@@ -124,119 +239,132 @@ export function importVox(buffer: ArrayBuffer): VoxModel {
             c: Math.max(0, bytes[p + 3] - 1)
           });
         }
-      } else if (id === "RGBA") {
+      } else if (id === "RGBA" && content >= 256 * 4) {
         hasPalette = true;
         for (let i = 0; i < 256; i++) {
           const p = contentStart + i * 4;
           palette[i] = rgbHex(bytes[p], bytes[p + 1], bytes[p + 2]);
         }
-      } else if (id === "MAIN" && children > 0) {
-        walk(contentEnd, childEnd);
       }
 
-      if (children > 0 && id !== "MAIN") walk(contentEnd, childEnd);
+      if (children > 0) walk(contentEnd, childEnd);
       o = childEnd;
     }
   };
 
-  walk(8, bytes.length);
+  walk(8, end);
 
   const need = Math.max(sizeX, sizeY, sizeZ, 1);
-  const size = [32, 64, 128, 256].find((n) => n >= need) ?? Math.max(need, 32);
-
+  const size = SIZES.find((n) => n >= need) ?? 256;
   return {
     size,
-    voxels: voxels.filter((v) => v.x < size && v.y < size && v.z < size),
+    voxels: voxels.filter(
+      (v) =>
+        v.x >= 0 &&
+        v.y >= 0 &&
+        v.z >= 0 &&
+        v.x < size &&
+        v.y < size &&
+        v.z < size
+    ),
     palette: hasPalette ? palette : palette
   };
 }
 
-type Face = {
-  d: 0 | 1 | 2;
-  s: 1 | -1;
-  x: number;
-  y: number;
-  z: number;
-  c: number;
-};
+export function exportObj(
+  volume: VoxelVolume,
+  palette: string[],
+  options?: MeshExportOptions
+) {
+  const bounds = assertExportable(volume);
+  const resolved = resolveExport(options);
+  const origin = pivotOrigin(bounds, resolved.pivot);
+  const quads = greedyQuads(volume);
+  const used = new Set(quads.map((q) => q.c));
 
-export function exportObj(volume: VoxelVolume, palette: string[]) {
-  const map = volume.raw();
-  const has = (x: number, y: number, z: number) => map.has(keyOf(x, y, z));
-  const byColor = new Map<number, Face[]>();
+  const lines = [
+    "# Brick Builder",
+    `# unit: ${resolved.unitMeters} meters per voxel`,
+    `# pivot: ${resolved.pivot}`,
+    `# up: ${resolved.upAxis}`,
+    `mtllib ${resolved.name}.mtl`,
+    `o ${resolved.name}`
+  ];
 
-  for (const [key, c] of map) {
-    const [x, y, z] = key.split(":").map(Number);
-    const list = byColor.get(c) ?? [];
-    if (!has(x - 1, y, z)) list.push({ d: 0, s: -1, x, y, z, c });
-    if (!has(x + 1, y, z)) list.push({ d: 0, s: 1, x, y, z, c });
-    if (!has(x, y - 1, z)) list.push({ d: 1, s: -1, x, y, z, c });
-    if (!has(x, y + 1, z)) list.push({ d: 1, s: 1, x, y, z, c });
-    if (!has(x, y, z - 1)) list.push({ d: 2, s: -1, x, y, z, c });
-    if (!has(x, y, z + 1)) list.push({ d: 2, s: 1, x, y, z, c });
-    byColor.set(c, list);
+  const mtl = [
+    "# Brick Builder materials",
+    ...[...used]
+      .sort((a, b) => a - b)
+      .map((i) => {
+        const [r, g, b] = hexRgb(palette[i] ?? "#ffffff");
+        const kd = `${(r / 255).toFixed(6)} ${(g / 255).toFixed(6)} ${(b / 255).toFixed(6)}`;
+        return [
+          `newmtl voxel_${i}`,
+          "Ka 0.020000 0.020000 0.020000",
+          `Kd ${kd}`,
+          "Ks 0.040000 0.040000 0.040000",
+          "Ns 8.000000",
+          "illum 2"
+        ].join("\n");
+      })
+  ].join("\n\n");
+
+  let vi = 1;
+  let ni = 1;
+  const byColor = new Map<number, typeof quads>();
+  for (const quad of quads) {
+    const list = byColor.get(quad.c) ?? [];
+    list.push(quad);
+    byColor.set(quad.c, list);
   }
 
-  const lines = ["# voxel editor", "mtllib model.mtl"];
-  let vi = 1;
-
-  const emit = (
-    a: [number, number, number],
-    b: [number, number, number],
-    c: [number, number, number],
-    d: [number, number, number]
-  ) => {
-    for (const p of [a, b, c, d]) lines.push(`v ${p[0]} ${p[1]} ${p[2]}`);
-    lines.push(`f ${vi} ${vi + 1} ${vi + 2} ${vi + 3}`);
-    vi += 4;
-  };
-
-  for (const [colorIndex, faces] of byColor) {
-    lines.push(`usemtl c${colorIndex}`);
+  for (const [colorIndex, faces] of [...byColor.entries()].sort(
+    (a, b) => a[0] - b[0]
+  )) {
+    lines.push(`g ${resolved.name}_voxel_${colorIndex}`);
+    lines.push(`usemtl voxel_${colorIndex}`);
     for (const face of faces) {
-      const { x, y, z, s, d } = face;
-      if (d === 0) {
-        const px = x + (s === 1 ? 1 : 0);
-        const q: [number, number, number][] = [
-          [px, y, z],
-          [px, y + 1, z],
-          [px, y + 1, z + 1],
-          [px, y, z + 1]
-        ];
-        if (s === -1) q.reverse();
-        emit(q[0], q[1], q[2], q[3]);
-      } else if (d === 1) {
-        const py = y + (s === 1 ? 1 : 0);
-        const q: [number, number, number][] = [
-          [x, py, z],
-          [x, py, z + 1],
-          [x + 1, py, z + 1],
-          [x + 1, py, z]
-        ];
-        if (s === -1) q.reverse();
-        emit(q[0], q[1], q[2], q[3]);
-      } else {
-        const pz = z + (s === 1 ? 1 : 0);
-        const q: [number, number, number][] = [
-          [x, y, pz],
-          [x + 1, y, pz],
-          [x + 1, y + 1, pz],
-          [x, y + 1, pz]
-        ];
-        if (s === -1) q.reverse();
-        emit(q[0], q[1], q[2], q[3]);
+      const corners = quadCorners(face);
+      const n = transformNormal(...quadNormal(face), resolved.upAxis);
+      lines.push(`vn ${n[0]} ${n[1]} ${n[2]}`);
+      for (const corner of corners) {
+        const p = transformPoint(
+          corner[0],
+          corner[1],
+          corner[2],
+          origin,
+          resolved.unitMeters,
+          resolved.upAxis
+        );
+        lines.push(`v ${p[0].toFixed(6)} ${p[1].toFixed(6)} ${p[2].toFixed(6)}`);
       }
+      lines.push(
+        `f ${vi}//${ni} ${vi + 1}//${ni} ${vi + 2}//${ni}`,
+        `f ${vi}//${ni} ${vi + 2}//${ni} ${vi + 3}//${ni}`
+      );
+      vi += 4;
+      ni += 1;
     }
   }
 
-  const mtl = palette
-    .map((hex, i) => {
-      const [r, g, b] = hexRgb(hex);
-      return `newmtl c${i}\nKd ${(r / 255).toFixed(4)} ${(g / 255).toFixed(4)} ${(b / 255).toFixed(4)}\nillum 1\n`;
-    })
-    .join("");
+  return {
+    obj: `${lines.join("\n")}\n`,
+    mtl: `${mtl}\n`,
+    name: resolved.name
+  };
+}
 
-  return { obj: `${lines.join("\n")}\n`, mtl };
+export function exportObjArchive(
+  volume: VoxelVolume,
+  palette: string[],
+  options?: MeshExportOptions
+) {
+  const { obj, mtl, name } = exportObj(volume, palette, options);
+  const enc = new TextEncoder();
+  return zipStore([
+    { name: `${name}.obj`, data: enc.encode(obj) },
+    { name: `${name}.mtl`, data: enc.encode(mtl) }
+  ]);
 }
 
 export function downloadBytes(bytes: Uint8Array, name: string, type: string) {
@@ -247,10 +375,15 @@ export function downloadBytes(bytes: Uint8Array, name: string, type: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
+  a.rel = "noopener";
   a.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function downloadText(text: string, name: string, type: string) {
   downloadBytes(new TextEncoder().encode(text), name, type);
+}
+
+export function downloadAssetName(title: string) {
+  return assetSlug(title);
 }
