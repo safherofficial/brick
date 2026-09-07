@@ -35,7 +35,7 @@ import {
 import {
   downloadBytes,
   downloadText,
-  exportObj,
+  exportObjArchive,
   exportVox,
   importVox
 } from "@/lib/voxelExport";
@@ -232,7 +232,7 @@ export default function Builder() {
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
-  const [imageMode, setImageMode] = useState<ImageMode>("solid");
+  const [imageMode, setImageMode] = useState<ImageMode>("flat");
   const [imageHeight, setImageHeight] = useState(8);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
@@ -556,6 +556,12 @@ export default function Builder() {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "") || "untitled";
+      const options = {
+        name,
+        unitMeters: 0.1,
+        pivot: "bottom-center" as const,
+        upAxis: "y" as const
+      };
       try {
         if (kind === "json") {
           downloadText(
@@ -571,6 +577,8 @@ export default function Builder() {
           return;
         }
         if (kind === "vox") {
+          notify("EXPORTING VOX");
+          await new Promise((resolve) => window.setTimeout(resolve, 40));
           downloadBytes(
             exportVox(volumeRef.current, palette),
             `${name}.vox`,
@@ -582,14 +590,18 @@ export default function Builder() {
         if (kind === "glb") {
           notify("EXPORTING GLB");
           await new Promise((resolve) => window.setTimeout(resolve, 40));
-          const bytes = await exportGlb(volumeRef.current, palette, { name });
+          const bytes = await exportGlb(volumeRef.current, palette, options);
           downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
           notify("GLB READY");
           return;
         }
-        const { obj, mtl } = exportObj(volumeRef.current, palette);
-        downloadText(obj, `${name}.obj`, "text/plain");
-        downloadText(mtl, `${name}.mtl`, "text/plain");
+        notify("EXPORTING OBJ");
+        await new Promise((resolve) => window.setTimeout(resolve, 40));
+        downloadBytes(
+          exportObjArchive(volumeRef.current, palette, options),
+          `${name}-obj.zip`,
+          "application/zip"
+        );
         notify("OBJ READY");
       } catch (error) {
         notify(
@@ -979,7 +991,7 @@ export default function Builder() {
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
             </span>
             <span className="hudHelp">
-              OPEN PNG · GLB / VOX / OBJ · LMB STROKE · RMB ORBIT
+              OPEN PNG · GLB / VOX / OBJ ZIP · LMB STROKE · RMB ORBIT
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
