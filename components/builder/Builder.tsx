@@ -187,6 +187,31 @@ function OffsetGhost({
   );
 }
 
+function PendingPreview({
+  voxels,
+  palette
+}: {
+  voxels: { x: number; y: number; z: number; c: number }[];
+  palette: string[];
+}) {
+  const shown = voxels.length > 2500 ? voxels.filter((_, i) => i % 3 === 0) : voxels;
+  return (
+    <group raycast={() => {}}>
+      {shown.slice(0, 4000).map((v, i) => (
+        <mesh key={i} position={[v.x, v.y, v.z]}>
+          <boxGeometry args={[0.96, 0.96, 0.96]} />
+          <meshBasicMaterial
+            color={palette[v.c] ?? "#ffffff"}
+            transparent
+            opacity={0.55}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function VolumeFrame({ size }: { size: number }) {
   const points = useMemo(() => {
     const s = size - 1;
@@ -737,6 +762,11 @@ export default function Builder() {
         strokeRef.current = null;
         return;
       }
+      if (e.key === "Enter" && pendingImage) {
+        e.preventDefault();
+        applyImage();
+        return;
+      }
       if (k === "f") {
         e.preventDefault();
         const cells = selected.size
@@ -814,6 +844,7 @@ export default function Builder() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
+    applyImage,
     clip.axis,
     copySelected,
     deleteSelected,
@@ -821,6 +852,7 @@ export default function Builder() {
     ghost,
     moveSelected,
     pasteClipboard,
+    pendingImage,
     redo,
     selected,
     undo,
@@ -996,6 +1028,12 @@ export default function Builder() {
               onHit={onHit}
               onHover={onHover}
             />
+            {pendingImage && (
+              <PendingPreview
+                voxels={pendingImage.voxels}
+                palette={pendingImage.palette}
+              />
+            )}
             {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
               <Ghost
                 cell={ghost}
@@ -1031,9 +1069,10 @@ export default function Builder() {
               {boxStart ? " · BOX…" : ""}
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
               {busy ? " · BUSY" : ""}
+              {pendingImage ? " · PREVIEW" : ""}
             </span>
             <span className="hudHelp">
-              OPEN PNG · APPLY TO COMMIT · GLB / VOX / OBJ ZIP
+              OPEN PNG · ENTER APPLY · ESC CANCEL · GLB / VOX / OBJ ZIP
             </span>
           </div>
           {toast && <div className="toast">{toast}</div>}
@@ -1050,6 +1089,9 @@ export default function Builder() {
                 <button onClick={cancelImage} disabled={busy}>
                   CANCEL
                 </button>
+              </div>
+              <div style={{ marginTop: 6, opacity: 0.7 }}>
+                ENTER apply · ESC cancel · scene stays until APPLY
               </div>
             </div>
           )}
