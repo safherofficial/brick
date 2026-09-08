@@ -45,6 +45,12 @@ import {
   type ImageImport,
   type ImageMode
 } from "@/lib/imageVoxel";
+import {
+  consumeImageApply,
+  FREE_IMAGE_APPLIES,
+  hashImageFile,
+  remainingApplies
+} from "@/lib/entitlement";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -134,10 +140,7 @@ function Ground({
       onPointerDown={(e) => {
         e.stopPropagation();
         onHit(
-          {
-            kind: "empty",
-            cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) }
-          },
+          { kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } },
           e
         );
       }}
@@ -267,6 +270,9 @@ export default function Builder() {
   const [imageHeight, setImageHeight] = useState(8);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
+  const [pendingHash, setPendingHash] = useState("");
+  const [creditsLeft, setCreditsLeft] = useState(FREE_IMAGE_APPLIES);
+  const [paywall, setPaywall] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
@@ -282,8 +288,10 @@ export default function Builder() {
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(""), 1400);
+    window.setTimeout(() => setToast(""), 1600);
   }, []);
+
+  const refreshCredits = useCallback(() => setCreditsLeft(remainingApplies()), []);
 
   const volume = volumeRef.current;
   const count = volume.count;
@@ -296,6 +304,7 @@ export default function Builder() {
       : volume.inBounds(ghost.x, ghost.y, ghost.z) && !volume.has(ghost.x, ghost.y, ghost.z);
 
   useEffect(() => {
+    refreshCredits();
     const draft = loadDraft();
     if (!draft) {
       const mid = Math.floor(volumeRef.current.size / 2);
@@ -308,7 +317,7 @@ export default function Builder() {
     if (draft.palette?.length) setPalette(clonePalette(draft.palette));
     setFocus(volumeCenter(draft.size || 64));
     bump();
-  }, [bump]);
+  }, [bump, refreshCredits]);
 
   useEffect(() => {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
@@ -612,11 +621,20 @@ export default function Builder() {
   const cancelImage = useCallback(() => {
     setPendingImage(null);
     setPendingName("");
+    setPendingHash("");
+    setPaywall(false);
     notify("IMPORT CANCELED");
   }, [notify]);
 
   const applyImage = useCallback(() => {
     if (!pendingImage) return;
+    const gate = consumeImageApply(pendingHash || pendingName || "unknown");
+    refreshCredits();
+    if (!gate.ok) {
+      setPaywall(true);
+      notify(gate.message);
+      return;
+    }
     const result = pendingImage;
     const bounds = boundsOfCells(result.voxels);
     const packed = result.voxels.map((vox) => ({
@@ -629,6 +647,8 @@ export default function Builder() {
     const next = packedBounds ? fitSizeFor(packedBounds) : volumeRef.current.size;
     if (next !== volumeRef.current.size) volumeRef.current.resize(next);
     setPendingImage(null);
+    setPendingHash("");
+    setPaywall(false);
     setPalette(result.palette);
     const deltas: Delta[] = [];
     const existing = volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z }));
@@ -670,8 +690,12 @@ export default function Builder() {
         : volumeCenter(next)
     );
     bump();
-    notify(`IMAGE ${result.count ?? result.voxels.length} VX · ${next}³`);
-  }, [bump, notify, pendingImage, pendingName]);
+    notify(
+      gate.reason === "repeat"
+        ? `IMAGE ${result.count ?? result.voxels.length} VX · ${next}³`
+        : `IMAGE APPLIED · ${gate.message} · ${next}³`
+    );
+  }, [bump, notify, pendingHash, pendingImage, pendingName, refreshCredits]);
 
   const openProject = useCallback(
     async (file: File) => {
@@ -689,7 +713,9 @@ export default function Builder() {
           });
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
+          setPendingHash(await hashImageFile(file));
           setPendingImage(result);
+          setPaywall(false);
           notify(`${result.count ?? result.voxels.length} VX READY`);
           return;
         }
@@ -709,6 +735,7 @@ export default function Builder() {
         setSelected(new Set());
         setBoxStart(null);
         setPendingImage(null);
+        setPendingHash("");
         packVolume();
         notify("PROJECT LOADED");
       } catch (error) {
@@ -732,6 +759,8 @@ export default function Builder() {
         setSelected(new Set());
         setPendingImage(null);
         setPendingName("");
+        setPendingHash("");
+        setPaywall(false);
         strokeRef.current = null;
         return;
       }
@@ -809,6 +838,8 @@ export default function Builder() {
     undo,
     volume.size
   ]);
+
+  const creditLabel = creditsLeft === Number.POSITIVE_INFINITY ? "PRO" : `${creditsLeft}/${FREE_IMAGE_APPLIES}`;
 
   return (
     <main className="builderShell">
@@ -976,7 +1007,7 @@ export default function Builder() {
           </Canvas>
           <div className="sceneHud">
             <span className="hudChip">
-              {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³
+              {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³ · {creditLabel}
               {boxStart ? " · BOX…" : ""}
               {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
               {busy ? " · BUSY" : ""}
@@ -985,7 +1016,7 @@ export default function Builder() {
             <span className="hudHelp">OPEN PNG · ENTER APPLY · ESC CANCEL · F FIT · GLB / VOX / OBJ ZIP</span>
           </div>
           {toast && <div className="toast">{toast}</div>}
-          {pendingImage && (
+          {pendingImage && !paywall && (
             <div className="toast" style={{ bottom: 72, minWidth: 280 }}>
               <div style={{ marginBottom: 8 }}>
                 APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX · {pendingImage.width}×
@@ -995,7 +1026,18 @@ export default function Builder() {
                 <button onClick={applyImage} disabled={busy}>APPLY</button>
                 <button onClick={cancelImage} disabled={busy}>CANCEL</button>
               </div>
-              <div style={{ marginTop: 6, opacity: 0.7 }}>ENTER apply · ESC cancel · APPLY also FITs</div>
+              <div style={{ marginTop: 6, opacity: 0.7 }}>
+                ENTER apply · ESC cancel · {creditLabel} · same photo 24h free
+              </div>
+            </div>
+          )}
+          {paywall && (
+            <div className="toast" style={{ bottom: 72, minWidth: 300 }}>
+              <div style={{ marginBottom: 8 }}>FREE LIMIT REACHED · subscribe with SOL or USDC on Solana</div>
+              <div className="viewRow">
+                <button onClick={() => notify("SOLANA CHECKOUT NEXT")} disabled={busy}>SUBSCRIBE</button>
+                <button onClick={cancelImage} disabled={busy}>CANCEL</button>
+              </div>
             </div>
           )}
         </section>
