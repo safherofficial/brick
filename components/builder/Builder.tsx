@@ -58,6 +58,132 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
   { id: "box", label: "BOX", key: "U" }
 ];
 
+const FREE_IMAGE_APPLIES = 5;
+const REPEAT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const ENTITLEMENT_KEY = "brick.entitlement.v1";
+
+type EntitlementState = {
+  accountId: string;
+  plan: "free" | "monthly";
+  applies: { hash: string; at: number }[];
+};
+
+type ContentBounds = {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+};
+
+function emptyEntitlement(): EntitlementState {
+  const accountId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `acc_${Date.now().toString(36)}`;
+  return { accountId, plan: "free", applies: [] };
+}
+
+function readEntitlement(): EntitlementState {
+  if (typeof window === "undefined") return emptyEntitlement();
+  try {
+    const raw = window.localStorage.getItem(ENTITLEMENT_KEY);
+    if (!raw) {
+      const created = emptyEntitlement();
+      window.localStorage.setItem(ENTITLEMENT_KEY, JSON.stringify(created));
+      return created;
+    }
+    const parsed = JSON.parse(raw) as EntitlementState;
+    if (!parsed.accountId || !Array.isArray(parsed.applies)) return emptyEntitlement();
+    parsed.plan = parsed.plan === "monthly" ? "monthly" : "free";
+    return parsed;
+  } catch {
+    return emptyEntitlement();
+  }
+}
+
+function writeEntitlement(state: EntitlementState) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(ENTITLEMENT_KEY, JSON.stringify(state));
+}
+
+function remainingApplies(state = readEntitlement()) {
+  if (state.plan === "monthly") return Number.POSITIVE_INFINITY;
+  const used = new Set(state.applies.map((item) => item.hash)).size;
+  return Math.max(0, FREE_IMAGE_APPLIES - used);
+}
+
+async function hashImageFile(file: File) {
+  const buffer = await file.arrayBuffer();
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", buffer);
+    return [...new Uint8Array(digest)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function consumeImageApply(hash: string) {
+  const state = readEntitlement();
+  const now = Date.now();
+  if (state.plan === "monthly") {
+    return { ok: true, reason: "subscribed" as const, remaining: Infinity, message: "SUBSCRIBED" };
+  }
+  const recent = state.applies.find(
+    (item) => item.hash === hash && now - item.at < REPEAT_WINDOW_MS
+  );
+  if (recent) {
+    return {
+      ok: true,
+      reason: "repeat" as const,
+      remaining: remainingApplies(state),
+      message: "SAME IMAGE"
+    };
+  }
+  const left = remainingApplies(state);
+  if (left <= 0) {
+    return { ok: false, reason: "blocked" as const, remaining: 0, message: "SUBSCRIBE TO APPLY" };
+  }
+  state.applies.push({ hash, at: now });
+  writeEntitlement(state);
+  return {
+    ok: true,
+    reason: "quota" as const,
+    remaining: left - 1,
+    message: `${left - 1} LEFT`
+  };
+}
+
+function boundsOfCells(list: { x: number; y: number; z: number }[]): ContentBounds | null {
+  if (!list.length) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  for (const v of list) {
+    minX = Math.min(minX, v.x);
+    minY = Math.min(minY, v.y);
+    minZ = Math.min(minZ, v.z);
+    maxX = Math.max(maxX, v.x);
+    maxY = Math.max(maxY, v.y);
+    maxZ = Math.max(maxZ, v.z);
+  }
+  return { minX, minY, minZ, maxX, maxY, maxZ };
+}
+
+function fitSizeFor(bounds: ContentBounds) {
+  const span = Math.max(
+    bounds.maxX - bounds.minX + 1,
+    bounds.maxY - bounds.minY + 1,
+    bounds.maxZ - bounds.minZ + 1
+  );
+  return (SIZES.find((n) => n >= span + 2) ?? 256) as number;
+}
+
 function CameraRig({
   view,
   size,
@@ -69,12 +195,12 @@ function CameraRig({
 }) {
   const { camera } = useThree();
   useEffect(() => {
-    const dist = size * 1.35;
+    const dist = Math.max(8, size * 0.9);
     const [cx, cy, cz] = focus;
     if (view === "top") camera.position.set(cx, dist, cz + 0.01);
     else if (view === "front") camera.position.set(cx, cy + size * 0.2, cz + dist);
     else if (view === "side") camera.position.set(cx + dist, cy + size * 0.2, cz);
-    else camera.position.set(cx + dist * 0.7, cy + dist * 0.55, cz + dist * 0.7);
+    else camera.position.set(cx + dist * 0.75, cy + dist * 0.5, cz + dist * 0.75);
     camera.lookAt(cx, cy, cz);
     camera.updateProjectionMatrix();
   }, [camera, focus, size, view]);
@@ -265,6 +391,9 @@ export default function Builder() {
   const [imageHeight, setImageHeight] = useState(8);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
+  const [pendingHash, setPendingHash] = useState("");
+  const [creditsLeft, setCreditsLeft] = useState(FREE_IMAGE_APPLIES);
+  const [paywall, setPaywall] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
@@ -280,13 +409,16 @@ export default function Builder() {
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(""), 1400);
+    window.setTimeout(() => setToast(""), 1600);
+  }, []);
+
+  const refreshCredits = useCallback(() => {
+    setCreditsLeft(remainingApplies());
   }, []);
 
   const volume = volumeRef.current;
   const count = volume.count;
   const ghost = hover ? targetCell(hover, tool) : null;
-  const [cx, , cz] = volumeCenter(volume.size);
   const ghostValid = !ghost
     ? false
     : tool === "erase" ||
@@ -299,6 +431,7 @@ export default function Builder() {
         !volume.has(ghost.x, ghost.y, ghost.z);
 
   useEffect(() => {
+    refreshCredits();
     const draft = loadDraft();
     if (!draft) {
       const v = volumeRef.current;
@@ -316,7 +449,7 @@ export default function Builder() {
     if (draft.palette?.length) setPalette(clonePalette(draft.palette));
     setFocus(volumeCenter(draft.size || 64));
     bump();
-  }, [bump]);
+  }, [bump, refreshCredits]);
 
   useEffect(() => {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
@@ -464,9 +597,43 @@ export default function Builder() {
     bump();
   }, [bump]);
 
+  const packVolume = useCallback(() => {
+    const v = volumeRef.current;
+    const items = v.voxels();
+    const bounds = boundsOfCells(items);
+    if (!bounds) {
+      setFocus(volumeCenter(v.size));
+      return;
+    }
+    const next = fitSizeFor(bounds);
+    const dx = 1 - bounds.minX;
+    const dy = 0 - bounds.minY;
+    const dz = 1 - bounds.minZ;
+    const shifted = items.map((item) => ({
+      x: item.x + dx,
+      y: item.y + dy,
+      z: item.z + dz,
+      c: item.c
+    }));
+    v.resize(next);
+    v.load({ size: next, voxels: shifted });
+    const packed = boundsOfCells(shifted);
+    setClip((c) => ({ ...c, value: Math.min(c.value, next - 1) }));
+    if (packed) {
+      setFocus([
+        (packed.minX + packed.maxX) / 2,
+        Math.max(0.5, (packed.minY + packed.maxY) / 2),
+        (packed.minZ + packed.maxZ) / 2
+      ]);
+    } else {
+      setFocus(volumeCenter(next));
+    }
+    bump();
+  }, [bump]);
+
   const clearAll = useCallback(() => {
     applyNow(
-      volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z })),
+      volumeRef.current.voxels().map((vx) => ({ x: vx.x, y: vx.y, z: vx.z })),
       null,
       false
     );
@@ -485,6 +652,7 @@ export default function Builder() {
       if (doomed.length) applyNow(doomed, null, false);
       v.resize(size);
       setClip((c) => ({ ...c, value: Math.min(c.value, size - 1) }));
+      setFocus(volumeCenter(size));
       bump();
     },
     [applyNow, bump]
@@ -524,14 +692,14 @@ export default function Builder() {
           y: 0,
           z: Math.floor(volume.size / 2)
         };
-      const cells = clipboard.map((v) => ({
-        x: base.x + v.dx,
-        y: base.y + v.dy,
-        z: base.z + v.dz
+      const cells = clipboard.map((item) => ({
+        x: base.x + item.dx,
+        y: base.y + item.dy,
+        z: base.z + item.dz
       }));
       const deltas: Delta[] = [];
-      clipboard.forEach((v, i) => {
-        deltas.push(...applyCells(volumeRef.current, [cells[i]], v.c, mirror));
+      clipboard.forEach((item, i) => {
+        deltas.push(...applyCells(volumeRef.current, [cells[i]], item.c, mirror));
       });
       historyRef.current.push(deltas);
       setSelected(new Set(cells.map(cellKey)));
@@ -584,10 +752,11 @@ export default function Builder() {
 
   const exportFiles = useCallback(
     async (kind: "vox" | "obj" | "json" | "glb") => {
-      const name = (title.trim() || "untitled")
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "untitled";
+      const name =
+        (title.trim() || "untitled")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "untitled";
       const options = {
         name,
         unitMeters: 0.1,
@@ -597,11 +766,7 @@ export default function Builder() {
       try {
         if (kind === "json") {
           downloadText(
-            JSON.stringify(
-              projectFromVolume(title, volumeRef.current, palette),
-              null,
-              2
-            ),
+            JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2),
             `${name}.json`,
             "application/json"
           );
@@ -609,8 +774,6 @@ export default function Builder() {
           return;
         }
         if (kind === "vox") {
-          notify("EXPORTING VOX");
-          await new Promise((resolve) => window.setTimeout(resolve, 40));
           downloadBytes(
             exportVox(volumeRef.current, palette),
             `${name}.vox`,
@@ -636,9 +799,7 @@ export default function Builder() {
         );
         notify("OBJ READY");
       } catch (error) {
-        notify(
-          error instanceof Error ? error.message.toUpperCase() : "EXPORT FAILED"
-        );
+        notify(error instanceof Error ? error.message.toUpperCase() : "EXPORT FAILED");
       }
     },
     [notify, palette, title]
@@ -647,18 +808,41 @@ export default function Builder() {
   const cancelImage = useCallback(() => {
     setPendingImage(null);
     setPendingName("");
+    setPendingHash("");
+    setPaywall(false);
     notify("IMPORT CANCELED");
   }, [notify]);
 
   const applyImage = useCallback(() => {
     if (!pendingImage) return;
+    const gate = consumeImageApply(pendingHash || pendingName || "unknown");
+    refreshCredits();
+    if (!gate.ok) {
+      setPaywall(true);
+      notify(gate.message);
+      return;
+    }
     const result = pendingImage;
+    const bounds = boundsOfCells(result.voxels);
+    const dx = bounds ? 1 - bounds.minX : 0;
+    const dy = bounds ? 0 - bounds.minY : 0;
+    const dz = bounds ? 1 - bounds.minZ : 0;
+    const packed = result.voxels.map((vox) => ({
+      x: vox.x + dx,
+      y: vox.y + dy,
+      z: vox.z + dz,
+      c: vox.c
+    }));
+    const packedBounds = boundsOfCells(packed);
+    const next = packedBounds ? fitSizeFor(packedBounds) : volumeRef.current.size;
+    if (next !== volumeRef.current.size) volumeRef.current.resize(next);
+
     setPendingImage(null);
+    setPendingHash("");
+    setPaywall(false);
     setPalette(result.palette);
     const deltas: Delta[] = [];
-    const existing = volumeRef.current
-      .voxels()
-      .map((v) => ({ x: v.x, y: v.y, z: v.z }));
+    const existing = volumeRef.current.voxels().map((vx) => ({ x: vx.x, y: vx.y, z: vx.z }));
     if (existing.length) {
       deltas.push(
         ...applyCells(volumeRef.current, existing, null, {
@@ -669,7 +853,17 @@ export default function Builder() {
       );
     }
     const byColor = new Map<number, Cell[]>();
-    for (const vox of result.voxels) {
+    for (const vox of packed) {
+      if (
+        vox.x < 0 ||
+        vox.y < 0 ||
+        vox.z < 0 ||
+        vox.x >= volumeRef.current.size ||
+        vox.y >= volumeRef.current.size ||
+        vox.z >= volumeRef.current.size
+      ) {
+        continue;
+      }
       const list = byColor.get(vox.c) ?? [];
       list.push({ x: vox.x, y: vox.y, z: vox.z });
       byColor.set(vox.c, list);
@@ -688,9 +882,23 @@ export default function Builder() {
     setPendingName("");
     setSelected(new Set());
     setBoxStart(null);
+    setClip((c) => ({ ...c, value: Math.min(c.value, next - 1) }));
+    if (packedBounds) {
+      setFocus([
+        (packedBounds.minX + packedBounds.maxX) / 2,
+        Math.max(0.5, (packedBounds.minY + packedBounds.maxY) / 2),
+        (packedBounds.minZ + packedBounds.maxZ) / 2
+      ]);
+    } else {
+      setFocus(volumeCenter(next));
+    }
     bump();
-    notify(`IMAGE ${result.count ?? result.voxels.length} VX`);
-  }, [bump, notify, pendingImage, pendingName]);
+    notify(
+      gate.reason === "repeat"
+        ? `IMAGE ${result.count ?? result.voxels.length} VX`
+        : `IMAGE APPLIED · ${gate.message}`
+    );
+  }, [bump, notify, pendingHash, pendingImage, pendingName, refreshCredits]);
 
   const openProject = useCallback(
     async (file: File) => {
@@ -713,7 +921,9 @@ export default function Builder() {
           });
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
+          setPendingHash(await hashImageFile(file));
           setPendingImage(result);
+          setPaywall(false);
           notify(`${result.count ?? result.voxels.length} VX READY`);
           return;
         }
@@ -733,18 +943,16 @@ export default function Builder() {
         setSelected(new Set());
         setBoxStart(null);
         setPendingImage(null);
-        setFocus(volumeCenter(volumeRef.current.size));
-        bump();
+        setPendingHash("");
+        packVolume();
         notify("PROJECT LOADED");
       } catch (error) {
-        notify(
-          error instanceof Error ? error.message.toUpperCase() : "OPEN FAILED"
-        );
+        notify(error instanceof Error ? error.message.toUpperCase() : "OPEN FAILED");
       } finally {
         setBusy(false);
       }
     },
-    [bump, imageHeight, imageMode, notify]
+    [imageHeight, imageMode, notify, packVolume]
   );
 
   useEffect(() => {
@@ -759,12 +967,20 @@ export default function Builder() {
         setSelected(new Set());
         setPendingImage(null);
         setPendingName("");
+        setPendingHash("");
+        setPaywall(false);
         strokeRef.current = null;
         return;
       }
       if (e.key === "Enter" && pendingImage) {
         e.preventDefault();
         applyImage();
+        return;
+      }
+      if (k === "f" && !mod && !pendingImage) {
+        e.preventDefault();
+        packVolume();
+        notify("FIT");
         return;
       }
       if (k === "f") {
@@ -777,23 +993,8 @@ export default function Builder() {
           : ghost
             ? [ghost]
             : [];
-        if (cells.length) {
-          setFocus([
-            cells.reduce((s, c) => s + c.x, 0) / cells.length,
-            cells.reduce((s, c) => s + c.y, 0) / cells.length,
-            cells.reduce((s, c) => s + c.z, 0) / cells.length
-          ]);
-        }
+        if (cells[0]) setFocus([cells[0].x, cells[0].y, cells[0].z]);
         return;
-      }
-      if (clip.axis && k === ",") {
-        setClip((c) => ({ ...c, value: Math.max(0, c.value - 1) }));
-      }
-      if (clip.axis && k === ".") {
-        setClip((c) => ({
-          ...c,
-          value: Math.min(volume.size - 1, c.value + 1)
-        }));
       }
       if (mod && k === "z") {
         e.preventDefault();
@@ -821,19 +1022,13 @@ export default function Builder() {
         duplicateSelected();
         return;
       }
-      if (k === "b") setTool("attach");
-      if (k === "e") setTool("erase");
-      if (k === "p") setTool("paint");
-      if (k === "g") setTool("fill");
-      if (k === "i") setTool("eyedrop");
-      if (k === "q") setTool("select");
-      if (k === "u") setTool("box");
-      if (k === "x") setMirror((m) => ({ ...m, x: !m.x }));
-      if (k === "y" && !mod) setMirror((m) => ({ ...m, y: !m.y }));
-      if (k === "z" && !mod) setMirror((m) => ({ ...m, z: !m.z }));
-      if (k === "[") setBrush((n) => Math.max(1, n - 1));
-      if (k === "]") setBrush((n) => Math.min(5, n + 1));
-      if (k === "delete" || k === "backspace") deleteSelected();
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        deleteSelected();
+        return;
+      }
+      const toolMatch = TOOLS.find((item) => item.key.toLowerCase() === k);
+      if (toolMatch && !mod) setTool(toolMatch.id);
       if (e.key === "ArrowLeft") moveSelected(-1, 0, 0);
       if (e.key === "ArrowRight") moveSelected(1, 0, 0);
       if (e.key === "ArrowUp")
@@ -845,33 +1040,33 @@ export default function Builder() {
     return () => window.removeEventListener("keydown", handler);
   }, [
     applyImage,
-    clip.axis,
     copySelected,
     deleteSelected,
     duplicateSelected,
     ghost,
     moveSelected,
+    notify,
+    packVolume,
     pasteClipboard,
     pendingImage,
     redo,
     selected,
-    undo,
-    volume.size
+    undo
   ]);
+
+  const creditLabel =
+    creditsLeft === Number.POSITIVE_INFINITY ? "PRO" : `${creditsLeft}/${FREE_IMAGE_APPLIES}`;
 
   return (
     <main className="builderShell">
       <header className="builderHeader">
         <div className="headerLeft">
-          <Link href="/" className="brand">
-            <span className="brandMark">◆</span> VOXEL
+          <Link href="/" className="brandMark">
+            VOXEL
           </Link>
-        </div>
-        <div className="creationTitle">
           {editingTitle ? (
             <input
               autoFocus
-              className="titleInput"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               onBlur={() => setEditingTitle(false)}
@@ -880,332 +1075,314 @@ export default function Builder() {
               }}
             />
           ) : (
-            <>
-              <span>{title}</span>
-              <button className="titleEditBtn" onClick={() => setEditingTitle(true)}>
-                EDIT
-              </button>
-            </>
+            <button className="titleBtn" onClick={() => setEditingTitle(true)}>
+              {title} <span>EDIT</span>
+            </button>
           )}
         </div>
-        <div className="builderActions">
-          <button onClick={undo} disabled={!canUndo || busy}>
+        <div className="headerRight">
+          <button onClick={undo} disabled={!canUndo}>
             UNDO
           </button>
-          <button onClick={redo} disabled={!canRedo || busy}>
+          <button onClick={redo} disabled={!canRedo}>
             REDO
           </button>
           <button onClick={() => fileRef.current?.click()} disabled={busy}>
             OPEN
           </button>
-          <button onClick={() => void exportFiles("json")} disabled={busy}>
-            PROJECT
-          </button>
-          <button onClick={() => void exportFiles("vox")} disabled={busy}>
-            VOX
-          </button>
-          <button onClick={() => void exportFiles("glb")} disabled={busy}>
-            GLB
-          </button>
-          <button onClick={() => void exportFiles("obj")} disabled={busy}>
-            OBJ
-          </button>
+          <button onClick={() => exportFiles("json")}>PROJECT</button>
+          <button onClick={() => exportFiles("vox")}>VOX</button>
+          <button onClick={() => exportFiles("glb")}>GLB</button>
+          <button onClick={() => exportFiles("obj")}>OBJ</button>
           <input
             ref={fileRef}
             type="file"
-            accept=".json,.vox,.png,.jpg,.jpeg,.webp,application/json,image/png,image/jpeg,image/webp"
             hidden
+            accept=".png,.jpg,.jpeg,.webp,.vox,.json"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) void openProject(file);
               e.target.value = "";
+              if (file) void openProject(file);
             }}
           />
         </div>
       </header>
 
-      <div className="builderBody voxelBody">
-        <aside className="brickPanel">
-          <p className="panelLabel">TOOLS</p>
-          <div className="toolStack">
-            {TOOLS.map((item) => (
+      <aside className="toolRail">
+        <p className="category">TOOLS</p>
+        {TOOLS.map((item) => (
+          <button
+            key={item.id}
+            className={tool === item.id ? "modeOn" : ""}
+            onClick={() => setTool(item.id)}
+          >
+            {item.label} <span>{item.key}</span>
+          </button>
+        ))}
+        {tool === "box" && (
+          <div className="viewRow">
+            {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
               <button
-                key={item.id}
-                className={tool === item.id ? "modeOn" : ""}
-                onClick={() => setTool(item.id)}
+                key={mode}
+                className={boxMode === mode ? "modeOn" : ""}
+                onClick={() => setBoxMode(mode)}
               >
-                {item.label}
-                <small>{item.key}</small>
+                {mode.toUpperCase()}
               </button>
             ))}
           </div>
-          {tool === "box" && (
-            <div className="viewRow">
-              {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  className={boxMode === mode ? "modeOn" : ""}
-                  onClick={() => setBoxMode(mode)}
-                >
-                  {mode.toUpperCase()}
-                </button>
-              ))}
-            </div>
+        )}
+        <p className="category">BRUSH {brush}</p>
+        <div className="viewRow">
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>
+              {n}
+            </button>
+          ))}
+        </div>
+        <p className="category">MIRROR</p>
+        <div className="viewRow">
+          {(["x", "y", "z"] as const).map((axis) => (
+            <button
+              key={axis}
+              className={mirror[axis] ? "modeOn" : ""}
+              onClick={() => setMirror((m) => ({ ...m, [axis]: !m[axis] }))}
+            >
+              {axis.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <p className="category">VOLUME</p>
+        <div className="viewRow">
+          {SIZES.map((size) => (
+            <button
+              key={size}
+              className={volume.size === size ? "modeOn" : ""}
+              onClick={() => resize(size)}
+            >
+              {size}
+            </button>
+          ))}
+        </div>
+        <button onClick={packVolume} disabled={!count}>
+          FIT
+        </button>
+        <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>
+          HOLLOW
+        </button>
+        <button onClick={clearAll}>CLEAR</button>
+      </aside>
+
+      <section className="viewport">
+        <Canvas
+          shadows
+          dpr={[1, 1.75]}
+          camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}
+        >
+          <color attach="background" args={["#070b14"]} />
+          <ambientLight intensity={0.55} />
+          <directionalLight position={[30, 50, 20]} intensity={1.1} castShadow />
+          <CameraRig view={view} size={volume.size} focus={focus} />
+          {grid && (
+            <Grid
+              args={[volume.size, volume.size]}
+              position={[(volume.size - 1) / 2, -0.49, (volume.size - 1) / 2]}
+              cellSize={1}
+              cellColor="#1e293b"
+              sectionSize={8}
+              sectionColor="#334155"
+              fadeDistance={volume.size * 2}
+            />
           )}
-          <p className="category">BRUSH {brush}</p>
+          <Ground size={volume.size} onHit={onHit} onHover={onHover} />
+          <VolumeFrame size={volume.size} />
+          <VoxelCloud
+            volume={volume}
+            palette={palette}
+            revision={rev}
+            selected={selected}
+            clip={clip}
+            onHit={onHit}
+            onHover={onHover}
+          />
+          {pendingImage && (
+            <PendingPreview voxels={pendingImage.voxels} palette={pendingImage.palette} />
+          )}
+          {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
+            <Ghost
+              cell={ghost}
+              color={palette[color]}
+              valid={ghostValid || tool !== "attach"}
+            />
+          )}
+          {tool === "box" && boxStart && ghost && <BoxPreview a={boxStart} b={ghost} />}
+          {tool === "select" && clipboard.length > 0 && ghost && (
+            <OffsetGhost items={clipboard} origin={ghost} />
+          )}
+          <OrbitControls
+            makeDefault
+            mouseButtons={{
+              LEFT: undefined,
+              MIDDLE: THREE.MOUSE.PAN,
+              RIGHT: THREE.MOUSE.ROTATE
+            }}
+            enableRotate={view === "iso"}
+            minDistance={4}
+            maxDistance={volume.size * 4}
+          />
+        </Canvas>
+        <div className="sceneHud">
+          <span className="hudChip">
+            {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³ ·{" "}
+            {creditLabel}
+            {boxStart ? " · BOX…" : ""}
+            {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
+            {busy ? " · BUSY" : ""}
+            {pendingImage ? " · PREVIEW" : ""}
+          </span>
+          <span className="hudHelp">
+            OPEN PNG · ENTER APPLY · ESC CANCEL · F FIT · GLB / VOX / OBJ ZIP
+          </span>
+        </div>
+        {toast && <div className="toast">{toast}</div>}
+        {pendingImage && !paywall && (
+          <div className="toast" style={{ bottom: 72, minWidth: 280 }}>
+            <div style={{ marginBottom: 8 }}>
+              APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX ·{" "}
+              {pendingImage.width}×{pendingImage.height} · {imageMode.toUpperCase()}
+            </div>
+            <div className="viewRow">
+              <button onClick={applyImage} disabled={busy}>
+                APPLY
+              </button>
+              <button onClick={cancelImage} disabled={busy}>
+                CANCEL
+              </button>
+            </div>
+            <div style={{ marginTop: 6, opacity: 0.7 }}>
+              ENTER apply · ESC cancel · {creditLabel} free applies · same photo 24h free
+            </div>
+          </div>
+        )}
+        {paywall && (
+          <div className="toast" style={{ bottom: 72, minWidth: 300 }}>
+            <div style={{ marginBottom: 8 }}>
+              FREE LIMIT REACHED · subscribe with SOL or USDC on Solana
+            </div>
+            <div className="viewRow">
+              <button onClick={() => notify("SOLANA CHECKOUT NEXT")} disabled={busy}>
+                SUBSCRIBE
+              </button>
+              <button onClick={cancelImage} disabled={busy}>
+                CANCEL
+              </button>
+            </div>
+            <div style={{ marginTop: 6, opacity: 0.7 }}>
+              Preview stays. Editor and exports of applied models stay free.
+            </div>
+          </div>
+        )}
+      </section>
+
+      <aside className="inspector">
+        <p className="category">VIEW</p>
+        <div className="viewRow">
+          {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={view === mode ? "modeOn" : ""}
+              onClick={() => setView(mode)}
+            >
+              {mode.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>
+          GRID
+        </button>
+        {selected.size > 0 && (
+          <>
+            <p className="category">SELECTION {selected.size}</p>
+            <div className="viewRow">
+              <button onClick={paintSelected}>PAINT</button>
+              <button onClick={deleteSelected}>DEL</button>
+              <button onClick={copySelected}>COPY</button>
+              <button onClick={() => pasteClipboard()}>PASTE</button>
+            </div>
+          </>
+        )}
+        <p className="category">CLIP</p>
+        <div className="viewRow">
+          {([null, "x", "y", "z"] as const).map((axis) => (
+            <button
+              key={String(axis)}
+              className={clip.axis === axis ? "modeOn" : ""}
+              onClick={() => setClip((c) => ({ ...c, axis }))}
+            >
+              {axis ? axis.toUpperCase() : "OFF"}
+            </button>
+          ))}
+        </div>
+        {clip.axis && (
+          <input
+            type="range"
+            min={0}
+            max={volume.size - 1}
+            value={clip.value}
+            onChange={(e) =>
+              setClip((c) => ({ ...c, value: Number(e.target.value) }))
+            }
+          />
+        )}
+        <p className="category">IMAGE IMPORT</p>
+        <div className="viewRow">
+          {(["solid", "flat", "relief", "model"] as ImageMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={imageMode === mode ? "modeOn" : ""}
+              onClick={() => setImageMode(mode)}
+            >
+              {mode.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        {(imageMode === "solid" || imageMode === "relief" || imageMode === "model") && (
           <div className="viewRow">
-            {[1, 2, 3, 4, 5].map((n) => (
+            {[4, 8, 12, 16].map((n) => (
               <button
                 key={n}
-                className={brush === n ? "modeOn" : ""}
-                onClick={() => setBrush(n)}
+                className={imageHeight === n ? "modeOn" : ""}
+                onClick={() => setImageHeight(n)}
               >
-                {n}
+                H{n}
               </button>
             ))}
           </div>
-          <p className="category">MIRROR</p>
-          <div className="viewRow">
-            {(["x", "y", "z"] as const).map((axis) => (
-              <button
-                key={axis}
-                className={mirror[axis] ? "modeOn" : ""}
-                onClick={() => setMirror((m) => ({ ...m, [axis]: !m[axis] }))}
-              >
-                {axis.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          <p className="category">VOLUME</p>
-          <div className="viewRow">
-            {SIZES.map((size) => (
-              <button
-                key={size}
-                className={volume.size === size ? "modeOn" : ""}
-                onClick={() => resize(size)}
-              >
-                {size}
-              </button>
-            ))}
-          </div>
-          <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>
-            HOLLOW
-          </button>
-          <button onClick={clearAll}>CLEAR</button>
-        </aside>
-
-        <section className="viewport">
-          <Canvas
-            shadows
-            dpr={[1, 1.75]}
-            camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}
-          >
-            <color attach="background" args={["#070a11"]} />
-            <ambientLight intensity={0.72} />
-            <hemisphereLight intensity={0.42} groundColor="#05070c" />
-            <directionalLight position={[18, 32, 14]} intensity={2.6} castShadow />
-            {grid && (
-              <Grid
-                args={[volume.size, volume.size]}
-                position={[cx, -0.49, cz]}
-                cellSize={1}
-                cellThickness={0.55}
-                cellColor="#273044"
-                sectionSize={8}
-                sectionThickness={1.1}
-                sectionColor="#46516b"
-                fadeDistance={volume.size * 2}
-              />
-            )}
-            <Ground size={volume.size} onHit={onHit} onHover={onHover} />
-            <VolumeFrame size={volume.size} />
-            <VoxelCloud
-              volume={volume}
-              palette={palette}
-              revision={rev}
-              selected={selected}
-              clip={clip}
-              onHit={onHit}
-              onHover={onHover}
+        )}
+        <p className="category">PALETTE</p>
+        <div className="paletteGrid">
+          {palette.slice(0, 64).map((hex, i) => (
+            <button
+              key={i}
+              className={color === i ? "swatchOn" : "swatch"}
+              style={{ background: hex }}
+              onClick={() => setColor(i)}
             />
-            {pendingImage && (
-              <PendingPreview
-                voxels={pendingImage.voxels}
-                palette={pendingImage.palette}
-              />
-            )}
-            {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
-              <Ghost
-                cell={ghost}
-                color={palette[color]}
-                valid={ghostValid || tool !== "attach"}
-              />
-            )}
-            {tool === "box" && boxStart && ghost && (
-              <BoxPreview a={boxStart} b={ghost} />
-            )}
-            {tool !== "box" && clipboard.length > 0 && ghost && (
-              <OffsetGhost items={clipboard} origin={ghost} />
-            )}
-            <CameraRig view={view} size={volume.size} focus={focus} />
-            <OrbitControls
-              makeDefault
-              enableDamping
-              dampingFactor={0.08}
-              target={focus}
-              mouseButtons={{
-                LEFT: undefined,
-                MIDDLE: THREE.MOUSE.PAN,
-                RIGHT: THREE.MOUSE.ROTATE
-              }}
-              enableRotate={view === "iso"}
-              minDistance={4}
-              maxDistance={volume.size * 4}
-            />
-          </Canvas>
-          <div className="sceneHud">
-            <span className="hudChip">
-              {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³
-              {boxStart ? " · BOX…" : ""}
-              {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
-              {busy ? " · BUSY" : ""}
-              {pendingImage ? " · PREVIEW" : ""}
-            </span>
-            <span className="hudHelp">
-              OPEN PNG · ENTER APPLY · ESC CANCEL · GLB / VOX / OBJ ZIP
-            </span>
-          </div>
-          {toast && <div className="toast">{toast}</div>}
-          {pendingImage && (
-            <div className="toast" style={{ bottom: 72, minWidth: 280 }}>
-              <div style={{ marginBottom: 8 }}>
-                APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX ·{" "}
-                {pendingImage.width}×{pendingImage.height} · {imageMode.toUpperCase()}
-              </div>
-              <div className="viewRow">
-                <button onClick={applyImage} disabled={busy}>
-                  APPLY
-                </button>
-                <button onClick={cancelImage} disabled={busy}>
-                  CANCEL
-                </button>
-              </div>
-              <div style={{ marginTop: 6, opacity: 0.7 }}>
-                ENTER apply · ESC cancel · scene stays until APPLY
-              </div>
-            </div>
-          )}
-        </section>
-
-        <aside className="inspector">
-          <p className="panelLabel">INSPECTOR</p>
-          <div className="viewRow">
-            {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
-              <button
-                key={mode}
-                className={view === mode ? "modeOn" : ""}
-                onClick={() => setView(mode)}
-              >
-                {mode.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>
-            GRID {grid ? "ON" : "OFF"}
-          </button>
-          <p className="category">CLIP</p>
-          <div className="viewRow">
-            {([null, "x", "y", "z"] as const).map((axis) => (
-              <button
-                key={String(axis)}
-                className={clip.axis === axis ? "modeOn" : ""}
-                onClick={() =>
-                  setClip({
-                    axis,
-                    value: axis ? Math.floor(volume.size / 2) : volume.size - 1
-                  })
-                }
-              >
-                {axis ? axis.toUpperCase() : "OFF"}
-              </button>
-            ))}
-          </div>
-          {clip.axis && (
-            <input
-              type="range"
-              min={0}
-              max={volume.size - 1}
-              value={clip.value}
-              onChange={(e) =>
-                setClip((c) => ({ ...c, value: Number(e.target.value) }))
-              }
-            />
-          )}
-          <p className="category">IMAGE IMPORT</p>
-          <div className="viewRow">
-            {(["solid", "flat", "relief", "model"] as ImageMode[]).map((mode) => (
-              <button
-                key={mode}
-                className={imageMode === mode ? "modeOn" : ""}
-                onClick={() => setImageMode(mode)}
-              >
-                {mode.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          {(imageMode === "solid" || imageMode === "relief" || imageMode === "model") && (
-            <div className="viewRow">
-              {[4, 8, 12, 16].map((n) => (
-                <button
-                  key={n}
-                  className={imageHeight === n ? "modeOn" : ""}
-                  onClick={() => setImageHeight(n)}
-                >
-                  H{n}
-                </button>
-              ))}
-            </div>
-          )}
-          <p className="category">PALETTE</p>
-          <div className="colorRow dense">
-            {palette.slice(0, 64).map((hex, i) => (
-              <button
-                key={`${hex}-${i}`}
-                className={`swatch ${color === i ? "swatchOn" : ""}`}
-                style={{ background: hex }}
-                onClick={() => setColor(i)}
-              />
-            ))}
-          </div>
-          <input
-            type="color"
-            value={palette[color]}
-            onChange={(e) => {
-              const next = palette.slice();
-              next[color] = e.target.value;
-              setPalette(next);
-            }}
-          />
-          <p className="hint">
-            {selected.size
-              ? `${selected.size} SELECTED`
-              : ghost
-                ? `${ghost.x},${ghost.y},${ghost.z}`
-                : "NO HIT"}
-          </p>
-          {selected.size > 0 && (
-            <>
-              <button onClick={copySelected}>COPY</button>
-              <button onClick={duplicateSelected}>DUPLICATE</button>
-              <button onClick={paintSelected}>PAINT SEL</button>
-              <button onClick={deleteSelected}>DELETE SEL</button>
-            </>
-          )}
-          {clipboard.length > 0 && (
-            <button onClick={() => pasteClipboard()}>PASTE {clipboard.length}</button>
-          )}
-        </aside>
-      </div>
+          ))}
+        </div>
+        <input
+          type="color"
+          value={palette[color] ?? "#ffffff"}
+          onChange={(e) => {
+            const next = [...palette];
+            next[color] = e.target.value;
+            setPalette(next);
+          }}
+        />
+        <p className="muted">
+          {color}, {palette[color]}
+        </p>
+      </aside>
     </main>
   );
 }
