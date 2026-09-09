@@ -51,6 +51,7 @@ import {
   hashImageFile,
   remainingApplies
 } from "@/lib/entitlement";
+import { MONTHLY_SOL, subscribeWithSol } from "@/lib/solanaCheckout";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -176,7 +177,7 @@ function BoxPreview({ a, b }: { a: Cell; b: Cell }) {
   return (
     <mesh position={[x0 + (sx - 1) / 2, y0 + (sy - 1) / 2, z0 + (sz - 1) / 2]} raycast={() => {}}>
       <boxGeometry args={[sx, sy, sz]} />
-      <meshBasicMaterial color="#a78bfa" wireframe transparent opacity={0.85} />
+      <meshBasicMaterial color="#14f195" wireframe transparent opacity={0.85} />
     </mesh>
   );
 }
@@ -193,7 +194,7 @@ function OffsetGhost({
       {items.slice(0, 800).map((item, i) => (
         <mesh key={i} position={[origin.x + item.dx, origin.y + item.dy, origin.z + item.dz]}>
           <boxGeometry args={[1.02, 1.02, 1.02]} />
-          <meshBasicMaterial color="#e9d5ff" wireframe transparent opacity={0.7} />
+          <meshBasicMaterial color="#9945ff" wireframe transparent opacity={0.7} />
         </mesh>
       ))}
     </group>
@@ -233,7 +234,7 @@ function VolumeFrame({ size }: { size: number }) {
       <bufferGeometry>
         <bufferAttribute attach="attributes-position" args={[new Float32Array(points), 3]} />
       </bufferGeometry>
-      <lineBasicMaterial color="#334155" />
+      <lineBasicMaterial color="#9945FF" />
     </line>
   );
 }
@@ -288,10 +289,25 @@ export default function Builder() {
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(""), 1600);
+    window.setTimeout(() => setToast(""), 1800);
   }, []);
 
   const refreshCredits = useCallback(() => setCreditsLeft(remainingApplies()), []);
+
+  const subscribe = useCallback(async () => {
+    setBusy(true);
+    try {
+      notify("CONNECT PHANTOM");
+      const paid = await subscribeWithSol();
+      refreshCredits();
+      setPaywall(false);
+      notify(`PRO ACTIVE · ${paid.signature.slice(0, 8)}`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message.toUpperCase() : "PAY FAILED");
+    } finally {
+      setBusy(false);
+    }
+  }, [notify, refreshCredits]);
 
   const volume = volumeRef.current;
   const count = volume.count;
@@ -970,10 +986,9 @@ export default function Builder() {
                 cellSize={1}
                 cellThickness={0.55}
                 cellColor="#2a1f40"
-                sectionColor="#9945FF"
                 sectionSize={8}
                 sectionThickness={1.1}
-                sectionColor="#46516b"
+                sectionColor="#9945FF"
                 fadeDistance={volume.size * 2}
               />
             )}
@@ -1034,9 +1049,13 @@ export default function Builder() {
           )}
           {paywall && (
             <div className="toast" style={{ bottom: 72, minWidth: 300 }}>
-              <div style={{ marginBottom: 8 }}>FREE LIMIT REACHED · subscribe with SOL or USDC on Solana</div>
+              <div style={{ marginBottom: 8 }}>
+                FREE LIMIT REACHED · {MONTHLY_SOL} SOL / month · Phantom
+              </div>
               <div className="viewRow">
-                <button onClick={() => notify("SOLANA CHECKOUT NEXT")} disabled={busy}>SUBSCRIBE</button>
+                <button onClick={() => void subscribe()} disabled={busy}>
+                  PAY {MONTHLY_SOL} SOL
+                </button>
                 <button onClick={cancelImage} disabled={busy}>CANCEL</button>
               </div>
             </div>
