@@ -32,3 +32,10 @@ CREATE TABLE IF NOT EXISTS likes (
 
 CREATE INDEX IF NOT EXISTS idx_creations_published_created
   ON creations (published, created_at DESC);
+CREATE TABLE IF NOT EXISTS entitlements (
+  wallet TEXT PRIMARY KEY,
+  plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free', 'monthly')),
+  signature TEXT,
+  applies JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
