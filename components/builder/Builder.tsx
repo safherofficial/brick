@@ -959,7 +959,7 @@ export default function Builder() {
 
         <section className="viewport">
           <Canvas shadows dpr={[1, 1.75]} camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}>
-            <color attach="background" args={["#070a11"]} />
+            <color attach="background" args={["#0b0b12"]} />
             <ambientLight intensity={0.72} />
             <hemisphereLight intensity={0.42} groundColor="#05070c" />
             <directionalLight position={[18, 32, 14]} intensity={2.6} castShadow />
@@ -969,7 +969,8 @@ export default function Builder() {
                 position={[cx, -0.49, cz]}
                 cellSize={1}
                 cellThickness={0.55}
-                cellColor="#273044"
+                cellColor="#2a1f40"
+                sectionColor="#9945FF"
                 sectionSize={8}
                 sectionThickness={1.1}
                 sectionColor="#46516b"
