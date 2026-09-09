@@ -1,6 +1,6 @@
 import { setLocalPlan } from "@/lib/entitlement";
 
-export const MONTHLY_SOL = 0.05;
+export const MONTHLY_SOL = 0.08;
 export const TREASURY = "4GKjWC5gtFEYDsEH4y5dKuHLLMCBduoGYUPc6yhKq19p";
 const RPC = "https://api.mainnet-beta.solana.com";
 
