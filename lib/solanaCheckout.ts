@@ -1,13 +1,11 @@
 import { setLocalPlan } from "@/lib/entitlement";
 
 export const MONTHLY_SOL = 0.05;
-const TREASURY = process.env.NEXT_PUBLIC_SOLANA_TREASURY ?? "";
-const RPC =
-  process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.mainnet-beta.solana.com";
+export const TREASURY = "4GKjWC5gtFEYDsEH4y5dKuHLLMCBduoGYUPc6yhKq19p";
+const RPC = "https://api.mainnet-beta.solana.com";
 
 type Phantom = {
   isPhantom?: boolean;
-  publicKey?: { toString(): string };
   connect: (opts?: { onlyIfTrusted?: boolean }) => Promise<{ publicKey: { toString(): string } }>;
   signAndSendTransaction: (tx: unknown) => Promise<{ signature: string }>;
 };
@@ -19,7 +17,6 @@ function getPhantom(): Phantom {
 }
 
 export async function subscribeWithSol() {
-  if (!TREASURY) throw new Error("Missing treasury");
   const web3 = await import("@solana/web3.js");
   const phantom = getPhantom();
   const session = await phantom.connect();
