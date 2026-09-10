@@ -936,6 +936,16 @@ export default function Builder() {
               ))}
             </div>
           )}
+          <details className="fold">
+            <summary>STATUS · {creditLabel}</summary>
+            <div className="foldBody">
+              <p className="foldHint">
+                {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³
+                {pendingImage ? " · PREVIEW" : ""}
+                {busy ? " · BUSY" : ""}
+              </p>
+            </div>
+          </details>
           <p className="category">BRUSH {brush}</p>
           <div className="viewRow">
             {[1, 2, 3, 4, 5].map((n) => (
@@ -1021,19 +1031,9 @@ export default function Builder() {
               maxDistance={volume.size * 4}
             />
           </Canvas>
-          <div className="sceneHud">
-            <span className="hudChip">
-              {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³ · {creditLabel}
-              {boxStart ? " · BOX…" : ""}
-              {clip.axis ? ` · CLIP ${clip.axis.toUpperCase()}=${clip.value}` : ""}
-              {busy ? " · BUSY" : ""}
-              {pendingImage ? " · PREVIEW" : ""}
-            </span>
-            <span className="hudHelp">OPEN PNG · ENTER APPLY · ESC CANCEL · F FIT · GLB / VOX / OBJ ZIP</span>
-          </div>
           {toast && <div className="toast">{toast}</div>}
           {pendingImage && !paywall && (
-            <div className="toast" style={{ bottom: 72, minWidth: 280 }}>
+            <div className="toast" style={{ bottom: 24, minWidth: 280 }}>
               <div style={{ marginBottom: 8 }}>
                 APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX · {pendingImage.width}×
                 {pendingImage.height} · {imageMode.toUpperCase()}
@@ -1042,13 +1042,10 @@ export default function Builder() {
                 <button onClick={applyImage} disabled={busy}>APPLY</button>
                 <button onClick={cancelImage} disabled={busy}>CANCEL</button>
               </div>
-              <div style={{ marginTop: 6, opacity: 0.7 }}>
-                ENTER apply · ESC cancel · {creditLabel} · same photo 24h free
-              </div>
             </div>
           )}
           {paywall && (
-            <div className="toast" style={{ bottom: 72, minWidth: 300 }}>
+            <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
               <div style={{ marginBottom: 8 }}>
                 FREE LIMIT REACHED · {MONTHLY_SOL} SOL / month · Phantom
               </div>
@@ -1064,6 +1061,18 @@ export default function Builder() {
 
         <aside className="inspector">
           <p className="panelLabel">INSPECTOR</p>
+          <details className="fold">
+            <summary>GUIDE</summary>
+            <div className="foldBody">
+              <p className="foldHint">
+                OPEN PNG · ENTER apply · ESC cancel
+                <br />
+                F fit · LMB stroke · RMB orbit
+                <br />
+                GLB / VOX / OBJ ZIP
+              </p>
+            </div>
+          </details>
           <div className="viewRow">
             {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
               <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
