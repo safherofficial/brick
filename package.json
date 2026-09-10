@@ -8,8 +8,10 @@
     "start": "next start"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
     "@react-three/drei": "latest",
     "@react-three/fiber": "latest",
+    "@solana/web3.js": "^1.98.4",
     "lucide-react": "^1.41.0",
     "next": "latest",
     "react": "latest",
