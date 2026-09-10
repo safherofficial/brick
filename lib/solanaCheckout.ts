@@ -42,5 +42,13 @@ export async function subscribeWithSol() {
     "confirmed"
   );
   setLocalPlan("monthly");
+  await fetch("/api/subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      wallet: from.toBase58(),
+      signature: signed.signature
+    })
+  });
   return { signature: signed.signature, wallet: from.toBase58() };
 }
