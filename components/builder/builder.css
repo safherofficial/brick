@@ -303,3 +303,90 @@
   border-color: #14f195;
   color: #14f195;
 }
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+.builderShell {
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.builderBody,
+.voxelBody {
+  height: calc(100dvh - 64px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.brickPanel,
+.inspector {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 12px 10px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(153, 69, 255, 0.45) transparent;
+}
+
+.brickPanel::-webkit-scrollbar,
+.inspector::-webkit-scrollbar {
+  width: 6px;
+}
+
+.brickPanel::-webkit-scrollbar-thumb,
+.inspector::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #9945ff, #14f195);
+  border-radius: 99px;
+}
+
+.brickPanel::-webkit-scrollbar-track,
+.inspector::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.viewport {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panelLabel {
+  margin: 0 0 8px;
+}
+
+.category {
+  margin: 10px 0 6px;
+}
+
+.toolStack {
+  gap: 4px;
+}
+
+.toolStack button,
+.inspector button,
+.brickPanel button {
+  padding: 6px 8px;
+  font-size: 10px;
+}
+
+.viewRow {
+  margin: 6px 0 8px;
+  gap: 4px;
+}
+
+.colorRow.dense {
+  gap: 3px;
+  max-height: 88px;
+  overflow: hidden;
+}
+
+.hint {
+  margin-top: 8px;
+}
+
+.sceneHud {
+  bottom: 10px;
+}
