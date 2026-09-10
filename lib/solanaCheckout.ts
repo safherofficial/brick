@@ -6,6 +6,7 @@ const RPC = "https://api.mainnet-beta.solana.com";
 
 type Phantom = {
   isPhantom?: boolean;
+  publicKey?: { toString(): string };
   connect: (opts?: { onlyIfTrusted?: boolean }) => Promise<{ publicKey: { toString(): string } }>;
   signAndSendTransaction: (tx: unknown) => Promise<{ signature: string }>;
 };
@@ -14,6 +15,17 @@ function getPhantom(): Phantom {
   const provider = (window as Window & { solana?: Phantom }).solana;
   if (!provider?.isPhantom) throw new Error("Install Phantom");
   return provider;
+}
+
+export async function restorePlan() {
+  const phantom = getPhantom();
+  const session = await phantom.connect({ onlyIfTrusted: true }).catch(() => phantom.connect());
+  const wallet = session.publicKey.toString();
+  const res = await fetch(`/api/entitlement?wallet=${encodeURIComponent(wallet)}`);
+  const data = (await res.json()) as { plan?: string };
+  if (data.plan === "monthly") setLocalPlan("monthly");
+  else setLocalPlan("free");
+  return { wallet, plan: data.plan === "monthly" ? "monthly" : "free" };
 }
 
 export async function subscribeWithSol() {
