@@ -8,7 +8,8 @@ export async function POST(req: Request) {
   if (!wallet || !signature) {
     return NextResponse.json({ ok: false, error: "INVALID" }, { status: 400 });
   }
-  await sql()`
+  const db = sql();
+  await db`
     INSERT INTO entitlements (wallet, plan, signature, updated_at)
     VALUES (${wallet}, 'monthly', ${signature}, NOW())
     ON CONFLICT (wallet)
