@@ -390,3 +390,42 @@ body {
 .sceneHud {
   bottom: 10px;
 }
+.sceneHud {
+  display: none;
+}
+
+.fold {
+  border: 1px solid rgba(153, 69, 255, 0.22);
+  border-radius: 10px;
+  margin: 8px 0;
+  background: #14121c;
+}
+
+.fold > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 10px;
+  color: #14f195;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold[open] > summary {
+  border-bottom: 1px solid rgba(153, 69, 255, 0.18);
+}
+
+.foldBody {
+  padding: 8px 10px 10px;
+}
+
+.foldHint {
+  color: #cbb8ff;
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 0;
+}
