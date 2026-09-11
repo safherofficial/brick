@@ -38,10 +38,18 @@ function nearestIndex(r: number, g: number, b: number, colors: [number, number, 
   return best;
 }
 
+function shade(rgb: [number, number, number], t: number): [number, number, number] {
+  return [
+    Math.max(0, Math.min(255, Math.round(rgb[0] * t))),
+    Math.max(0, Math.min(255, Math.round(rgb[1] * t))),
+    Math.max(0, Math.min(255, Math.round(rgb[2] * t)))
+  ];
+}
+
 function quantize(unique: number[], maxColors: number) {
   if (unique.length <= maxColors) return unique.map((n) => unpack(n));
   const buckets = new Map<number, { n: number; r: number; g: number; b: number }>();
-  const shift = unique.length > 1024 ? 3 : 2;
+  const shift = unique.length > 1800 ? 3 : 2;
   for (const p of unique) {
     const [r, g, b] = unpack(p);
     const key = pack(r >> shift, g >> shift, b >> shift);
@@ -80,8 +88,7 @@ function knockFringe(mask: Uint8Array, data: Uint8ClampedArray, w: number, h: nu
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (!mask[i]) continue;
-      const a = data[i * 4 + 3];
-      if (a >= 250) continue;
+      if (data[i * 4 + 3] >= 250) continue;
       let empty = 0;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -128,13 +135,10 @@ function floodBackdrop(data: Uint8ClampedArray, mask: Uint8Array, w: number, h: 
   let opaque = 0;
   for (let i = 3; i < data.length; i += 4) if (data[i] > 8) opaque++;
   if (opaque / (w * h) < 0.97) return;
-
   const corners = [0, w - 1, (h - 1) * w, h * w - 1];
   const samples = corners.map((i) => [data[i * 4], data[i * 4 + 1], data[i * 4 + 2]]);
   const [cr, cg, cb] = samples[0];
-  const similar = samples.every(([r, g, b]) => (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2 < 900);
-  if (!similar) return;
-
+  if (!samples.every(([r, g, b]) => (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2 < 900)) return;
   const seen = new Uint8Array(w * h);
   const q = [...corners];
   for (const i of q) seen[i] = 1;
@@ -214,11 +218,28 @@ function blurField(src: Float32Array, w: number, h: number) {
   return out;
 }
 
-function depthRadius(mode: ImageMode, luma: number, fieldT: number, depthMax: number) {
-  if (mode === "flat") return 0;
-  if (mode === "solid") return Math.max(2, Math.floor(depthMax / 2));
-  if (mode === "relief") return Math.max(1, Math.round((0.35 + luma * 0.65) * Math.max(2, depthMax / 2)));
-  return Math.max(2, Math.round(Math.pow(fieldT, 0.72) * Math.max(3, depthMax)));
+function shiftToCenter(voxels: ImageVoxel[], volumeSize: number) {
+  if (!voxels.length) return voxels;
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
+  for (const v of voxels) {
+    minX = Math.min(minX, v.x);
+    minY = Math.min(minY, v.y);
+    minZ = Math.min(minZ, v.z);
+    maxX = Math.max(maxX, v.x);
+    maxY = Math.max(maxY, v.y);
+    maxZ = Math.max(maxZ, v.z);
+  }
+  const sx = Math.floor((volumeSize - (maxX - minX + 1)) / 2) - minX;
+  const sy = 0 - minY;
+  const sz = Math.floor((volumeSize - (maxZ - minZ + 1)) / 2) - minZ;
+  return voxels
+    .map((v) => ({ x: v.x + sx, y: v.y + sy, z: v.z + sz, c: v.c }))
+    .filter((v) => v.x >= 0 && v.y >= 0 && v.z >= 0 && v.x < volumeSize && v.y < volumeSize && v.z < volumeSize);
 }
 
 export async function imageToVoxels(
@@ -232,7 +253,7 @@ export async function imageToVoxels(
   }
 ): Promise<ImageImport> {
   const img = await loadImage(file);
-  const maxEdge = Math.min(options.maxEdge ?? 128, options.volumeSize);
+  const maxEdge = Math.min(options.maxEdge ?? 112, options.volumeSize);
   const scale = Math.min(1, maxEdge / Math.max(img.width, img.height, 1));
   const w = Math.max(1, Math.round(img.width * scale));
   const h = Math.max(1, Math.round(img.height * scale));
@@ -247,35 +268,52 @@ export async function imageToVoxels(
   const data = ctx.getImageData(0, 0, w, h).data;
 
   const mask = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] >= 28) mask[i] = 1;
-  }
+  for (let i = 0; i < w * h; i++) if (data[i * 4 + 3] >= 24) mask[i] = 1;
   floodBackdrop(data, mask, w, h);
   knockFringe(mask, data, w, h);
-  dropIslands(mask, w, h, 10);
+  dropIslands(mask, w, h, 6);
 
   const unique = new Set<number>();
   let visible = 0;
+  let minPx = w,
+    maxPx = 0;
   for (let i = 0; i < w * h; i++) {
     if (!mask[i]) continue;
     visible += 1;
+    minPx = Math.min(minPx, i % w);
+    maxPx = Math.max(maxPx, i % w);
     unique.add(pack(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]));
   }
   if (!visible) throw new Error("Empty image");
 
-  const colors = quantize([...unique], 256);
+  const baseColors = quantize([...unique], options.mode === "model" ? 40 : 64);
+  const colors: [number, number, number][] = [];
+  for (const rgb of baseColors) {
+    colors.push(rgb);
+    colors.push(shade(rgb, 0.72));
+    colors.push(shade(rgb, 0.48));
+  }
   const palette = Array.from({ length: 256 }, (_, i) => (colors[i] ? hexOf(...colors[i]) : "#000000"));
 
   const field = blurField(distanceField(mask, w, h), w, h);
   let fieldMax = 1;
   for (let i = 0; i < field.length; i++) if (field[i] > fieldMax) fieldMax = field[i];
 
-  const depthMax = Math.max(4, Math.min(options.heightMax, 28, Math.floor(options.volumeSize / 3)));
-  const cap = options.maxVoxels ?? 140_000;
+  const spanX = Math.max(6, maxPx - minPx + 1);
+  const depthMax =
+    options.mode === "flat"
+      ? 0
+      : Math.max(
+          3,
+          Math.min(
+            options.heightMax,
+            Math.floor(options.volumeSize / 3),
+            Math.round(spanX * (options.mode === "solid" ? 0.38 : options.mode === "relief" ? 0.22 : 0.46))
+          )
+        );
 
-  const ox = Math.floor((options.volumeSize - w) / 2);
-  const midZ = Math.floor(options.volumeSize / 2);
-  const voxels: ImageVoxel[] = [];
+  const cap = options.maxVoxels ?? 160_000;
+  const raw: ImageVoxel[] = [];
 
   for (let py = 0; py < h; py++) {
     for (let px = 0; px < w; px++) {
@@ -284,23 +322,26 @@ export async function imageToVoxels(
       const r = data[i * 4];
       const g = data[i * 4 + 1];
       const b = data[i * 4 + 2];
-      const c = nearestIndex(r, g, b, colors);
       const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
       const t = Math.sqrt(field[i] / fieldMax);
-      const radius = depthRadius(options.mode, luma, t, depthMax);
-      const x = ox + px;
+      let radius = 0;
+      if (options.mode === "solid") radius = Math.max(2, Math.round(depthMax / 2));
+      else if (options.mode === "relief") radius = Math.max(1, Math.round((0.35 + luma * 0.65) * (depthMax / 2)));
+      else if (options.mode === "model") radius = Math.max(1, Math.round(Math.pow(Math.max(t, 0.08), 0.6) * depthMax));
+      const x = px;
       const y = h - 1 - py;
-      if (x < 0 || y < 0 || x >= options.volumeSize || y >= options.volumeSize) continue;
       for (let dz = -radius; dz <= radius; dz++) {
-        const z = midZ + dz;
-        if (z < 0 || z >= options.volumeSize) continue;
-        const norm = radius === 0 ? 0 : Math.abs(dz) / (radius + 0.001);
-        if (options.mode === "model" && norm * norm + (1 - t) * 0.15 > 1.02) continue;
-        voxels.push({ x, y, z, c });
-        if (voxels.length > cap) throw new Error("Image too dense");
+        const u = radius === 0 ? 0 : Math.abs(dz) / radius;
+        if (options.mode === "model" && u * u + (1 - t) * 0.18 > 1.05) continue;
+        const ao = 1 - u * 0.38 - (1 - t) * 0.12;
+        const rgb = shade([r, g, b], Math.max(0.42, ao));
+        const c = nearestIndex(rgb[0], rgb[1], rgb[2], colors);
+        raw.push({ x, y, z: dz, c });
+        if (raw.length > cap) throw new Error("Image too dense");
       }
     }
   }
 
+  const voxels = shiftToCenter(raw, options.volumeSize);
   return { voxels, palette, width: w, height: h, count: voxels.length };
 }
