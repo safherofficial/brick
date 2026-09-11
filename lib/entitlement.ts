@@ -1,98 +1,57 @@
-export const FREE_IMAGE_APPLIES = 5;
-export const REPEAT_WINDOW_MS = 24 * 60 * 60 * 1000;
-const KEY = "brick.entitlement.v1";
+import { NextResponse } from "next/server";
+import { neon } from "@neondatabase/serverless";
+import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 
-export type EntitlementState = {
-  accountId: string;
-  plan: "free" | "monthly";
-  applies: { hash: string; at: number }[];
-};
+const TREASURY = "4GKjWC5gtFEYDsEH4y5dKuHLLMCBduoGYUPc6yhKq19p";
+const MONTHLY_SOL = 0.08;
+const RPC = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 
-function empty(): EntitlementState {
-  const accountId =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `acc_${Date.now().toString(36)}`;
-  return { accountId, plan: "free", applies: [] };
-}
+export async function POST(req: Request) {
+  const url = process.env.POSTGRES_URL;
+  if (!url) return NextResponse.json({ ok: false, error: "NO_DB" }, { status: 500 });
 
-export function readEntitlement(): EntitlementState {
-  if (typeof window === "undefined") return empty();
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    if (!raw) {
-      const created = empty();
-      window.localStorage.setItem(KEY, JSON.stringify(created));
-      return created;
-    }
-    const parsed = JSON.parse(raw) as EntitlementState;
-    if (!parsed.accountId || !Array.isArray(parsed.applies)) return empty();
-    parsed.plan = parsed.plan === "monthly" ? "monthly" : "free";
-    return parsed;
-  } catch {
-    return empty();
+  const body = (await req.json()) as { wallet?: string; signature?: string };
+  const wallet = body.wallet?.trim();
+  const signature = body.signature?.trim();
+  if (!wallet || !signature) {
+    return NextResponse.json({ ok: false, error: "INVALID" }, { status: 400 });
   }
-}
 
-function write(state: EntitlementState) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify(state));
-}
-
-export function remainingApplies(state = readEntitlement()) {
-  if (state.plan === "monthly") return Number.POSITIVE_INFINITY;
-  return Math.max(0, FREE_IMAGE_APPLIES - new Set(state.applies.map((i) => i.hash)).size);
-}
-
-export async function hashImageFile(file: File) {
-  const buffer = await file.arrayBuffer();
-  if (typeof crypto !== "undefined" && crypto.subtle) {
-    const digest = await crypto.subtle.digest("SHA-256", buffer);
-    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const connection = new Connection(RPC, "confirmed");
+  const tx = await connection.getParsedTransaction(signature, {
+    maxSupportedTransactionVersion: 0
+  });
+  if (!tx || tx.meta?.err) {
+    return NextResponse.json({ ok: false, error: "TX_NOT_FOUND" }, { status: 400 });
   }
-  return `${file.name}:${file.size}:${file.lastModified}`;
-}
 
-export function consumeImageApply(hash: string) {
-  const state = readEntitlement();
-  const now = Date.now();
-  if (state.plan === "monthly") {
-    return {
-      ok: true as const,
-      reason: "subscribed" as const,
-      remaining: Number.POSITIVE_INFINITY,
-      message: "SUBSCRIBED"
-    };
-  }
-  if (state.applies.some((i) => i.hash === hash && now - i.at < REPEAT_WINDOW_MS)) {
-    return {
-      ok: true as const,
-      reason: "repeat" as const,
-      remaining: remainingApplies(state),
-      message: "SAME IMAGE"
-    };
-  }
-  const left = remainingApplies(state);
-  if (left <= 0) {
-    return {
-      ok: false as const,
-      reason: "blocked" as const,
-      remaining: 0,
-      message: "SUBSCRIBE TO APPLY"
-    };
-  }
-  state.applies.push({ hash, at: now });
-  write(state);
-  return {
-    ok: true as const,
-    reason: "quota" as const,
-    remaining: left - 1,
-    message: `${left - 1} LEFT`
-  };
-}
+  const keys =
+    "accountKeys" in tx.transaction.message
+      ? tx.transaction.message.accountKeys.map((k) =>
+          typeof k === "string" ? k : "pubkey" in k ? k.pubkey.toString() : String(k)
+        )
+      : [];
 
-export function setLocalPlan(plan: "free" | "monthly") {
-  const state = readEntitlement();
-  state.plan = plan;
-  write(state);
+  const fromOk = keys.includes(wallet);
+  const toOk = keys.includes(TREASURY);
+  if (!fromOk || !toOk) {
+    return NextResponse.json({ ok: false, error: "TX_MISMATCH" }, { status: 400 });
+  }
+
+  const treasuryIdx = keys.indexOf(TREASURY);
+  const pre = tx.meta?.preBalances?.[treasuryIdx] ?? 0;
+  const post = tx.meta?.postBalances?.[treasuryIdx] ?? 0;
+  const received = post - pre;
+  if (received < Math.round(MONTHLY_SOL * LAMPORTS_PER_SOL)) {
+    return NextResponse.json({ ok: false, error: "AMOUNT" }, { status: 400 });
+  }
+
+  const db = neon(url);
+  await db`
+    INSERT INTO entitlements (wallet, plan, signature, updated_at)
+    VALUES (${wallet}, 'monthly', ${signature}, NOW())
+    ON CONFLICT (wallet)
+    DO UPDATE SET plan = 'monthly', signature = EXCLUDED.signature, updated_at = NOW()
+  `;
+  return NextResponse.json({ ok: true, plan: "monthly" });
 }
