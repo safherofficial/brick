@@ -42,6 +42,7 @@ import {
 import { exportGlb } from "@/lib/voxelGlb";
 import {
   imageToVoxels,
+  imagesToVoxels,
   type ImageImport,
   type ImageMode
 } from "@/lib/imageVoxel";
@@ -52,8 +53,6 @@ import {
   remainingApplies
 } from "@/lib/entitlement";
 import { MONTHLY_SOL, restorePlan, subscribeWithSol } from "@/lib/solanaCheckout";
-import { connectWallet } from "@/lib/wallet";
-import { publishCreation } from "@/lib/creationsApi";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -252,6 +251,7 @@ export default function Builder() {
   const historyRef = useRef(new History());
   const strokeRef = useRef<{ seen: Set<string>; deltas: Delta[] } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const sideRef = useRef<HTMLInputElement>(null);
 
   const [rev, setRev] = useState(0);
   const [title, setTitle] = useState("UNTITLED");
@@ -269,11 +269,13 @@ export default function Builder() {
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
-  const [imageMode, setImageMode] = useState<ImageMode>("flat");
-  const [imageHeight, setImageHeight] = useState(8);
+  const [imageMode, setImageMode] = useState<ImageMode>("model");
+  const [imageHeight, setImageHeight] = useState(16);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [pendingHash, setPendingHash] = useState("");
+  const [frontFile, setFrontFile] = useState<File | null>(null);
+  const [sideFile, setSideFile] = useState<File | null>(null);
   const [creditsLeft, setCreditsLeft] = useState(FREE_IMAGE_APPLIES);
   const [paywall, setPaywall] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -482,10 +484,13 @@ export default function Builder() {
       return;
     }
     const next = fitSizeFor(bounds);
+    const sx = Math.floor((next - (bounds.maxX - bounds.minX + 1)) / 2) - bounds.minX;
+    const sy = 0 - bounds.minY;
+    const sz = Math.floor((next - (bounds.maxZ - bounds.minZ + 1)) / 2) - bounds.minZ;
     const shifted = items.map((item) => ({
-      x: item.x + (1 - bounds.minX),
-      y: item.y + (0 - bounds.minY),
-      z: item.z + (1 - bounds.minZ),
+      x: item.x + sx,
+      y: item.y + sy,
+      z: item.z + sz,
       c: item.c
     }));
     v.resize(next);
@@ -647,36 +652,12 @@ export default function Builder() {
     [notify, palette, title]
   );
 
-  const publish = useCallback(async () => {
-    const v = volumeRef.current;
-    if (v.count === 0) {
-      notify("NOTHING TO PUBLISH");
-      return;
-    }
-    setBusy(true);
-    try {
-      notify("CONNECT PHANTOM");
-      const wallet = await connectWallet();
-      notify("PUBLISHING");
-      await publishCreation({
-        wallet,
-        title: title.trim() || "Untitled",
-        size: v.size,
-        palette,
-        voxels: v.voxels()
-      });
-      notify("PUBLISHED");
-    } catch (error) {
-      notify(error instanceof Error ? error.message.toUpperCase() : "PUBLISH FAILED");
-    } finally {
-      setBusy(false);
-    }
-  }, [notify, palette, title]);
-
   const cancelImage = useCallback(() => {
     setPendingImage(null);
     setPendingName("");
     setPendingHash("");
+    setFrontFile(null);
+    setSideFile(null);
     setPaywall(false);
     notify("IMPORT CANCELED");
   }, [notify]);
@@ -692,17 +673,22 @@ export default function Builder() {
     }
     const result = pendingImage;
     const bounds = boundsOfCells(result.voxels);
+    const next = bounds ? fitSizeFor(bounds) : volumeRef.current.size;
+    const sx = bounds ? Math.floor((next - (bounds.maxX - bounds.minX + 1)) / 2) - bounds.minX : 0;
+    const sy = bounds ? 0 - bounds.minY : 0;
+    const sz = bounds ? Math.floor((next - (bounds.maxZ - bounds.minZ + 1)) / 2) - bounds.minZ : 0;
     const packed = result.voxels.map((vox) => ({
-      x: vox.x + (bounds ? 1 - bounds.minX : 0),
-      y: vox.y + (bounds ? 0 - bounds.minY : 0),
-      z: vox.z + (bounds ? 1 - bounds.minZ : 0),
+      x: vox.x + sx,
+      y: vox.y + sy,
+      z: vox.z + sz,
       c: vox.c
     }));
     const packedBounds = boundsOfCells(packed);
-    const next = packedBounds ? fitSizeFor(packedBounds) : volumeRef.current.size;
     if (next !== volumeRef.current.size) volumeRef.current.resize(next);
     setPendingImage(null);
     setPendingHash("");
+    setFrontFile(null);
+    setSideFile(null);
     setPaywall(false);
     setPalette(result.palette);
     const deltas: Delta[] = [];
@@ -752,6 +738,35 @@ export default function Builder() {
     );
   }, [bump, notify, pendingHash, pendingImage, pendingName, refreshCredits]);
 
+  const attachSide = useCallback(
+    async (file: File) => {
+      if (!frontFile) {
+        notify("OPEN FRONT PNG FIRST");
+        return;
+      }
+      setBusy(true);
+      try {
+        setSideFile(file);
+        const result = await imagesToVoxels(
+          { front: frontFile, side: file },
+          {
+            volumeSize: volumeRef.current.size,
+            mode: imageMode,
+            heightMax: imageHeight,
+            maxVoxels: MAX_SAFE
+          }
+        );
+        setPendingImage(result);
+        notify(`FRONT+SIDE · ${result.count} VX`);
+      } catch (error) {
+        notify(error instanceof Error ? error.message.toUpperCase() : "SIDE FAILED");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [frontFile, imageHeight, imageMode, notify]
+  );
+
   const openProject = useCallback(
     async (file: File) => {
       setBusy(true);
@@ -760,12 +775,16 @@ export default function Builder() {
         if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
           notify("IMPORTING IMAGE");
           await new Promise((resolve) => window.setTimeout(resolve, 40));
-          const result = await imageToVoxels(file, {
-            volumeSize: volumeRef.current.size,
-            mode: imageMode,
-            heightMax: imageHeight,
-            maxVoxels: MAX_SAFE
-          });
+          setFrontFile(file);
+          const result = await imagesToVoxels(
+            { front: file, side: sideFile ?? undefined },
+            {
+              volumeSize: volumeRef.current.size,
+              mode: imageMode,
+              heightMax: imageHeight,
+              maxVoxels: MAX_SAFE
+            }
+          );
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
           setPendingHash(await hashImageFile(file));
@@ -791,6 +810,8 @@ export default function Builder() {
         setBoxStart(null);
         setPendingImage(null);
         setPendingHash("");
+        setFrontFile(null);
+        setSideFile(null);
         packVolume();
         notify("PROJECT LOADED");
       } catch (error) {
@@ -799,7 +820,7 @@ export default function Builder() {
         setBusy(false);
       }
     },
-    [imageHeight, imageMode, notify, packVolume]
+    [imageHeight, imageMode, notify, packVolume, sideFile]
   );
 
   useEffect(() => {
@@ -815,6 +836,8 @@ export default function Builder() {
         setPendingImage(null);
         setPendingName("");
         setPendingHash("");
+        setFrontFile(null);
+        setSideFile(null);
         setPaywall(false);
         strokeRef.current = null;
         return;
@@ -933,9 +956,6 @@ export default function Builder() {
           <button onClick={() => void exportFiles("vox")} disabled={busy}>VOX</button>
           <button onClick={() => void exportFiles("glb")} disabled={busy}>GLB</button>
           <button onClick={() => void exportFiles("obj")} disabled={busy}>OBJ</button>
-          <button className="primaryButton" onClick={() => void publish()} disabled={busy}>
-            PUBLISH
-          </button>
           <input
             ref={fileRef}
             type="file"
@@ -984,6 +1004,7 @@ export default function Builder() {
               <p className="foldHint">
                 {tool.toUpperCase()} · {imageMode.toUpperCase()} · {count} VX · {volume.size}³
                 {pendingImage ? " · PREVIEW" : ""}
+                {sideFile ? " · SIDE" : ""}
                 {busy ? " · BUSY" : ""}
               </p>
               <button onClick={() => void syncPlan()} disabled={busy}>
@@ -1082,6 +1103,7 @@ export default function Builder() {
               <div style={{ marginBottom: 8 }}>
                 APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX · {pendingImage.width}×
                 {pendingImage.height} · {imageMode.toUpperCase()}
+                {sideFile ? " · FRONT+SIDE" : " · FRONT"}
               </div>
               <div className="viewRow">
                 <button onClick={applyImage} disabled={busy}>APPLY</button>
@@ -1110,9 +1132,9 @@ export default function Builder() {
             <summary>GUIDE</summary>
             <div className="foldBody">
               <p className="foldHint">
-                OPEN PNG · ENTER apply · ESC cancel
+                OPEN front PNG · ADD SIDE PNG
                 <br />
-                F fit · LMB stroke · RMB orbit
+                ENTER apply · ESC cancel · F fit
                 <br />
                 GLB / VOX / OBJ ZIP
               </p>
@@ -1166,6 +1188,20 @@ export default function Builder() {
               ))}
             </div>
           )}
+          <button onClick={() => sideRef.current?.click()} disabled={busy || !frontFile}>
+            {sideFile ? "SIDE ON" : "ADD SIDE PNG"}
+          </button>
+          <input
+            ref={sideRef}
+            type="file"
+            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void attachSide(file);
+              e.target.value = "";
+            }}
+          />
           <p className="category">PALETTE</p>
           <div className="colorRow dense">
             {palette.slice(0, 64).map((hex, i) => (
