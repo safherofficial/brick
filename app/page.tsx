@@ -14,6 +14,7 @@ export default function GalleryPage() {
   const [query, setQuery] = useState("");
   const [creations, setCreations] = useState<CreationSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showTop, setShowTop] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -29,6 +30,13 @@ export default function GalleryPage() {
     };
   }, [sort]);
 
+  useEffect(() => {
+    const onScroll = () => setShowTop(window.scrollY > 320);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return creations;
@@ -41,7 +49,6 @@ export default function GalleryPage() {
         <Link href="/" className="brand">
           <span className="brandMark">◆</span> BRICK BUILDER
         </Link>
-
         <nav>
           <Link href="/build">BUILD</Link>
           <Link className="activeNav" href="/gallery">
@@ -58,28 +65,19 @@ export default function GalleryPage() {
             <p className="eyebrow">THE SHOWCASE</p>
             <h1>EXPLORE CREATIONS</h1>
           </div>
-
           <Link href="/build" className="primaryButton">
             CREATE YOURS →
           </Link>
         </div>
 
         <div className="filterBar">
-          <button
-            className={sort === "liked" ? "filterActive" : ""}
-            onClick={() => setSort("liked")}
-          >
+          <button className={sort === "liked" ? "filterActive" : ""} onClick={() => setSort("liked")}>
             MOST LIKED
           </button>
-          <button
-            className={sort === "latest" ? "filterActive" : ""}
-            onClick={() => setSort("latest")}
-          >
+          <button className={sort === "latest" ? "filterActive" : ""} onClick={() => setSort("latest")}>
             LATEST
           </button>
-
           <span className="filterSpacer" />
-
           <input
             placeholder="Search creations..."
             value={query}
@@ -89,11 +87,7 @@ export default function GalleryPage() {
 
         <div className="creationGrid large">
           {filtered.map((creation) => (
-            <Link
-              key={creation.id}
-              href={`/creation/${creation.id}`}
-              className="creationCard"
-            >
+            <Link key={creation.id} href={`/creation/${creation.id}`} className="creationCard">
               <div className="cardArtwork">
                 <VoxelThumb
                   size={creation.construction_data.size}
@@ -114,8 +108,7 @@ export default function GalleryPage() {
 
         {!loading && filtered.length === 0 && (
           <p className="emptyState">
-            Nessuna creazione pubblicata ancora — sii il primo a{" "}
-            <Link href="/build">pubblicarne una</Link>.
+            Nessuna creazione pubblicata ancora — sii il primo a <Link href="/build">pubblicarne una</Link>.
           </p>
         )}
       </section>
@@ -127,7 +120,6 @@ export default function GalleryPage() {
             <h2>COSA PUOI COSTRUIRE</h2>
           </div>
         </div>
-
         <div className="creationGrid">
           {curatedExamples.map((creation) => (
             <article className="creationCard" key={creation.slug}>
@@ -144,6 +136,16 @@ export default function GalleryPage() {
           ))}
         </div>
       </section>
+
+      {showTop && (
+        <button
+          className="scrollTop"
+          aria-label="Back to top"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        >
+          ↑
+        </button>
+      )}
     </main>
   );
 }
