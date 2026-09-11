@@ -40,6 +40,39 @@
 .switchThumb{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
 .switchTrack.switchOn .switchThumb{transform:translateX(15px)}
 @media(max-width:900px){.headerLeft{gap:10px}.backLink span{display:none}}
+html,
+body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.scrollTop {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 40;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(153, 69, 255, 0.35);
+  border-radius: 12px;
+  background: rgba(11, 11, 18, 0.9);
+  color: #14f195;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(153, 69, 255, 0.18);
+}
+
+.scrollTop:hover {
+  border-color: #14f195;
+}
 .bottomTools{max-width:92vw;overflow-x:auto;scrollbar-width:none}
 .bottomTools::-webkit-scrollbar{display:none}
 @media(max-width:600px){.bottomColors{display:none}}
