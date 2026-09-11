@@ -1,9 +1,11 @@
 export const FREE_IMAGE_APPLIES = 5;
 export const REPEAT_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const DEV_WALLET = "4GKjWC5gtFEYDsEH4y5dKuHLLMCBduoGYUPc6yhKq19p";
 const KEY = "brick.entitlement.v1";
 
 export type EntitlementState = {
   accountId: string;
+  wallet?: string;
   plan: "free" | "monthly";
   applies: { hash: string; at: number }[];
 };
@@ -14,6 +16,10 @@ function empty(): EntitlementState {
       ? crypto.randomUUID()
       : `acc_${Date.now().toString(36)}`;
   return { accountId, plan: "free", applies: [] };
+}
+
+function isDevWallet(wallet?: string) {
+  return !!wallet && wallet === DEV_WALLET;
 }
 
 export function readEntitlement(): EntitlementState {
@@ -27,7 +33,8 @@ export function readEntitlement(): EntitlementState {
     }
     const parsed = JSON.parse(raw) as EntitlementState;
     if (!parsed.accountId || !Array.isArray(parsed.applies)) return empty();
-    parsed.plan = parsed.plan === "monthly" ? "monthly" : "free";
+    if (isDevWallet(parsed.wallet)) parsed.plan = "monthly";
+    else parsed.plan = parsed.plan === "monthly" ? "monthly" : "free";
     return parsed;
   } catch {
     return empty();
@@ -36,11 +43,12 @@ export function readEntitlement(): EntitlementState {
 
 function write(state: EntitlementState) {
   if (typeof window === "undefined") return;
+  if (isDevWallet(state.wallet)) state.plan = "monthly";
   window.localStorage.setItem(KEY, JSON.stringify(state));
 }
 
 export function remainingApplies(state = readEntitlement()) {
-  if (state.plan === "monthly") return Number.POSITIVE_INFINITY;
+  if (isDevWallet(state.wallet) || state.plan === "monthly") return Number.POSITIVE_INFINITY;
   return Math.max(0, FREE_IMAGE_APPLIES - new Set(state.applies.map((i) => i.hash)).size);
 }
 
@@ -56,7 +64,7 @@ export async function hashImageFile(file: File) {
 export function consumeImageApply(hash: string) {
   const state = readEntitlement();
   const now = Date.now();
-  if (state.plan === "monthly") {
+  if (isDevWallet(state.wallet) || state.plan === "monthly") {
     return {
       ok: true as const,
       reason: "subscribed" as const,
@@ -91,8 +99,9 @@ export function consumeImageApply(hash: string) {
   };
 }
 
-export function setLocalPlan(plan: "free" | "monthly") {
+export function setLocalPlan(plan: "free" | "monthly", wallet?: string) {
   const state = readEntitlement();
-  state.plan = plan;
+  if (wallet) state.wallet = wallet;
+  state.plan = isDevWallet(state.wallet) ? "monthly" : plan;
   write(state);
 }
