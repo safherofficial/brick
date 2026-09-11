@@ -1,52 +1,39 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import ShowcaseThumb from "@/components/showcase/ShowcaseThumb";
 import VoxelThumb from "@/components/gallery/VoxelThumb";
 import { creations as curatedExamples } from "@/lib/creations";
-import { sql } from "@/lib/db";
-import type { CreationSummary } from "@/lib/creationsApi";
+import { fetchCreations, type CreationSummary } from "@/lib/creationsApi";
 
-async function getCommunityData() {
-  const url = process.env.POSTGRES_URL;
-  if (!url) {
-    return { creations: [] as CreationSummary[], totals: null };
-  }
-  try {
-    const db = sql();
-    const [rows, totalsRows] = await Promise.all([
-      db`
-        SELECT c.id, c.name, c.description, c.brick_count, c.likes_count,
-               c.views_count, c.created_at, c.construction_data,
-               u.username AS author
-        FROM creations c
-        LEFT JOIN users u ON u.id = c.user_id
-        WHERE c.published = TRUE
-        ORDER BY c.likes_count DESC, c.created_at DESC
-        LIMIT 4
-      `,
-      db`
-        SELECT
-          COUNT(*)::int AS creations,
-          COUNT(DISTINCT user_id)::int AS creators,
-          COALESCE(SUM(likes_count), 0)::int AS likes,
-          COALESCE(SUM(views_count), 0)::int AS views
-        FROM creations
-        WHERE published = TRUE
-      `
-    ]);
-    return {
-      creations: rows as unknown as CreationSummary[],
-      totals: totalsRows[0] as
-        | { creations: number; creators: number; likes: number; views: number }
-        | undefined
+type Sort = "latest" | "liked";
+
+export default function GalleryPage() {
+  const [sort, setSort] = useState<Sort>("latest");
+  const [query, setQuery] = useState("");
+  const [creations, setCreations] = useState<CreationSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchCreations(sort).then((data) => {
+      if (!cancelled) {
+        setCreations(data);
+        setLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
     };
-  } catch {
-    // DB non raggiungibile: la home resta comunque utilizzabile.
-    return { creations: [] as CreationSummary[], totals: null };
-  }
-}
+  }, [sort]);
 
-export default async function Home() {
-  const { creations: featured, totals } = await getCommunityData();
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return creations;
+    return creations.filter((c) => c.name.toLowerCase().includes(q));
+  }, [creations, query]);
 
   return (
     <main>
@@ -57,113 +44,83 @@ export default async function Home() {
 
         <nav>
           <Link href="/build">BUILD</Link>
-          <Link href="/gallery">GALLERY</Link>
-          <a href="#about">ABOUT</a>
+          <Link className="activeNav" href="/gallery">
+            GALLERY
+          </Link>
+          <a href="/#about">ABOUT</a>
           <button className="walletButton">CONNECT WALLET</button>
         </nav>
       </header>
 
-      <section className="hero">
-        <div className="heroCopy">
-          <p className="eyebrow">A NEW KIND OF CREATIVE GAME</p>
+      <section className="galleryPage">
+        <div className="sectionHeading">
+          <div>
+            <p className="eyebrow">THE SHOWCASE</p>
+            <h1>EXPLORE CREATIONS</h1>
+          </div>
 
-          <h1>
-            BUILD <span>ANYTHING.</span>
-            <br />
-            SHARE <span>EVERYTHING.</span>
-          </h1>
+          <Link href="/build" className="primaryButton">
+            CREATE YOURS →
+          </Link>
+        </div>
 
-          <p className="heroText">
-            Create your own masterpiece, one brick at a time. Build freely,
-            capture your favorite view and show it to the world.
+        <div className="filterBar">
+          <button
+            className={sort === "liked" ? "filterActive" : ""}
+            onClick={() => setSort("liked")}
+          >
+            MOST LIKED
+          </button>
+          <button
+            className={sort === "latest" ? "filterActive" : ""}
+            onClick={() => setSort("latest")}
+          >
+            LATEST
+          </button>
+
+          <span className="filterSpacer" />
+
+          <input
+            placeholder="Search creations..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="creationGrid large">
+          {filtered.map((creation) => (
+            <Link
+              key={creation.id}
+              href={`/creation/${creation.id}`}
+              className="creationCard"
+            >
+              <div className="cardArtwork">
+                <VoxelThumb
+                  size={creation.construction_data.size}
+                  voxels={creation.construction_data.voxels}
+                  palette={creation.construction_data.palette}
+                />
+              </div>
+              <div className="cardMeta">
+                <div>
+                  <h3>{creation.name}</h3>
+                  <p>{creation.author ?? "anonimo"}</p>
+                </div>
+                <span>♥ {creation.likes_count}</span>
+              </div>
+            </Link>
+          ))}
+        </div>
+
+        {!loading && filtered.length === 0 && (
+          <p className="emptyState">
+            Nessuna creazione pubblicata ancora — sii il primo a{" "}
+            <Link href="/build">pubblicarne una</Link>.
           </p>
-
-          <div className="heroActions">
-            <Link className="primaryButton" href="/build">
-              START BUILDING →
-            </Link>
-
-            <Link className="secondaryButton" href="/gallery">
-              EXPLORE GALLERY
-            </Link>
-          </div>
-
-          {totals && totals.creations > 0 && (
-            <div className="stats">
-              <div>
-                <strong>{totals.creations}</strong>
-                <span>CREATIONS</span>
-              </div>
-              <div>
-                <strong>{totals.creators}</strong>
-                <span>CREATORS</span>
-              </div>
-              <div>
-                <strong>{totals.likes}</strong>
-                <span>LIKES</span>
-              </div>
-              <div>
-                <strong>{totals.views}</strong>
-                <span>VIEWS</span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="heroArtwork">
-          <div className="floatingBrick b1">◆</div>
-          <div className="floatingBrick b2">◆</div>
-          <div className="floatingBrick b3">◆</div>
-
-          <div className="island">
-            <div className="tree treeA">🌳</div>
-            <div className="house">🏠</div>
-            <div className="tree treeB">🌳</div>
-            <div className="waterfall" />
-          </div>
-        </div>
+        )}
       </section>
 
-      {featured.length > 0 && (
-        <section className="showcase">
-          <div className="sectionHeading">
-            <div>
-              <p className="eyebrow">DALLA COMMUNITY</p>
-              <h2>CREAZIONI PUBBLICATE</h2>
-            </div>
-            <Link href="/gallery" className="textLink">
-              VIEW ALL →
-            </Link>
-          </div>
-
-          <div className="creationGrid">
-            {featured.map((creation) => (
-              <Link
-                key={creation.id}
-                href={`/creation/${creation.id}`}
-                className="creationCard"
-              >
-                <div className="cardArtwork">
-                  <VoxelThumb
-                    size={creation.construction_data.size}
-                    voxels={creation.construction_data.voxels}
-                    palette={creation.construction_data.palette}
-                  />
-                </div>
-                <div className="cardMeta">
-                  <div>
-                    <h3>{creation.name}</h3>
-                    <p>{creation.author ?? "anonimo"}</p>
-                  </div>
-                  <span>♥ {creation.likes_count}</span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section className="showcase" id="about">
+      <section className="showcase" id="examples">
         <div className="sectionHeading">
           <div>
             <p className="eyebrow">ESEMPI</p>
@@ -172,7 +129,7 @@ export default async function Home() {
         </div>
 
         <div className="creationGrid">
-          {curatedExamples.slice(-4).map((creation) => (
+          {curatedExamples.map((creation) => (
             <article className="creationCard" key={creation.slug}>
               <div className="cardArtwork">
                 <ShowcaseThumb creation={creation} />
