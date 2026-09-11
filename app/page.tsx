@@ -1,141 +1,149 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import ShowcaseThumb from "@/components/showcase/ShowcaseThumb";
-import VoxelThumb from "@/components/gallery/VoxelThumb";
-import { creations as curatedExamples } from "@/lib/creations";
-import { fetchCreations, type CreationSummary } from "@/lib/creationsApi";
 
-type Sort = "latest" | "liked";
+const STEPS = [
+  { n: "01", t: "Drop a PNG", d: "Open a photo. Preview is free. Nothing is written until you apply." },
+  { n: "02", t: "Apply + FIT", d: "Voxels land on the ground. Volume snaps to 32 / 64 / 128 / 256." },
+  { n: "03", t: "Export once", d: "GLB, VOX or OBJ ZIP. Y-up. Bottom-center pivot. 0.1m per voxel." }
+];
 
-export default function GalleryPage() {
-  const [sort, setSort] = useState<Sort>("latest");
-  const [query, setQuery] = useState("");
-  const [creations, setCreations] = useState<CreationSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+const SAVES = [
+  { k: "0.08 SOL", v: "Monthly", h: "About $8. Meshy Pro starts at $16–20." },
+  { k: "5", v: "Free applies", h: "Same image stays free for 24 hours." },
+  { k: "3", v: "Engine files", h: "GLB · VOX · OBJ. Not a preview render." },
+  { k: "1", v: "Click path", h: "Open → Apply → Export. No DCC roundtrip." }
+];
+
+export default function HomePage() {
   const [showTop, setShowTop] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetchCreations(sort).then((data) => {
-      if (!cancelled) {
-        setCreations(data);
-        setLoading(false);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [sort]);
-
-  useEffect(() => {
-    const onScroll = () => setShowTop(window.scrollY > 320);
+    const onScroll = () => setShowTop(window.scrollY > 280);
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return creations;
-    return creations.filter((c) => c.name.toLowerCase().includes(q));
-  }, [creations, query]);
-
   return (
-    <main>
-      <header className="siteHeader">
+    <main className="home">
+      <header className="siteHeader homeHeader">
         <Link href="/" className="brand">
-          <span className="brandMark">◆</span> BRICK BUILDER
+          <span className="brandMark">◆</span> VOXEL
         </Link>
         <nav>
           <Link href="/build">BUILD</Link>
-          <Link className="activeNav" href="/gallery">
-            GALLERY
+          <Link href="/gallery">GALLERY</Link>
+          <a href="#pricing">PRICING</a>
+          <Link href="/build" className="primaryButton">
+            OPEN BUILDER
           </Link>
-          <a href="/#about">ABOUT</a>
-          <button className="walletButton">CONNECT WALLET</button>
         </nav>
       </header>
 
-      <section className="galleryPage">
-        <div className="sectionHeading">
-          <div>
-            <p className="eyebrow">THE SHOWCASE</p>
-            <h1>EXPLORE CREATIONS</h1>
-          </div>
-          <Link href="/build" className="primaryButton">
-            CREATE YOURS →
-          </Link>
-        </div>
-
-        <div className="filterBar">
-          <button className={sort === "liked" ? "filterActive" : ""} onClick={() => setSort("liked")}>
-            MOST LIKED
-          </button>
-          <button className={sort === "latest" ? "filterActive" : ""} onClick={() => setSort("latest")}>
-            LATEST
-          </button>
-          <span className="filterSpacer" />
-          <input
-            placeholder="Search creations..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-
-        <div className="creationGrid large">
-          {filtered.map((creation) => (
-            <Link key={creation.id} href={`/creation/${creation.id}`} className="creationCard">
-              <div className="cardArtwork">
-                <VoxelThumb
-                  size={creation.construction_data.size}
-                  voxels={creation.construction_data.voxels}
-                  palette={creation.construction_data.palette}
-                />
-              </div>
-              <div className="cardMeta">
-                <div>
-                  <h3>{creation.name}</h3>
-                  <p>{creation.author ?? "anonimo"}</p>
-                </div>
-                <span>♥ {creation.likes_count}</span>
-              </div>
-            </Link>
-          ))}
-        </div>
-
-        {!loading && filtered.length === 0 && (
-          <p className="emptyState">
-            Nessuna creazione pubblicata ancora — sii il primo a <Link href="/build">pubblicarne una</Link>.
+      <section className="homeHero">
+        <div className="homeHeroCopy">
+          <p className="eyebrow">PNG → GAME-READY VOXELS</p>
+          <h1>
+            Ship assets
+            <span> without the $20 tools.</span>
+          </h1>
+          <p className="heroText">
+            One image in. A file an engine can load out. Preview free. Apply counted.
+            Built for props, pickups, weapons and blocks — not moodboards.
           </p>
-        )}
+          <div className="heroActions">
+            <Link href="/build" className="primaryButton">
+              START FREE →
+            </Link>
+            <a href="#flow" className="secondaryButton">
+              SEE THE FLOW
+            </a>
+          </div>
+          <div className="homePills">
+            <span>GLB</span>
+            <span>VOX</span>
+            <span>OBJ ZIP</span>
+            <span>Phantom · SOL</span>
+          </div>
+        </div>
+        <div className="homeHeroArt" aria-hidden>
+          <div className="homeStage">
+            <div className="homeShot homeShotIn">PNG</div>
+            <div className="homeArrow">→</div>
+            <div className="homeShot homeShotOut">GLB</div>
+          </div>
+          <p className="homeStageCaption">Open · Apply · Export</p>
+        </div>
       </section>
 
-      <section className="showcase" id="examples">
+      <section className="homeStrip">
+        {SAVES.map((item) => (
+          <div key={item.v}>
+            <strong>{item.k}</strong>
+            <em>{item.v}</em>
+            <span>{item.h}</span>
+          </div>
+        ))}
+      </section>
+
+      <section className="homeFlow" id="flow">
         <div className="sectionHeading">
           <div>
-            <p className="eyebrow">ESEMPI</p>
-            <h2>COSA PUOI COSTRUIRE</h2>
+            <p className="eyebrow">PIPELINE</p>
+            <h2>Three steps. Then you ship.</h2>
           </div>
         </div>
-        <div className="creationGrid">
-          {curatedExamples.map((creation) => (
-            <article className="creationCard" key={creation.slug}>
-              <div className="cardArtwork">
-                <ShowcaseThumb creation={creation} />
-              </div>
-              <div className="cardMeta">
-                <div>
-                  <h3>{creation.title}</h3>
-                  <p>esempio</p>
-                </div>
-              </div>
+        <div className="homeSteps">
+          {STEPS.map((step) => (
+            <article key={step.n}>
+              <small>{step.n}</small>
+              <h3>{step.t}</h3>
+              <p>{step.d}</p>
             </article>
           ))}
         </div>
       </section>
+
+      <section className="homeCompare" id="pricing">
+        <div className="sectionHeading">
+          <div>
+            <p className="eyebrow">WHY THIS EXISTS</p>
+            <h2>Stop renting a mesh studio for a crate.</h2>
+          </div>
+        </div>
+        <div className="homeCompareGrid">
+          <article>
+            <p className="eyebrow">OTHER TOOLS</p>
+            <h3>$16–20 / mo</h3>
+            <ul>
+              <li>Credits that vanish</li>
+              <li>Pretty mesh, weak game pivot</li>
+              <li>Queue behind Pro seats</li>
+              <li>Export gated on the paid tier</li>
+            </ul>
+          </article>
+          <article className="homeCompareOn">
+            <p className="eyebrow">HERE</p>
+            <h3>0.08 SOL / mo</h3>
+            <ul>
+              <li>5 unique applies free</li>
+              <li>Same photo free for 24h</li>
+              <li>Export always on: GLB / VOX / OBJ</li>
+              <li>Y-up, ground pivot, 0.1m / voxel</li>
+            </ul>
+            <Link href="/build" className="primaryButton">
+              BUILD A PROP NOW
+            </Link>
+          </article>
+        </div>
+      </section>
+
+      <footer className="homeFoot">
+        <span>VOXEL · game-ready from a PNG</span>
+        <Link href="/build">Open builder</Link>
+      </footer>
 
       {showTop && (
         <button
