@@ -345,3 +345,88 @@ export async function imageToVoxels(
   const voxels = shiftToCenter(raw, options.volumeSize);
   return { voxels, palette, width: w, height: h, count: voxels.length };
 }
+async function rasterMask(file: File, w: number, h: number) {
+  const img = await loadImage(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("No 2d context");
+  ctx.imageSmoothingEnabled = false;
+  const scale = Math.min(w / Math.max(img.width, 1), h / Math.max(img.height, 1));
+  const dw = Math.max(1, Math.round(img.width * scale));
+  const dh = Math.max(1, Math.round(img.height * scale));
+  const ox = Math.floor((w - dw) / 2);
+  const oy = Math.floor((h - dh) / 2);
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(img, ox, oy, dw, dh);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const mask = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (data[i * 4 + 3] >= 24) mask[i] = 1;
+  floodBackdrop(data, mask, w, h);
+  knockFringe(mask, data, w, h);
+  dropIslands(mask, w, h, 6);
+  return { data, mask };
+}
+
+export async function imagesToVoxels(
+  views: { front: File; side?: File },
+  options: {
+    volumeSize: number;
+    mode: ImageMode;
+    heightMax: number;
+    maxEdge?: number;
+    maxVoxels?: number;
+  }
+): Promise<ImageImport> {
+  if (!views.side) return imageToVoxels(views.front, options);
+
+  const maxEdge = Math.min(options.maxEdge ?? 96, options.volumeSize);
+  const frontImg = await loadImage(views.front);
+  const sideImg = await loadImage(views.side);
+  const srcH = Math.max(frontImg.height, sideImg.height, 1);
+  const srcW = Math.max(frontImg.width, sideImg.width, 1);
+  const h = Math.max(8, Math.min(maxEdge, Math.round(srcH * Math.min(1, maxEdge / Math.max(srcH, srcW)))));
+  const w = Math.max(8, Math.min(maxEdge, Math.round(frontImg.width * (h / Math.max(frontImg.height, 1)))));
+  const depth = Math.max(8, Math.min(maxEdge, Math.round(sideImg.width * (h / Math.max(sideImg.height, 1)))));
+
+  const front = await rasterMask(views.front, w, h);
+  const side = await rasterMask(views.side, depth, h);
+
+  const unique = new Set<number>();
+  for (let i = 0; i < w * h; i++) {
+    if (!front.mask[i]) continue;
+    unique.add(pack(front.data[i * 4], front.data[i * 4 + 1], front.data[i * 4 + 2]));
+  }
+  if (!unique.size) return imageToVoxels(views.front, options);
+
+  const colors = quantize([...unique], 48);
+  const palette = Array.from({ length: 256 }, (_, i) => (colors[i] ? hexOf(...colors[i]) : "#000000"));
+  const cap = options.maxVoxels ?? 160_000;
+  const raw: ImageVoxel[] = [];
+
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      const fi = py * w + px;
+      if (!front.mask[fi]) continue;
+      const y = h - 1 - py;
+      const fr = front.data[fi * 4];
+      const fg = front.data[fi * 4 + 1];
+      const fb = front.data[fi * 4 + 2];
+      for (let pz = 0; pz < depth; pz++) {
+        if (!side.mask[py * depth + pz]) continue;
+        raw.push({ x: px, y, z: pz, c: nearestIndex(fr, fg, fb, colors) });
+        if (raw.length > cap) throw new Error("Image too dense");
+      }
+    }
+  }
+
+  if (!raw.length) return imageToVoxels(views.front, options);
+  return {
+    voxels: shiftToCenter(raw, options.volumeSize),
+    palette,
+    width: w,
+    height: h,
+    count: raw.length
+  };
+}
