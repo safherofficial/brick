@@ -21,11 +21,15 @@ export async function restorePlan() {
   const phantom = getPhantom();
   const session = await phantom.connect({ onlyIfTrusted: true }).catch(() => phantom.connect());
   const wallet = session.publicKey.toString();
+  if (wallet === TREASURY) {
+    setLocalPlan("monthly", wallet);
+    return { wallet, plan: "monthly" as const };
+  }
   const res = await fetch(`/api/entitlement?wallet=${encodeURIComponent(wallet)}`);
   const data = (await res.json()) as { plan?: string };
-  if (data.plan === "monthly") setLocalPlan("monthly");
-  else setLocalPlan("free");
-  return { wallet, plan: data.plan === "monthly" ? "monthly" : "free" };
+  const plan = data.plan === "monthly" ? "monthly" : "free";
+  setLocalPlan(plan, wallet);
+  return { wallet, plan };
 }
 
 export async function subscribeWithSol() {
@@ -33,6 +37,10 @@ export async function subscribeWithSol() {
   const phantom = getPhantom();
   const session = await phantom.connect();
   const from = new web3.PublicKey(session.publicKey.toString());
+  if (from.toBase58() === TREASURY) {
+    setLocalPlan("monthly", from.toBase58());
+    return { signature: "dev-treasury", wallet: from.toBase58() };
+  }
   const to = new web3.PublicKey(TREASURY);
   const connection = new web3.Connection(RPC, "confirmed");
   const lamports = Math.round(MONTHLY_SOL * web3.LAMPORTS_PER_SOL);
@@ -53,7 +61,7 @@ export async function subscribeWithSol() {
     { signature: signed.signature, blockhash, lastValidBlockHeight },
     "confirmed"
   );
-  setLocalPlan("monthly");
+  setLocalPlan("monthly", from.toBase58());
   await fetch("/api/subscribe", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
