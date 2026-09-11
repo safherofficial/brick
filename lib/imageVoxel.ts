@@ -24,12 +24,7 @@ function unpack(n: number): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-function nearestIndex(
-  r: number,
-  g: number,
-  b: number,
-  colors: [number, number, number][]
-) {
+function nearestIndex(r: number, g: number, b: number, colors: [number, number, number][]) {
   let best = 0;
   let dist = Infinity;
   for (let i = 0; i < colors.length; i++) {
@@ -60,14 +55,7 @@ function quantize(unique: number[], maxColors: number) {
   return [...buckets.values()]
     .sort((a, b) => b.n - a.n)
     .slice(0, maxColors)
-    .map(
-      (c) =>
-        [
-          Math.round(c.r / c.n),
-          Math.round(c.g / c.n),
-          Math.round(c.b / c.n)
-        ] as [number, number, number]
-    );
+    .map((c) => [Math.round(c.r / c.n), Math.round(c.g / c.n), Math.round(c.b / c.n)] as [number, number, number]);
 }
 
 function loadImage(file: File): Promise<HTMLImageElement> {
@@ -142,15 +130,9 @@ function floodBackdrop(data: Uint8ClampedArray, mask: Uint8Array, w: number, h: 
   if (opaque / (w * h) < 0.97) return;
 
   const corners = [0, w - 1, (h - 1) * w, h * w - 1];
-  const samples = corners.map((i) => [
-    data[i * 4],
-    data[i * 4 + 1],
-    data[i * 4 + 2]
-  ]);
+  const samples = corners.map((i) => [data[i * 4], data[i * 4 + 1], data[i * 4 + 2]]);
   const [cr, cg, cb] = samples[0];
-  const similar = samples.every(
-    ([r, g, b]) => (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2 < 900
-  );
+  const similar = samples.every(([r, g, b]) => (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2 < 900);
   if (!similar) return;
 
   const seen = new Uint8Array(w * h);
@@ -232,16 +214,11 @@ function blurField(src: Float32Array, w: number, h: number) {
   return out;
 }
 
-function columnHeight(
-  mode: ImageMode,
-  luma: number,
-  fieldT: number,
-  heightMax: number
-) {
-  if (mode === "solid") return Math.max(1, Math.min(heightMax, 16));
-  if (mode === "relief") return Math.max(1, Math.round(1 + luma * Math.min(6, heightMax)));
-  if (mode === "model") return Math.max(2, Math.round(2 + fieldT * (Math.min(heightMax, 12) - 2)));
-  return 1;
+function depthRadius(mode: ImageMode, luma: number, fieldT: number, depthMax: number) {
+  if (mode === "flat") return 0;
+  if (mode === "solid") return Math.max(2, Math.floor(depthMax / 2));
+  if (mode === "relief") return Math.max(1, Math.round((0.35 + luma * 0.65) * Math.max(2, depthMax / 2)));
+  return Math.max(2, Math.round(Math.pow(fieldT, 0.72) * Math.max(3, depthMax)));
 }
 
 export async function imageToVoxels(
@@ -255,7 +232,7 @@ export async function imageToVoxels(
   }
 ): Promise<ImageImport> {
   const img = await loadImage(file);
-  const maxEdge = Math.min(options.maxEdge ?? 96, options.volumeSize);
+  const maxEdge = Math.min(options.maxEdge ?? 128, options.volumeSize);
   const scale = Math.min(1, maxEdge / Math.max(img.width, img.height, 1));
   const w = Math.max(1, Math.round(img.width * scale));
   const h = Math.max(1, Math.round(img.height * scale));
@@ -271,11 +248,11 @@ export async function imageToVoxels(
 
   const mask = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] >= 40) mask[i] = 1;
+    if (data[i * 4 + 3] >= 28) mask[i] = 1;
   }
   floodBackdrop(data, mask, w, h);
   knockFringe(mask, data, w, h);
-  dropIslands(mask, w, h, 12);
+  dropIslands(mask, w, h, 10);
 
   const unique = new Set<number>();
   let visible = 0;
@@ -287,48 +264,38 @@ export async function imageToVoxels(
   if (!visible) throw new Error("Empty image");
 
   const colors = quantize([...unique], 256);
-  const palette = Array.from({ length: 256 }, (_, i) =>
-    colors[i] ? hexOf(...colors[i]) : "#000000"
-  );
+  const palette = Array.from({ length: 256 }, (_, i) => (colors[i] ? hexOf(...colors[i]) : "#000000"));
 
-  let field: Float32Array | null = null;
+  const field = blurField(distanceField(mask, w, h), w, h);
   let fieldMax = 1;
-  if (options.mode === "model") {
-    field = blurField(distanceField(mask, w, h), w, h);
-    for (let i = 0; i < field.length; i++) if (field[i] > fieldMax) fieldMax = field[i];
-  }
+  for (let i = 0; i < field.length; i++) if (field[i] > fieldMax) fieldMax = field[i];
 
-  const heightMax = Math.max(1, Math.min(options.heightMax, options.volumeSize, 16));
-  const worst =
-    options.mode === "solid"
-      ? visible * heightMax
-      : options.mode === "model"
-        ? visible * Math.min(heightMax, 12)
-        : options.mode === "relief"
-          ? visible * Math.min(7, heightMax)
-          : visible;
-  const cap = options.maxVoxels ?? 80_000;
-  if (worst > cap) throw new Error("Image too dense");
+  const depthMax = Math.max(4, Math.min(options.heightMax, 28, Math.floor(options.volumeSize / 3)));
+  const cap = options.maxVoxels ?? 140_000;
 
   const ox = Math.floor((options.volumeSize - w) / 2);
-  const oz = Math.floor((options.volumeSize - h) / 2);
+  const midZ = Math.floor(options.volumeSize / 2);
   const voxels: ImageVoxel[] = [];
 
-  for (let pz = 0; pz < h; pz++) {
+  for (let py = 0; py < h; py++) {
     for (let px = 0; px < w; px++) {
-      const i = pz * w + px;
+      const i = py * w + px;
       if (!mask[i]) continue;
       const r = data[i * 4];
       const g = data[i * 4 + 1];
       const b = data[i * 4 + 2];
       const c = nearestIndex(r, g, b, colors);
       const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-      const t = field ? Math.sqrt(field[i] / fieldMax) : 0;
-      const tall = columnHeight(options.mode, luma, t, heightMax);
+      const t = Math.sqrt(field[i] / fieldMax);
+      const radius = depthRadius(options.mode, luma, t, depthMax);
       const x = ox + px;
-      const z = oz + (h - 1 - pz);
-      if (x < 0 || z < 0 || x >= options.volumeSize || z >= options.volumeSize) continue;
-      for (let y = 0; y < tall && y < options.volumeSize; y++) {
+      const y = h - 1 - py;
+      if (x < 0 || y < 0 || x >= options.volumeSize || y >= options.volumeSize) continue;
+      for (let dz = -radius; dz <= radius; dz++) {
+        const z = midZ + dz;
+        if (z < 0 || z >= options.volumeSize) continue;
+        const norm = radius === 0 ? 0 : Math.abs(dz) / (radius + 0.001);
+        if (options.mode === "model" && norm * norm + (1 - t) * 0.15 > 1.02) continue;
         voxels.push({ x, y, z, c });
         if (voxels.length > cap) throw new Error("Image too dense");
       }
