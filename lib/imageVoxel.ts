@@ -220,12 +220,12 @@ function blurField(src: Float32Array, w: number, h: number) {
 
 function shiftToCenter(voxels: ImageVoxel[], volumeSize: number) {
   if (!voxels.length) return voxels;
-  let minX = Infinity,
-    minY = Infinity,
-    minZ = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity,
-    maxZ = -Infinity;
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
   for (const v of voxels) {
     minX = Math.min(minX, v.x);
     minY = Math.min(minY, v.y);
@@ -239,7 +239,39 @@ function shiftToCenter(voxels: ImageVoxel[], volumeSize: number) {
   const sz = Math.floor((volumeSize - (maxZ - minZ + 1)) / 2) - minZ;
   return voxels
     .map((v) => ({ x: v.x + sx, y: v.y + sy, z: v.z + sz, c: v.c }))
-    .filter((v) => v.x >= 0 && v.y >= 0 && v.z >= 0 && v.x < volumeSize && v.y < volumeSize && v.z < volumeSize);
+    .filter(
+      (v) =>
+        v.x >= 0 &&
+        v.y >= 0 &&
+        v.z >= 0 &&
+        v.x < volumeSize &&
+        v.y < volumeSize &&
+        v.z < volumeSize
+    );
+}
+
+async function rasterMask(file: File, w: number, h: number) {
+  const img = await loadImage(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("No 2d context");
+  ctx.imageSmoothingEnabled = false;
+  const scale = Math.min(w / Math.max(img.width, 1), h / Math.max(img.height, 1));
+  const dw = Math.max(1, Math.round(img.width * scale));
+  const dh = Math.max(1, Math.round(img.height * scale));
+  const ox = Math.floor((w - dw) / 2);
+  const oy = Math.floor((h - dh) / 2);
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(img, ox, oy, dw, dh);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const mask = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (data[i * 4 + 3] >= 24) mask[i] = 1;
+  floodBackdrop(data, mask, w, h);
+  knockFringe(mask, data, w, h);
+  dropIslands(mask, w, h, 6);
+  return { data, mask };
 }
 
 export async function imageToVoxels(
@@ -275,8 +307,8 @@ export async function imageToVoxels(
 
   const unique = new Set<number>();
   let visible = 0;
-  let minPx = w,
-    maxPx = 0;
+  let minPx = w;
+  let maxPx = 0;
   for (let i = 0; i < w * h; i++) {
     if (!mask[i]) continue;
     visible += 1;
@@ -333,10 +365,14 @@ export async function imageToVoxels(
       for (let dz = -radius; dz <= radius; dz++) {
         const u = radius === 0 ? 0 : Math.abs(dz) / radius;
         if (options.mode === "model" && u * u + (1 - t) * 0.18 > 1.05) continue;
-        const ao = 1 - u * 0.38 - (1 - t) * 0.12;
-        const rgb = shade([r, g, b], Math.max(0.42, ao));
-        const c = nearestIndex(rgb[0], rgb[1], rgb[2], colors);
-        raw.push({ x, y, z: dz, c });
+        const backness = radius === 0 ? 0 : (dz + radius) / (2 * radius);
+        const rgb = shade([r, g, b], Math.max(0.38, 1 - backness * 0.5 - u * 0.08));
+        raw.push({
+          x,
+          y,
+          z: dz,
+          c: nearestIndex(rgb[0], rgb[1], rgb[2], colors)
+        });
         if (raw.length > cap) throw new Error("Image too dense");
       }
     }
@@ -344,29 +380,6 @@ export async function imageToVoxels(
 
   const voxels = shiftToCenter(raw, options.volumeSize);
   return { voxels, palette, width: w, height: h, count: voxels.length };
-}
-async function rasterMask(file: File, w: number, h: number) {
-  const img = await loadImage(file);
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("No 2d context");
-  ctx.imageSmoothingEnabled = false;
-  const scale = Math.min(w / Math.max(img.width, 1), h / Math.max(img.height, 1));
-  const dw = Math.max(1, Math.round(img.width * scale));
-  const dh = Math.max(1, Math.round(img.height * scale));
-  const ox = Math.floor((w - dw) / 2);
-  const oy = Math.floor((h - dh) / 2);
-  ctx.clearRect(0, 0, w, h);
-  ctx.drawImage(img, ox, oy, dw, dh);
-  const data = ctx.getImageData(0, 0, w, h).data;
-  const mask = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) if (data[i * 4 + 3] >= 24) mask[i] = 1;
-  floodBackdrop(data, mask, w, h);
-  knockFringe(mask, data, w, h);
-  dropIslands(mask, w, h, 6);
-  return { data, mask };
 }
 
 export async function imagesToVoxels(
@@ -415,7 +428,14 @@ export async function imagesToVoxels(
       const fb = front.data[fi * 4 + 2];
       for (let pz = 0; pz < depth; pz++) {
         if (!side.mask[py * depth + pz]) continue;
-        raw.push({ x: px, y, z: pz, c: nearestIndex(fr, fg, fb, colors) });
+        const backness = depth <= 1 ? 0 : pz / (depth - 1);
+        const rgb = shade([fr, fg, fb], Math.max(0.38, 1 - backness * 0.52));
+        raw.push({
+          x: px,
+          y,
+          z: pz,
+          c: nearestIndex(rgb[0], rgb[1], rgb[2], colors)
+        });
         if (raw.length > cap) throw new Error("Image too dense");
       }
     }
