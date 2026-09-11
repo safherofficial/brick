@@ -76,3 +76,208 @@ body::-webkit-scrollbar {
 .bottomTools{max-width:92vw;overflow-x:auto;scrollbar-width:none}
 .bottomTools::-webkit-scrollbar{display:none}
 @media(max-width:600px){.bottomColors{display:none}}
+html, body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.home {
+  background:
+    radial-gradient(900px 480px at 8% -10%, rgba(153, 69, 255, 0.22), transparent 50%),
+    radial-gradient(700px 380px at 92% 0%, rgba(20, 241, 149, 0.1), transparent 46%),
+    #0b0b12;
+}
+
+.homeHeader { border-color: rgba(153, 69, 255, 0.18); }
+
+.homeHero {
+  min-height: calc(100dvh - 72px);
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 40px;
+  padding: 64px 7vw 48px;
+  align-items: center;
+}
+
+.homeHeroCopy h1 {
+  font-size: clamp(44px, 5.4vw, 76px);
+  line-height: 0.96;
+  letter-spacing: -0.05em;
+  margin: 0;
+}
+
+.homeHeroCopy h1 span {
+  display: block;
+  background: linear-gradient(90deg, #9945ff, #14f195);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.homePills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 28px;
+}
+
+.homePills span {
+  border: 1px solid rgba(153, 69, 255, 0.28);
+  color: #d7c8ff;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.homeHeroArt {
+  display: grid;
+  place-items: center;
+}
+
+.homeStage {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.homeShot {
+  width: 150px;
+  height: 150px;
+  display: grid;
+  place-items: center;
+  border-radius: 22px;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+}
+
+.homeShotIn {
+  border: 1px dashed rgba(153, 69, 255, 0.45);
+  color: #cbb8ff;
+  background: rgba(20, 16, 32, 0.8);
+}
+
+.homeShotOut {
+  border: 1px solid #14f195;
+  color: #0b0b12;
+  background: linear-gradient(180deg, #14f195, #0ea36e);
+  box-shadow: 0 20px 50px rgba(20, 241, 149, 0.18);
+}
+
+.homeArrow { color: #14f195; font-size: 28px; }
+.homeStageCaption {
+  margin: 16px 0 0;
+  color: #8f7cb8;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.homeStrip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  border-top: 1px solid rgba(153, 69, 255, 0.16);
+  border-bottom: 1px solid rgba(153, 69, 255, 0.16);
+  background: rgba(153, 69, 255, 0.08);
+}
+
+.homeStrip div {
+  padding: 22px 24px;
+  background: #0b0b12;
+}
+
+.homeStrip strong {
+  display: block;
+  font-size: 22px;
+  color: #14f195;
+}
+
+.homeStrip em {
+  display: block;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  margin: 6px 0;
+}
+
+.homeStrip span { color: #8f7cb8; font-size: 12px; line-height: 1.45; }
+
+.homeFlow, .homeCompare { padding: 72px 7vw; }
+
+.homeSteps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.homeSteps article,
+.homeCompareGrid article {
+  border: 1px solid rgba(153, 69, 255, 0.2);
+  background: rgba(14, 12, 22, 0.9);
+  border-radius: 16px;
+  padding: 22px;
+}
+
+.homeSteps small { color: #14f195; font-weight: 900; letter-spacing: 0.14em; }
+.homeSteps h3, .homeCompare h3 { margin: 10px 0; }
+.homeSteps p, .homeCompare li { color: #b9a8e0; line-height: 1.55; }
+
+.homeCompareGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.homeCompareOn {
+  border-color: #14f195 !important;
+  box-shadow: 0 16px 40px rgba(20, 241, 149, 0.08);
+}
+
+.homeCompare ul { padding-left: 18px; }
+.homeCompare .primaryButton { display: inline-block; margin-top: 18px; }
+
+.homeFoot {
+  display: flex;
+  justify-content: space-between;
+  padding: 28px 7vw 40px;
+  color: #8f7cb8;
+  border-top: 1px solid rgba(153, 69, 255, 0.16);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.homeFoot a { color: #14f195; }
+
+.scrollTop {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 40;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(153, 69, 255, 0.35);
+  border-radius: 12px;
+  background: rgba(11, 11, 18, 0.9);
+  color: #14f195;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+@media (max-width: 900px) {
+  .homeHero, .homeStrip, .homeSteps, .homeCompareGrid {
+    grid-template-columns: 1fr;
+  }
+  .homeHero { min-height: auto; padding-top: 36px; }
+}
