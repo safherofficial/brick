@@ -53,6 +53,8 @@ import {
   remainingApplies
 } from "@/lib/entitlement";
 import { MONTHLY_SOL, restorePlan, subscribeWithSol } from "@/lib/solanaCheckout";
+import { connectWallet } from "@/lib/wallet";
+import { publishCreation } from "@/lib/creationsApi";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -271,6 +273,7 @@ export default function Builder() {
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
   const [imageMode, setImageMode] = useState<ImageMode>("model");
   const [imageHeight, setImageHeight] = useState(16);
+  const [symmetrize, setSymmetrize] = useState(true);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [pendingHash, setPendingHash] = useState("");
@@ -652,6 +655,32 @@ export default function Builder() {
     [notify, palette, title]
   );
 
+  const publish = useCallback(async () => {
+    const v = volumeRef.current;
+    if (v.count === 0) {
+      notify("NOTHING TO PUBLISH");
+      return;
+    }
+    setBusy(true);
+    try {
+      notify("CONNECT PHANTOM");
+      const wallet = await connectWallet();
+      notify("PUBLISHING");
+      await publishCreation({
+        wallet,
+        title: title.trim() || "Untitled",
+        size: v.size,
+        palette,
+        voxels: v.voxels()
+      });
+      notify("PUBLISHED");
+    } catch (error) {
+      notify(error instanceof Error ? error.message.toUpperCase() : "PUBLISH FAILED");
+    } finally {
+      setBusy(false);
+    }
+  }, [notify, palette, title]);
+
   const cancelImage = useCallback(() => {
     setPendingImage(null);
     setPendingName("");
@@ -753,7 +782,8 @@ export default function Builder() {
             volumeSize: volumeRef.current.size,
             mode: imageMode,
             heightMax: imageHeight,
-            maxVoxels: MAX_SAFE
+            maxVoxels: MAX_SAFE,
+            symmetrize
           }
         );
         setPendingImage(result);
@@ -764,7 +794,7 @@ export default function Builder() {
         setBusy(false);
       }
     },
-    [frontFile, imageHeight, imageMode, notify]
+    [frontFile, imageHeight, imageMode, notify, symmetrize]
   );
 
   const openProject = useCallback(
@@ -784,7 +814,8 @@ export default function Builder() {
             volumeSize: volumeRef.current.size,
             mode: imageMode,
             heightMax: imageHeight,
-            maxVoxels: MAX_SAFE
+            maxVoxels: MAX_SAFE,
+            symmetrize
           });
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
@@ -821,7 +852,7 @@ export default function Builder() {
         setBusy(false);
       }
     },
-    [imageHeight, imageMode, notify, packVolume]
+    [imageHeight, imageMode, notify, packVolume, symmetrize]
   );
 
   useEffect(() => {
@@ -957,6 +988,9 @@ export default function Builder() {
           <button onClick={() => void exportFiles("vox")} disabled={busy}>VOX</button>
           <button onClick={() => void exportFiles("glb")} disabled={busy}>GLB</button>
           <button onClick={() => void exportFiles("obj")} disabled={busy}>OBJ</button>
+          <button className="primaryButton" onClick={() => void publish()} disabled={busy}>
+            PUBLISH
+          </button>
           <input
             ref={fileRef}
             type="file"
@@ -1135,6 +1169,8 @@ export default function Builder() {
               <p className="foldHint">
                 OPEN front PNG · ADD SIDE PNG
                 <br />
+                MODEL + FRONT+SIDE + SYMMETRY = personaggi
+                <br />
                 ENTER apply · ESC cancel · F fit
                 <br />
                 GLB / VOX / OBJ ZIP
@@ -1188,6 +1224,15 @@ export default function Builder() {
                 </button>
               ))}
             </div>
+          )}
+          {imageMode === "model" && (
+            <button
+              className={symmetrize ? "modeOn" : ""}
+              onClick={() => setSymmetrize((s) => !s)}
+              title="Specchia la metà meglio ricostruita sull'altra: consigliato per personaggi, spegnilo per forme volutamente asimmetriche"
+            >
+              SYMMETRY {symmetrize ? "ON" : "OFF"}
+            </button>
           )}
           <button onClick={() => sideRef.current?.click()} disabled={busy || !frontFile}>
             {sideFile ? "SIDE ON" : "ADD SIDE PNG"}
