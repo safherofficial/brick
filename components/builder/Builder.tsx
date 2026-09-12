@@ -3840,7 +3840,7 @@ export default function Builder() {
                 0.9
               }
               groundColor="#1b2130"
-              skyColor="#68758f"
+              color="#68758f"
             />
 
             <directionalLight
