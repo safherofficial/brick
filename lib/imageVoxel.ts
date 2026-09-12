@@ -979,7 +979,8 @@ function reconstructVisualHull(
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
   dimensions: Dimensions,
-  palette: string[]
+  palette: string[],
+  backingIndex: number
 ) {
   const front = resampleMaskToBounds(
     frontMask,
@@ -1046,7 +1047,7 @@ function reconstructVisualHull(
             x,
             y,
             z,
-            c: palette.findIndex((hex) => hex.toLowerCase() === BACKING_COLOR)
+            c: backingIndex
           });
         }
       }
@@ -1293,7 +1294,8 @@ export async function imagesToVoxels(
       normalized,
       paletteValues,
       dimensions,
-      palette
+      palette,
+      paletteWithBacking.backingIndex
     );
   }
 
