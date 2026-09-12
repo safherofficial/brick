@@ -1028,40 +1028,38 @@ function reconstructVisualHull(
 
         const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
-        // MODEL is single-sided: the FRONT artwork belongs only to the
-        // front-facing shell. The interior/rear is structural backing, never
-        // another copy of the FRONT artwork.
-        const isFrontLayer = z === frontZ;
+        // Ogni voxel della shell prende un colore vero derivato dalla foto,
+        // non solo quello più esterno: un asset "pronto all'uso" non può
+        // avere un blocco piatto e uniforme (backingIndex) appena si vede un
+        // po' di profondità reale, che con FRONT+SIDE è normale e voluta.
+        // Il fronte resta fedele alla foto; scendendo verso l'interno si
+        // scurisce in modo continuo per simulare l'ombra propria, come farebbe
+        // uno scultore che dipinge tutta la figura, non solo il lato rivolto
+        // alla camera.
+        let color: [number, number, number] = [
+          frontColor.r,
+          frontColor.g,
+          frontColor.b
+        ];
 
-        if (isFrontLayer) {
-          let color: [number, number, number] = [
-            frontColor.r,
-            frontColor.g,
-            frontColor.b
-          ];
-
-          if (sideRaster && sideBounds && side?.[y]?.[z]) {
-            const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
-            color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
-          }
-
-          voxels.push({
-            x,
-            y,
-            z,
-            c: nearestColor(
-              ditheredColor(color, x, y + z, 3),
-              paletteValues
-            )
-          });
-        } else {
-          voxels.push({
-            x,
-            y,
-            z,
-            c: backingIndex
-          });
+        if (sideRaster && sideBounds && side?.[y]?.[z]) {
+          const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
+          color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
         }
+
+        const depthFromFront = frontZ <= 0 ? 0 : (frontZ - z) / frontZ;
+        const shade = 1 - depthFromFront * 0.4;
+        color = [color[0] * shade, color[1] * shade, color[2] * shade];
+
+        voxels.push({
+          x,
+          y,
+          z,
+          c: nearestColor(
+            ditheredColor(color, x, y + z, 3),
+            paletteValues
+          )
+        });
       }
     }
   }
