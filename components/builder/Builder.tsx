@@ -657,10 +657,7 @@ export default function Builder() {
       volumeCenter(128)
     );
 
-  const [imageMode, setImageMode] =
-    useState<ImageMode>(
-      "solid"
-    );
+  const imageMode: ImageMode = "model";
 
   const [imageHeight, setImageHeight] =
     useState(16);
@@ -2498,16 +2495,13 @@ export default function Builder() {
                 volumeSize:
                   volumeRef.current.size,
                 mode:
-                  imageMode,
+                  "model",
                 heightMax:
                   imageHeight,
                 maxVoxels:
                   MAX_SAFE,
                 symmetrize:
-                  imageMode ===
-                  "model"
-                    ? symmetrize
-                    : false
+                  symmetrize
               }
             );
 
@@ -2550,14 +2544,6 @@ export default function Builder() {
         if (!frontFile) {
           notify(
             "ADD FRONT PNG FIRST"
-          );
-
-          return;
-        }
-
-        if (imageMode === "model" && !sideFile) {
-          notify(
-            "MODEL REQUIRES FRONT + SIDE"
           );
 
           return;
@@ -2627,42 +2613,34 @@ export default function Builder() {
             await hashImageFile(file)
           );
 
-          if (imageMode === "model") {
-            if (!sideFile) {
-              setPendingImage(null);
-              notify("FRONT READY · MODEL REQUIRES SIDE");
-            } else {
-              await regenerateMultiView({
-                front: file,
-                side: sideFile
-              });
-            }
-          } else {
-            const result = await imageToVoxels(
-              file,
-              {
-                volumeSize: volumeRef.current.size,
-                mode: imageMode,
-                heightMax: imageHeight,
-                maxVoxels: MAX_SAFE,
-                symmetrize: false
-              }
-            );
+          const result = sideFile
+            ? await imagesToVoxels(
+                { front: file, side: sideFile },
+                {
+                  volumeSize: volumeRef.current.size,
+                  mode: "model",
+                  heightMax: imageHeight,
+                  maxVoxels: MAX_SAFE,
+                  symmetrize
+                }
+              )
+            : await imageToVoxels(
+                file,
+                {
+                  volumeSize: volumeRef.current.size,
+                  mode: "model",
+                  heightMax: imageHeight,
+                  maxVoxels: MAX_SAFE,
+                  symmetrize
+                }
+              );
 
-            if (!result.voxels.length) {
-              throw new Error("Empty image");
-            }
-
-            setPendingImage(result);
-            notify(`${result.count ?? result.voxels.length} VX READY`);
-
-            if (sideFile) {
-              await regenerateMultiView({
-                front: file,
-                side: sideFile
-              });
-            }
+          if (!result.voxels.length) {
+            throw new Error("Empty image");
           }
+
+          setPendingImage(result);
+          notify(`${result.count ?? result.voxels.length} VX READY`);
 
           setPaywall(
             false
@@ -2771,10 +2749,6 @@ export default function Builder() {
                 )
             );
 
-            if (imageMode === "model") {
-              throw new Error("MODEL MODE REQUIRES FRONT + SIDE");
-            }
-
             setFrontFile(
               file
             );
@@ -2790,7 +2764,7 @@ export default function Builder() {
                   volumeSize:
                     volumeRef.current.size,
                   mode:
-                    imageMode,
+                    "model",
                   heightMax:
                     imageHeight,
                   maxVoxels:
@@ -3637,9 +3611,7 @@ export default function Builder() {
                   tool.toUpperCase()
                 }{" "}
                 ·{" "}
-                {
-                  imageMode.toUpperCase()
-                }{" "}
+                MODEL{" "}
                 ·{" "}
                 {count} VX ·{" "}
                 {volume.size}³
@@ -4078,9 +4050,7 @@ export default function Builder() {
                     pendingImage.height
                   }{" "}
                   ·{" "}
-                  {
-                    imageMode.toUpperCase()
-                  }{" "}
+                  MODEL{" "}
                   ·{" "}
                   {viewLabel}
                 </div>
@@ -4321,169 +4291,56 @@ export default function Builder() {
           )}
 
           <p className="category">
-            IMAGE IMPORT
+            IMAGE IMPORT · MODEL
           </p>
+
+          <button className="modeOn" disabled>
+            MODEL · GAME ASSET
+          </button>
 
           <div className="viewRow">
-            {(
-              [
-                "solid",
-                "flat",
-                "relief",
-                "model"
-              ] as ImageMode[]
-            ).map(
-              (
-                mode
-              ) => (
-                <button
-                  key={
-                    mode
-                  }
-                  className={
-                    imageMode ===
-                    mode
-                      ? "modeOn"
-                      : ""
-                  }
-                  disabled={
-                    mode ===
-                    "model"
-                  }
-                  title={
-                    mode ===
-                    "model"
-                      ? "MODEL — COMING SOON"
-                      : undefined
-                  }
-                  onClick={() => {
-                    if (mode === "model") return;
-
-                    setImageMode(
-                      mode
-                    );
-
-                    setSymmetrize(false);
-                  }}
-                >
-                  {mode === "model"
-                    ? "MODEL · COMING SOON"
-                    : mode.toUpperCase()}
-                </button>
-              )
-            )}
+            {[4, 8, 12, 16].map((n) => (
+              <button
+                key={n}
+                className={imageHeight === n ? "modeOn" : ""}
+                onClick={() => setImageHeight(n)}
+              >
+                H{n}
+              </button>
+            ))}
           </div>
 
-          {(imageMode ===
-            "solid" ||
-            imageMode ===
-              "relief" ||
-            imageMode ===
-              "model") && (
-            <div className="viewRow">
-              {[4, 8, 12, 16].map(
-                (n) => (
-                  <button
-                    key={
-                      n
-                    }
-                    className={
-                      imageHeight ===
-                      n
-                        ? "modeOn"
-                        : ""
-                    }
-                    onClick={() =>
-                      setImageHeight(
-                        n
-                      )
-                    }
-                  >
-                    H{n}
-                  </button>
-                )
-              )}
-            </div>
-          )}
-
-          {imageMode ===
-            "model" && (
-            <button
-              className={
-                symmetrize
-                  ? "modeOn"
-                  : ""
-              }
-              onClick={() =>
-                setSymmetrize(
-                  (s) =>
-                    !s
-                )
-              }
-              title="Specchia la metà meglio ricostruita sull'altra: utile per personaggi e armature simmetriche"
-            >
-              SYMMETRY{" "}
-              {
-                symmetrize
-                  ? "ON"
-                  : "OFF"
-              }
-            </button>
-          )}
+          <button
+            className={symmetrize ? "modeOn" : ""}
+            onClick={() => setSymmetrize((value) => !value)}
+            title="Optional symmetry pass for suitable hard-surface gaming assets"
+          >
+            SYMMETRY {symmetrize ? "ON" : "OFF"}
+          </button>
 
           <p className="category">
-            MULTI VIEW ·{" "}
-            {viewCount}/2
+            MULTI VIEW · {viewCount}/2
           </p>
 
           <button
-            onClick={() =>
-              frontRef.current?.click()
-            }
-            disabled={
-              busy
-            }
-            className={
-              frontFile
-                ? "modeOn"
-                : ""
-            }
+            onClick={() => frontRef.current?.click()}
+            disabled={busy}
+            className={frontFile ? "modeOn" : ""}
           >
-            {
-              frontFile
-                ? "FRONT ON"
-                : "ADD FRONT PNG"
-            }
+            {frontFile ? "FRONT ON" : "ADD FRONT PNG"}
           </button>
 
           <button
-            onClick={() =>
-              sideRef.current?.click()
-            }
-            disabled={
-              busy
-            }
-            className={
-              sideFile
-                ? "modeOn"
-                : ""
-            }
+            onClick={() => sideRef.current?.click()}
+            disabled={busy}
+            className={sideFile ? "modeOn" : ""}
           >
-            {
-              sideFile
-                ? "SIDE ON"
-                : "ADD SIDE PNG"
-            }
+            {sideFile ? "SIDE ON · QUALITY BOOST" : "ADD SIDE PNG (OPTIONAL)"}
           </button>
 
           <button
-            onClick={() =>
-              void rebuildMultiView()
-            }
-            disabled={
-              busy ||
-              !frontFile
-            }
+            onClick={() => void rebuildMultiView()}
+            disabled={busy || !frontFile}
           >
             REBUILD 3D
           </button>
@@ -4498,51 +4355,27 @@ export default function Builder() {
           </div>
 
           <input
-            ref={
-              sideRef
-            }
+            ref={sideRef}
             type="file"
             accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
             hidden
-            onChange={(
-              e
-            ) => {
-              const file =
-                e.target.files?.[0];
-
-              if (
-                file
-              ) {
-                void attachSide(
-                  file
-                );
-              }
-
-              e.target.value =
-                "";
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void attachSide(file);
+              e.target.value = "";
             }}
           />
 
           <p className="foldHint">
-            {frontFile
-              ? "FRONT READY"
-              : "FRONT REQUIRED"}
+            {frontFile ? "FRONT READY" : "FRONT REQUIRED"}
             <br />
-            {sideFile
-              ? "SIDE READY"
-              : imageMode === "model"
-                ? "SIDE REQUIRED FOR MODEL"
-                : "SIDE OPTIONAL"}
+            {sideFile ? "SIDE READY · QUALITY BOOST" : "SIDE OPTIONAL"}
             <br />
-            {imageMode === "model"
-              ? viewCount === 2
-                ? "2-VIEW MODEL READY"
-                : "MODEL NEEDS FRONT + SIDE"
-              : viewCount === 2
-                ? "2-VIEW RECONSTRUCTION READY"
-                : viewCount === 1
-                  ? "SINGLE-VIEW MODE"
-                  : "NO SOURCE IMAGE"}
+            {viewCount === 2
+              ? "2-VIEW MODEL READY · HIGHER QUALITY"
+              : viewCount === 1
+                ? "FRONT-ONLY MODEL READY"
+                : "ADD FRONT IMAGE"}
           </p>
 
           <p className="category">
