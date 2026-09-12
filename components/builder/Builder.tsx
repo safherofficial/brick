@@ -775,16 +775,17 @@ export default function Builder() {
         if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
           notify("IMPORTING IMAGE");
           await new Promise((resolve) => window.setTimeout(resolve, 40));
+          // OPEN parte sempre da una singola immagine pulita: un eventuale "side" da una
+          // sessione precedente non deve mai essere riusato qui, o si ottiene una forma
+          // carve-ata dall'incrocio di due sagome non correlate (l'effetto "bifacciale").
           setFrontFile(file);
-          const result = await imagesToVoxels(
-            { front: file, side: sideFile ?? undefined },
-            {
-              volumeSize: volumeRef.current.size,
-              mode: imageMode,
-              heightMax: imageHeight,
-              maxVoxels: MAX_SAFE
-            }
-          );
+          setSideFile(null);
+          const result = await imageToVoxels(file, {
+            volumeSize: volumeRef.current.size,
+            mode: imageMode,
+            heightMax: imageHeight,
+            maxVoxels: MAX_SAFE
+          });
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
           setPendingHash(await hashImageFile(file));
@@ -820,7 +821,7 @@ export default function Builder() {
         setBusy(false);
       }
     },
-    [imageHeight, imageMode, notify, packVolume, sideFile]
+    [imageHeight, imageMode, notify, packVolume]
   );
 
   useEffect(() => {
