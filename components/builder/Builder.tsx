@@ -52,7 +52,11 @@ import {
   hashImageFile,
   remainingApplies
 } from "@/lib/entitlement";
-import { MONTHLY_SOL, restorePlan, subscribeWithSol } from "@/lib/solanaCheckout";
+import {
+  MONTHLY_SOL,
+  restorePlan,
+  subscribeWithSol
+} from "@/lib/solanaCheckout";
 import { connectWallet } from "@/lib/wallet";
 import { publishCreation } from "@/lib/creationsApi";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
@@ -517,6 +521,7 @@ function VolumeFrame({
           ]}
         />
       </bufferGeometry>
+
       <lineBasicMaterial
         color="#9945FF"
       />
@@ -563,6 +568,11 @@ export default function Builder() {
     } | null>(null);
 
   const fileRef =
+    useRef<HTMLInputElement>(
+      null
+    );
+
+  const frontRef =
     useRef<HTMLInputElement>(
       null
     );
@@ -641,9 +651,9 @@ export default function Builder() {
 
   const [clip, setClip] =
     useState<Clip>({
-      axis: null,
-      value: 127
-    });
+    axis: null,
+    value: 127
+  });
 
   const [focus, setFocus] =
     useState<
@@ -869,7 +879,14 @@ export default function Builder() {
       ? "FRONT+SIDE+BACK"
       : sideFile
         ? "FRONT+SIDE"
-        : "FRONT";
+        : frontFile
+          ? "FRONT"
+          : "NONE";
+
+  const viewCount =
+    Number(Boolean(frontFile)) +
+    Number(Boolean(sideFile)) +
+    Number(Boolean(backFile));
 
   useEffect(() => {
     refreshCredits();
@@ -1197,7 +1214,8 @@ export default function Builder() {
         }
 
         if (
-          tool === "fill"
+          tool ===
+          "fill"
         ) {
           if (
             hit.kind !==
@@ -1962,7 +1980,8 @@ export default function Builder() {
           }
 
           if (
-            kind === "vox"
+            kind ===
+            "vox"
           ) {
             notify(
               "EXPORTING VOX"
@@ -1993,7 +2012,8 @@ export default function Builder() {
           }
 
           if (
-            kind === "glb"
+            kind ===
+            "glb"
           ) {
             notify(
               "EXPORTING GLB"
@@ -2507,7 +2527,11 @@ export default function Builder() {
                   imageHeight,
                 maxVoxels:
                   MAX_SAFE,
-                symmetrize
+                symmetrize:
+                  imageMode ===
+                  "model"
+                    ? symmetrize
+                    : false
               }
             );
 
@@ -2515,7 +2539,7 @@ export default function Builder() {
             result
           );
 
-          const viewCount =
+          const usedViews =
             [
               front,
               side,
@@ -2525,9 +2549,9 @@ export default function Builder() {
             ).length;
 
           notify(
-            viewCount >= 3
+            usedViews >= 3
               ? `3 VIEWS · ${result.count} VX`
-              : viewCount === 2
+              : usedViews === 2
                 ? `2 VIEWS · ${result.count} VX`
                 : `${result.count} VX READY`
           );
@@ -2551,22 +2575,187 @@ export default function Builder() {
       ]
     );
 
-  const attachSide =
+  const rebuildMultiView =
     useCallback(
-      async (
-        file: File
-      ) => {
+      async () => {
         if (!frontFile) {
           notify(
-            "OPEN FRONT PNG FIRST"
+            "ADD FRONT PNG FIRST"
           );
 
           return;
         }
 
+        await regenerateMultiView({
+          front:
+            frontFile,
+          side:
+            sideFile ??
+            undefined,
+          back:
+            backFile ??
+            undefined
+        });
+      },
+      [
+        backFile,
+        frontFile,
+        notify,
+        regenerateMultiView,
+        sideFile
+      ]
+    );
+
+  const attachFront =
+    useCallback(
+      async (
+        file: File
+      ) => {
+        setBusy(
+          true
+        );
+
+        try {
+          notify(
+            "IMPORTING FRONT"
+          );
+
+          const lower =
+            file.name.toLowerCase();
+
+          if (
+            !(
+              lower.endsWith(".png") ||
+              lower.endsWith(".jpg") ||
+              lower.endsWith(".jpeg") ||
+              lower.endsWith(".webp")
+            )
+          ) {
+            throw new Error(
+              "Unsupported image"
+            );
+          }
+
+          setFrontFile(
+            file
+          );
+
+          /*
+           * SIDE and BACK are allowed to survive
+           * while FRONT is replaced. This lets the
+           * user correct the main view without
+           * rebuilding the workflow from scratch.
+           */
+          const result =
+            await imageToVoxels(
+              file,
+              {
+                volumeSize:
+                  volumeRef.current.size,
+                mode:
+                  imageMode,
+                heightMax:
+                  imageHeight,
+                maxVoxels:
+                  MAX_SAFE,
+                symmetrize:
+                  imageMode ===
+                  "model"
+                    ? symmetrize
+                    : false
+              }
+            );
+
+          if (
+            !result.voxels.length
+          ) {
+            throw new Error(
+              "Empty image"
+            );
+          }
+
+          setPendingName(
+            file.name.replace(
+              /\.(png|jpe?g|webp)$/i,
+              ""
+            )
+          );
+
+          setPendingHash(
+            await hashImageFile(
+              file
+            )
+          );
+
+          /*
+           * If additional views already exist,
+           * immediately use the multi-view pipeline.
+           */
+          if (
+            sideFile ||
+            backFile
+          ) {
+            await regenerateMultiView({
+              front: file,
+              side:
+                sideFile ??
+                undefined,
+              back:
+                backFile ??
+                undefined
+            });
+          } else {
+            setPendingImage(
+              result
+            );
+
+            notify(
+              `${result.count ?? result.voxels.length} VX READY`
+            );
+          }
+
+          setPaywall(
+            false
+          );
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message.toUpperCase()
+              : "FRONT IMPORT FAILED"
+          );
+        } finally {
+          setBusy(
+            false
+          );
+        }
+      },
+      [
+        backFile,
+        imageHeight,
+        imageMode,
+        notify,
+        regenerateMultiView,
+        sideFile,
+        symmetrize
+      ]
+    );
+
+  const attachSide =
+    useCallback(
+      async (
+        file: File
+      ) => {
         setSideFile(
           file
         );
+
+        if (!frontFile) {
+          notify(
+            "SIDE READY · ADD FRONT PNG"
+          );
+
+          return;
+        }
 
         await regenerateMultiView({
           front:
@@ -2590,17 +2779,17 @@ export default function Builder() {
       async (
         file: File
       ) => {
+        setBackFile(
+          file
+        );
+
         if (!frontFile) {
           notify(
-            "OPEN FRONT PNG FIRST"
+            "BACK READY · ADD FRONT PNG"
           );
 
           return;
         }
-
-        setBackFile(
-          file
-        );
 
         await regenerateMultiView({
           front:
@@ -2618,6 +2807,58 @@ export default function Builder() {
         sideFile
       ]
     );
+
+  const removeSide =
+    useCallback(() => {
+      setSideFile(
+        null
+      );
+
+      if (frontFile) {
+        void regenerateMultiView({
+          front:
+            frontFile,
+          back:
+            backFile ??
+            undefined
+        });
+      } else {
+        notify(
+          "SIDE REMOVED"
+        );
+      }
+    }, [
+      backFile,
+      frontFile,
+      notify,
+      regenerateMultiView
+    ]);
+
+  const removeBack =
+    useCallback(() => {
+      setBackFile(
+        null
+      );
+
+      if (frontFile) {
+        void regenerateMultiView({
+          front:
+            frontFile,
+          side:
+            sideFile ??
+            undefined
+        });
+      } else {
+        notify(
+          "BACK REMOVED"
+        );
+      }
+    }, [
+      frontFile,
+      notify,
+      regenerateMultiView,
+      sideFile
+    ]);
 
   const openProject =
     useCallback(
@@ -2674,7 +2915,11 @@ export default function Builder() {
                     imageHeight,
                   maxVoxels:
                     MAX_SAFE,
-                  symmetrize
+                  symmetrize:
+                    imageMode ===
+                    "model"
+                      ? symmetrize
+                      : false
                 }
               );
 
@@ -3404,6 +3649,30 @@ export default function Builder() {
                 "";
             }}
           />
+
+          <input
+            ref={frontRef}
+            type="file"
+            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(
+              e
+            ) => {
+              const file =
+                e.target.files?.[0];
+
+              if (
+                file
+              ) {
+                void attachFront(
+                  file
+                );
+              }
+
+              e.target.value =
+                "";
+            }}
+          />
         </div>
       </header>
 
@@ -4025,11 +4294,9 @@ export default function Builder() {
 
             <div className="foldBody">
               <p className="foldHint">
-                OPEN FRONT PNG
+                FRONT / SIDE / BACK PNG
                 <br />
-                ADD SIDE PNG
-                <br />
-                ADD BACK PNG
+                MULTI-VIEW RECONSTRUCTION
                 <br />
                 MODEL + 3 VIEWS = MAX QUALITY
                 <br />
@@ -4274,16 +4541,41 @@ export default function Builder() {
           )}
 
           <p className="category">
-            MULTI VIEW
+            MULTI VIEW ·{" "}
+            {viewCount}/3
           </p>
+
+          <button
+            onClick={() =>
+              frontRef.current?.click()
+            }
+            disabled={
+              busy
+            }
+            className={
+              frontFile
+                ? "modeOn"
+                : ""
+            }
+          >
+            {
+              frontFile
+                ? "FRONT ON"
+                : "ADD FRONT PNG"
+            }
+          </button>
 
           <button
             onClick={() =>
               sideRef.current?.click()
             }
             disabled={
-              busy ||
-              !frontFile
+              busy
+            }
+            className={
+              sideFile
+                ? "modeOn"
+                : ""
             }
           >
             {
@@ -4298,8 +4590,12 @@ export default function Builder() {
               backRef.current?.click()
             }
             disabled={
-              busy ||
-              !frontFile
+              busy
+            }
+            className={
+              backFile
+                ? "modeOn"
+                : ""
             }
           >
             {
@@ -4308,6 +4604,44 @@ export default function Builder() {
                 : "ADD BACK PNG"
             }
           </button>
+
+          <button
+            onClick={() =>
+              void rebuildMultiView()
+            }
+            disabled={
+              busy ||
+              !frontFile
+            }
+          >
+            REBUILD 3D
+          </button>
+
+          <div className="viewRow">
+            <button
+              onClick={
+                removeSide
+              }
+              disabled={
+                busy ||
+                !sideFile
+              }
+            >
+              REMOVE SIDE
+            </button>
+
+            <button
+              onClick={
+                removeBack
+              }
+              disabled={
+                busy ||
+                !backFile
+              }
+            >
+              REMOVE BACK
+            </button>
+          </div>
 
           <input
             ref={
@@ -4364,7 +4698,7 @@ export default function Builder() {
           <p className="foldHint">
             {frontFile
               ? "FRONT READY"
-              : "OPEN FRONT PNG"}
+              : "FRONT REQUIRED"}
             <br />
             {sideFile
               ? "SIDE READY"
@@ -4373,6 +4707,14 @@ export default function Builder() {
             {backFile
               ? "BACK READY"
               : "BACK OPTIONAL"}
+            <br />
+            {viewCount >= 3
+              ? "3-VIEW RECONSTRUCTION READY"
+              : viewCount === 2
+                ? "2-VIEW RECONSTRUCTION READY"
+                : viewCount === 1
+                  ? "SINGLE-VIEW MODE"
+                  : "NO SOURCE IMAGE"}
           </p>
 
           <p className="category">
