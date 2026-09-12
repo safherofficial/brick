@@ -310,7 +310,6 @@ function buildMask(raster: Raster): boolean[][] {
     (_, y) => Array.from({ length: w }, (_, x) => !isBackground[y][x])
   );
 
-  // Remove isolated one-pixel noise only. Do not erode thin limbs or details.
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
       if (!mask[y][x]) continue;
@@ -334,11 +333,6 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
   if (!w || !h) return mask;
 
   const output = mask.map((row) => row.slice());
-
-  // The image importer is intentionally conservative about the silhouette,
-  // but MODEL needs a production-ready matte: remove detached background
-  // specks and one/two-pixel contour hairs without eroding the actual body.
-  // Keep every meaningful connected component; only discard tiny noise.
   const visited = new Set<string>();
   const componentSizes: number[] = [];
   const components: [number, number][][] = [];
@@ -387,11 +381,6 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
   const bgProbes = modelBackgroundProbes(raster);
   const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
 
-  // Opaque reference images often contain a one-to-several-pixel antialias
-  // halo between the subject and its background. Those pixels are connected
-  // to the subject, so a connected-component cleanup cannot remove them.
-  // Trim only boundary pixels that are both background-like and low-contrast
-  // against their immediate subject neighbours; dark outlines remain intact.
   for (let y = 1; y < h - 1; y += 1) {
     for (let x = 1; x < w - 1; x += 1) {
       if (!output[y][x]) continue;
@@ -429,11 +418,13 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
         (current.g - bg[1]) ** 2 +
         (current.b - bg[2]) ** 2
       );
+
       const averageNeighbour = {
         r: neighbourR / foregroundNeighbours,
         g: neighbourG / foregroundNeighbours,
         b: neighbourB / foregroundNeighbours
       };
+
       const distanceToSubject = Math.sqrt(
         (current.r - averageNeighbour.r) ** 2 +
         (current.g - averageNeighbour.g) ** 2 +
@@ -463,14 +454,13 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
     for (const [x, y] of components[i]) output[y][x] = false;
   }
 
-  // Remove contour hairs only when the local neighborhood confirms that the
-  // pixel is an isolated protrusion. Thin intentional limbs remain intact.
   for (let y = 1; y < h - 1; y += 1) {
     for (let x = 1; x < w - 1; x += 1) {
       if (!output[y][x]) continue;
 
       let neighbours8 = 0;
       let local5x5 = 0;
+
       for (let oy = -2; oy <= 2; oy += 1) {
         for (let ox = -2; ox <= 2; ox += 1) {
           if (output[y + oy]?.[x + ox]) local5x5 += 1;
@@ -506,6 +496,7 @@ function findBounds(mask: boolean[][]): Bounds | null {
   }
 
   if (!Number.isFinite(minX)) return null;
+
   return {
     minX,
     minY,
@@ -538,20 +529,26 @@ function dominantPalette(
 
   for (const item of sorted) {
     const rgb: [number, number, number] = [item.r, item.g, item.b];
-    if (chosen.every((c) => rgbDistance(rgb, c) > 900)) chosen.push(rgb);
+    if (chosen.every((c) => rgbDistance(rgb, c) > 900)) {
+      chosen.push(rgb);
+    }
     if (chosen.length >= size) break;
   }
 
   if (chosen.length < size) {
     for (const base of DEFAULT_PALETTE) {
       if (chosen.length >= size) break;
+
       const hex = base.replace("#", "");
       const rgb: [number, number, number] = [
         Number.parseInt(hex.slice(0, 2), 16),
         Number.parseInt(hex.slice(2, 4), 16),
         Number.parseInt(hex.slice(4, 6), 16)
       ];
-      if (chosen.every((c) => rgbDistance(rgb, c) > 400)) chosen.push(rgb);
+
+      if (chosen.every((c) => rgbDistance(rgb, c) > 400)) {
+        chosen.push(rgb);
+      }
     }
   }
 
@@ -559,7 +556,10 @@ function dominantPalette(
 }
 
 function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
-  const buckets = new Map<string, { r: number; g: number; b: number; weight: number }>();
+  const buckets = new Map<
+    string,
+    { r: number; g: number; b: number; weight: number }
+  >();
 
   for (let view = 0; view < rasters.length; view += 1) {
     const raster = rasters[view];
@@ -572,15 +572,21 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
     for (let y = 0; y < raster.height; y += stride) {
       for (let x = 0; x < raster.width; x += stride) {
         if (!mask[y]?.[x]) continue;
+
         const s = sampleAt(raster, x, y);
         if (!s.visible) continue;
+
         const r = Math.round(s.r / 8) * 8;
         const g = Math.round(s.g / 8) * 8;
         const b = Math.round(s.b / 8) * 8;
         const key = `${r}:${g}:${b}`;
         const existing = buckets.get(key);
-        if (existing) existing.weight += 1;
-        else buckets.set(key, { r, g, b, weight: 1 });
+
+        if (existing) {
+          existing.weight += 1;
+        } else {
+          buckets.set(key, { r, g, b, weight: 1 });
+        }
       }
     }
   }
@@ -595,6 +601,7 @@ function ditheredColor(
   strength = 10
 ): [number, number, number] {
   const offset = (BAYER_4X4[py & 3][px & 3] / 16 - 0.5) * strength;
+
   return [
     clamp(rgb[0] + offset, 0, 255),
     clamp(rgb[1] + offset, 0, 255),
@@ -608,6 +615,7 @@ function nearestColor(
 ) {
   let best = 0;
   let distance = Infinity;
+
   for (let i = 0; i < palette.length; i += 1) {
     const d = rgbDistance(rgb, palette[i]);
     if (d < distance) {
@@ -615,19 +623,16 @@ function nearestColor(
       best = i;
     }
   }
+
   return best;
 }
 
-function blendRgb(a: Sample, b: Sample, t: number): [number, number, number] {
-  const amount = clamp(t, 0, 1);
-  return [
-    a.r * (1 - amount) + b.r * amount,
-    a.g * (1 - amount) + b.g * amount,
-    a.b * (1 - amount) + b.b * amount
-  ];
-}
-
-function sampleMapped(raster: Raster, bounds: Bounds, nx: number, ny: number) {
+function sampleMapped(
+  raster: Raster,
+  bounds: Bounds,
+  nx: number,
+  ny: number
+) {
   return sampleAt(
     raster,
     bounds.minX + clamp(nx, 0, 1) * (bounds.maxX - bounds.minX),
@@ -635,12 +640,6 @@ function sampleMapped(raster: Raster, bounds: Bounds, nx: number, ny: number) {
   );
 }
 
-/**
- * Texture lookup that is guaranteed to land on the recovered subject matte.
- * This is important for weapon/prop references where the source can contain
- * transparent holes, antialiasing or a dark backdrop: background pixels are
- * never promoted into the material texture.
- */
 function sampleSubjectMapped(
   raster: Raster,
   mask: boolean[][],
@@ -659,8 +658,6 @@ function sampleSubjectMapped(
     return sampleAt(raster, targetX, targetY);
   }
 
-  // Search only locally. The texture stays spatially faithful instead of
-  // pulling a distant random color from another weapon component.
   for (let radius = 1; radius <= 7; radius += 1) {
     let bestX = -1;
     let bestY = -1;
@@ -669,10 +666,14 @@ function sampleSubjectMapped(
     for (let oy = -radius; oy <= radius; oy += 1) {
       for (let ox = -radius; ox <= radius; ox += 1) {
         if (Math.max(Math.abs(ox), Math.abs(oy)) !== radius) continue;
+
         const x = targetX + ox;
         const y = targetY + oy;
+
         if (!mask[y]?.[x]) continue;
+
         const distance = ox * ox + oy * oy;
+
         if (distance < bestDistance) {
           bestDistance = distance;
           bestX = x;
@@ -681,34 +682,32 @@ function sampleSubjectMapped(
       }
     }
 
-    if (bestX >= 0) return sampleAt(raster, bestX, bestY);
+    if (bestX >= 0) {
+      return sampleAt(raster, bestX, bestY);
+    }
   }
 
-  // The matte can legitimately contain a large interior cut-out. Use a
-  // center-subject sample as the final material fallback, never the raw
-  // background.
   for (let radius = 0; radius <= 12; radius += 1) {
     const x = clamp(
       Math.round((bounds.minX + bounds.maxX) * 0.5) + radius,
       bounds.minX,
       bounds.maxX
     );
+
     const y = clamp(
       Math.round((bounds.minY + bounds.maxY) * 0.5),
       bounds.minY,
       bounds.maxY
     );
-    if (mask[y]?.[x]) return sampleAt(raster, x, y);
+
+    if (mask[y]?.[x]) {
+      return sampleAt(raster, x, y);
+    }
   }
 
   return sampleAt(raster, targetX, targetY);
 }
 
-/**
- * Resamples only the content rectangle. Unlike resizing the whole image,
- * this preserves the subject's aspect ratio and avoids introducing gaps
- * when FRONT and SIDE have different canvas sizes.
- */
 function resampleMaskToBounds(
   mask: boolean[][],
   bounds: Bounds,
@@ -720,9 +719,6 @@ function resampleMaskToBounds(
     () => Array<boolean>(targetWidth).fill(false)
   );
 
-  // Treat each output voxel as an area sample, not as a nearest-pixel lookup.
-  // This rejects antialiased background fringes and single-pixel contour hairs
-  // while preserving the solid mass of the source silhouette.
   const samplesPerAxis = 4;
 
   for (let y = 0; y < targetHeight; y += 1) {
@@ -742,12 +738,18 @@ function resampleMaskToBounds(
 
       for (let sy = 0; sy < samplesPerAxis; sy += 1) {
         const py = Math.round(
-          y0 + ((sy + 0.5) / samplesPerAxis) * Math.max(0, y1 - y0 - 1)
+          y0 +
+            ((sy + 0.5) / samplesPerAxis) *
+              Math.max(0, y1 - y0 - 1)
         );
+
         for (let sx = 0; sx < samplesPerAxis; sx += 1) {
           const px = Math.round(
-            x0 + ((sx + 0.5) / samplesPerAxis) * Math.max(0, x1 - x0 - 1)
+            x0 +
+              ((sx + 0.5) / samplesPerAxis) *
+                Math.max(0, x1 - x0 - 1)
           );
+
           if (mask[py]?.[px]) hits += 1;
           total += 1;
         }
@@ -767,18 +769,19 @@ function repairSilhouette(mask: boolean[][]) {
 
   const output = mask.map((row) => row.slice());
 
-  // Fill only tiny one-pixel cavities. Large holes remain untouched because
-  // they can represent real geometry, e.g. the gap between two legs.
   for (let y = 1; y < h - 1; y += 1) {
     for (let x = 1; x < w - 1; x += 1) {
       if (mask[y][x]) continue;
+
       let hits = 0;
+
       for (let oy = -1; oy <= 1; oy += 1) {
         for (let ox = -1; ox <= 1; ox += 1) {
           if (ox === 0 && oy === 0) continue;
           if (mask[y + oy]?.[x + ox]) hits += 1;
         }
       }
+
       if (hits >= 7) output[y][x] = true;
     }
   }
@@ -799,10 +802,12 @@ function symmetrizeVoxels(
 
   let minX = Infinity;
   let maxX = -Infinity;
+
   for (const v of voxels) {
     minX = Math.min(minX, v.x);
     maxX = Math.max(maxX, v.x);
   }
+
   if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return;
 
   const center = (minX + maxX) / 2;
@@ -811,10 +816,14 @@ function symmetrizeVoxels(
 
   for (const voxel of voxels) {
     const mirroredX = Math.round(center * 2 - voxel.x);
+
     if (mirroredX < 0 || mirroredX >= volumeSize) continue;
+
     const key = `${mirroredX}:${voxel.y}:${voxel.z}`;
     if (existing.has(key)) continue;
+
     existing.add(key);
+
     additions.push({
       x: mirroredX,
       y: voxel.y,
@@ -826,7 +835,10 @@ function symmetrizeVoxels(
   voxels.push(...additions);
 }
 
-function normalizeToVolume(voxels: ImageVoxel[], volumeSize: number) {
+function normalizeToVolume(
+  voxels: ImageVoxel[],
+  volumeSize: number
+) {
   if (!voxels.length) return voxels;
 
   let minX = Infinity;
@@ -847,9 +859,13 @@ function normalizeToVolume(voxels: ImageVoxel[], volumeSize: number) {
 
   const width = maxX - minX + 1;
   const depth = maxZ - minZ + 1;
+
   const xOffset = Math.floor((volumeSize - width) / 2) - minX;
   const zOffset = Math.floor((volumeSize - depth) / 2) - minZ;
-  const yOffset = Math.max(0, Math.floor((volumeSize - (maxY - minY + 1)) * 0.10) - minY);
+  const yOffset = Math.max(
+    0,
+    Math.floor((volumeSize - (maxY - minY + 1)) * 0.10) - minY
+  );
 
   return voxels.map((v) => ({
     x: clamp(v.x + xOffset, 0, volumeSize - 1),
@@ -859,14 +875,6 @@ function normalizeToVolume(voxels: ImageVoxel[], volumeSize: number) {
   }));
 }
 
-/**
- * Adaptive MODEL resolution.
- *
- * We never build a huge voxel volume and then decimate it. The dimensions are
- * solved first from the reference aspect ratios and the requested voxel
- * budget. The final reconstruction is therefore generated at its final
- * resolution and cannot create horizontal missing bands.
- */
 function adaptiveModelDimensions(
   frontBounds: Bounds,
   sideBounds: Bounds | null,
@@ -876,31 +884,48 @@ function adaptiveModelDimensions(
   symmetrize = false
 ): Dimensions {
   const maxAxis = Math.max(MODEL_MIN_AXIS, volumeSize - 8);
+
   const safeBudget = Math.max(
     MODEL_MIN_AXIS * MODEL_MIN_AXIS * MODEL_MIN_AXIS,
-    Math.min(Math.floor(maxVoxels), Math.floor(volumeSize ** 3 * MODEL_BUDGET_FILL))
+    Math.min(
+      Math.floor(maxVoxels),
+      Math.floor(volumeSize ** 3 * MODEL_BUDGET_FILL)
+    )
   );
 
-  let height = Math.min(maxAxis, Math.max(MODEL_MIN_AXIS, frontBounds.height));
+  let height = Math.min(
+    maxAxis,
+    Math.max(MODEL_MIN_AXIS, frontBounds.height)
+  );
+
   let width = Math.max(
     MODEL_MIN_AXIS,
-    Math.round(height * (frontBounds.width / Math.max(1, frontBounds.height)))
+    Math.round(
+      height * (frontBounds.width / Math.max(1, frontBounds.height))
+    )
   );
 
   let depth: number;
+
   if (sideBounds) {
     depth = Math.max(
       MODEL_MIN_AXIS,
-      Math.round(height * (sideBounds.width / Math.max(1, sideBounds.height)))
+      Math.round(
+        height * (sideBounds.width / Math.max(1, sideBounds.height))
+      )
     );
   } else {
-    depth = Math.max(MODEL_MIN_AXIS, Math.round(heightMax * 1.05));
+    depth = Math.max(
+      MODEL_MIN_AXIS,
+      Math.round(heightMax * 1.05)
+    );
   }
 
   width = Math.min(maxAxis, width);
   depth = Math.min(maxAxis, depth);
 
   let product = width * height * depth;
+
   const targetBudget = symmetrize
     ? Math.floor(safeBudget * 0.46)
     : Math.floor(safeBudget * 0.94);
@@ -912,18 +937,40 @@ function adaptiveModelDimensions(
 
   if (product > targetProduct) {
     const scale = Math.cbrt(targetProduct / product);
-    width = Math.max(MODEL_MIN_AXIS, Math.floor(width * scale));
-    height = Math.max(MODEL_MIN_AXIS, Math.floor(height * scale));
-    depth = Math.max(MODEL_MIN_AXIS, Math.floor(depth * scale));
+
+    width = Math.max(
+      MODEL_MIN_AXIS,
+      Math.floor(width * scale)
+    );
+
+    height = Math.max(
+      MODEL_MIN_AXIS,
+      Math.floor(height * scale)
+    );
+
+    depth = Math.max(
+      MODEL_MIN_AXIS,
+      Math.floor(depth * scale)
+    );
   }
 
-  // Reduce the largest dimension until even the complete bounding box is
-  // inside the budget. Visual-hull occupancy is always <= this box.
   while (width * height * depth > safeBudget) {
-    if (height >= width && height >= depth && height > MODEL_MIN_AXIS) height -= 1;
-    else if (width >= depth && width > MODEL_MIN_AXIS) width -= 1;
-    else if (depth > MODEL_MIN_AXIS) depth -= 1;
-    else break;
+    if (
+      height >= width &&
+      height >= depth &&
+      height > MODEL_MIN_AXIS
+    ) {
+      height -= 1;
+    } else if (
+      width >= depth &&
+      width > MODEL_MIN_AXIS
+    ) {
+      width -= 1;
+    } else if (depth > MODEL_MIN_AXIS) {
+      depth -= 1;
+    } else {
+      break;
+    }
   }
 
   return {
@@ -938,6 +985,7 @@ function effectiveBudget(
   requested: number | undefined
 ) {
   const physical = volumeSize * volumeSize * volumeSize;
+
   return Math.max(
     4096,
     Math.min(
@@ -955,10 +1003,14 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
 
   const visited = new Set<string>();
   const components: ImageVoxel[][] = [];
+
   const neighbours = [
-    [1, 0, 0], [-1, 0, 0],
-    [0, 1, 0], [0, -1, 0],
-    [0, 0, 1], [0, 0, -1]
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1]
   ] as const;
 
   for (const start of voxels) {
@@ -976,19 +1028,26 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
       for (const [dx, dy, dz] of neighbours) {
         const key = `${current.x + dx}:${current.y + dy}:${current.z + dz}`;
         if (visited.has(key)) continue;
+
         const next = map.get(key);
         if (!next) continue;
+
         visited.add(key);
         stack.push(next);
       }
     }
+
     components.push(component);
   }
 
   if (components.length <= 1) return voxels;
+
   const largest = Math.max(...components.map((c) => c.length));
   const threshold = Math.max(6, Math.round(largest * 0.015));
-  return components.filter((c) => c.length >= threshold).flat();
+
+  return components
+    .filter((c) => c.length >= threshold)
+    .flat();
 }
 
 function triplanarWeaponColor(
@@ -1001,12 +1060,6 @@ function triplanarWeaponColor(
   nx: number,
   nz: number
 ): [number, number, number] {
-  // Treat every voxel as a tiny texel on the closest visible surface.
-  // Front/back are driven by the FRONT reference; left/right by SIDE when
-  // available (or a generated opposite projection for single-view mode).
-  // This is the same family of idea as triplanar projection: every exposed
-  // direction receives a real material color, so the rear never falls back to
-  // a black/default material.
   const frontWeight = 0.08 + Math.pow(1 - nz, 2.35);
   const backWeight = 0.08 + Math.pow(nz, 2.35);
   const leftWeight = 0.08 + Math.pow(1 - nx, 2.35);
@@ -1050,6 +1103,7 @@ function reconstructVisualHull(
     dimensions.width,
     dimensions.height
   );
+
   const side = resampleMaskToBounds(
     sideMask,
     sideBounds,
@@ -1064,11 +1118,19 @@ function reconstructVisualHull(
 
     for (let x = 0; x < dimensions.width; x += 1) {
       if (!front[y]?.[x]) continue;
-      const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
+
+      const nx =
+        dimensions.width <= 1
+          ? 0.5
+          : x / (dimensions.width - 1);
 
       for (let z = 0; z < dimensions.depth; z += 1) {
         if (!side[y]?.[z]) continue;
-        const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
+
+        const nz =
+          dimensions.depth <= 1
+            ? 0.5
+            : z / (dimensions.depth - 1);
 
         const frontColor = sampleSubjectMapped(
           frontRaster,
@@ -1077,13 +1139,15 @@ function reconstructVisualHull(
           nx,
           ny
         );
+
         const backColor = sampleSubjectMapped(
           frontRaster,
           frontMask,
           frontBounds,
-          1 - nx,
-          ny + (nz - 0.5) * 0.035
+          nx,
+          ny
         );
+
         const leftColor = sampleSubjectMapped(
           sideRaster,
           sideMask,
@@ -1091,6 +1155,7 @@ function reconstructVisualHull(
           nz,
           ny
         );
+
         const rightColor = sampleSubjectMapped(
           sideRaster,
           sideMask,
@@ -1099,19 +1164,50 @@ function reconstructVisualHull(
           ny + (nx - 0.5) * 0.035
         );
 
-        const color = triplanarWeaponColor(
-          {
-            front: [frontColor.r, frontColor.g, frontColor.b],
-            back: [backColor.r, backColor.g, backColor.b],
-            left: [leftColor.r, leftColor.g, leftColor.b],
-            right: [rightColor.r, rightColor.g, rightColor.b]
-          },
-          nx,
-          nz
-        );
+        let color: [number, number, number];
 
-        // Mild material lighting only. Never crush the source texture to black.
-        const shade = 0.96 + 0.04 * (1 - Math.abs(nz - 0.5) * 2);
+        if (
+          z === 0 ||
+          z === dimensions.depth - 1
+        ) {
+          color = [
+            frontColor.r,
+            frontColor.g,
+            frontColor.b
+          ];
+        } else {
+          color = triplanarWeaponColor(
+            {
+              front: [
+                frontColor.r,
+                frontColor.g,
+                frontColor.b
+              ],
+              back: [
+                backColor.r,
+                backColor.g,
+                backColor.b
+              ],
+              left: [
+                leftColor.r,
+                leftColor.g,
+                leftColor.b
+              ],
+              right: [
+                rightColor.r,
+                rightColor.g,
+                rightColor.b
+              ]
+            },
+            nx,
+            nz
+          );
+        }
+
+        const shade =
+          0.96 +
+          0.04 *
+            (1 - Math.abs(nz - 0.5) * 2);
 
         voxels.push({
           x,
@@ -1119,7 +1215,11 @@ function reconstructVisualHull(
           z,
           c: nearestColor(
             ditheredColor(
-              [color[0] * shade, color[1] * shade, color[2] * shade],
+              [
+                color[0] * shade,
+                color[1] * shade,
+                color[2] * shade
+              ],
               x,
               y + z,
               2.2
@@ -1131,13 +1231,23 @@ function reconstructVisualHull(
     }
   }
 
-  if (!voxels.length) throw new Error("No voxels reconstructed");
-
-  if (options.symmetrize) {
-    symmetrizeVoxels(voxels, options.volumeSize, palette.length);
+  if (!voxels.length) {
+    throw new Error("No voxels reconstructed");
   }
 
-  const normalized = normalizeToVolume(voxels, options.volumeSize);
+  if (options.symmetrize) {
+    symmetrizeVoxels(
+      voxels,
+      options.volumeSize,
+      palette.length
+    );
+  }
+
+  const normalized = normalizeToVolume(
+    voxels,
+    options.volumeSize
+  );
+
   return {
     width: frontRaster.width,
     height: frontRaster.height,
@@ -1157,19 +1267,22 @@ function singleViewTexturedColor(
 ): [number, number, number] {
   const t = clamp(depth01, 0, 1);
 
-  const front = sampleSubjectMapped(raster, mask, bounds, nx, ny);
+  const front = sampleSubjectMapped(
+    raster,
+    mask,
+    bounds,
+    nx,
+    ny
+  );
+
   const back = sampleSubjectMapped(
     raster,
     mask,
     bounds,
-    1 - nx + Math.sin((t - 0.5) * Math.PI) * 0.06,
-    ny + (t - 0.5) * 0.035
+    nx,
+    ny
   );
 
-  // A single reference cannot reveal hidden faces, so MODEL generates a
-  // deterministic texture continuation instead of a black rear material.
-  // Left/right are derived from the same source with a shallow anisotropic
-  // warp; once a SIDE reference exists, the real side texture supersedes this.
   const left = sampleSubjectMapped(
     raster,
     mask,
@@ -1177,6 +1290,7 @@ function singleViewTexturedColor(
     clamp(nx * 0.74 + t * 0.16, 0, 1),
     clamp(ny + (0.5 - nx) * 0.045, 0, 1)
   );
+
   const right = sampleSubjectMapped(
     raster,
     mask,
@@ -1196,7 +1310,11 @@ function singleViewTexturedColor(
     t
   );
 
-  return [color[0], color[1], color[2]];
+  return [
+    color[0],
+    color[1],
+    color[2]
+  ];
 }
 
 function buildSingleViewModel(
@@ -1207,37 +1325,106 @@ function buildSingleViewModel(
   paletteValues: [number, number, number][],
   palette: string[]
 ): ImageImport {
-  const maxAxis = Math.max(4, options.volumeSize - 8);
-  const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
-  const width = Math.max(1, Math.round(bounds.width * scale));
-  const height = Math.max(1, Math.round(bounds.height * scale));
-  const depth = Math.max(2, Math.min(maxAxis, Math.round(options.heightMax)));
-  const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
+  const maxAxis = Math.max(
+    4,
+    options.volumeSize - 8
+  );
+
+  const scale = Math.min(
+    1,
+    maxAxis / Math.max(
+      bounds.width,
+      bounds.height
+    )
+  );
+
+  const width = Math.max(
+    1,
+    Math.round(bounds.width * scale)
+  );
+
+  const height = Math.max(
+    1,
+    Math.round(bounds.height * scale)
+  );
+
+  const depth = Math.max(
+    2,
+    Math.min(
+      maxAxis,
+      Math.round(options.heightMax)
+    )
+  );
+
+  const sourceMask = resampleMaskToBounds(
+    mask,
+    bounds,
+    width,
+    height
+  );
+
   const voxels: ImageVoxel[] = [];
 
   for (let y = 0; y < height; y += 1) {
-    const ny = height <= 1 ? 0.5 : y / (height - 1);
+    const ny =
+      height <= 1
+        ? 0.5
+        : y / (height - 1);
+
     for (let x = 0; x < width; x += 1) {
       if (!sourceMask[y]?.[x]) continue;
-      const nx = width <= 1 ? 0.5 : x / (width - 1);
+
+      const nx =
+        width <= 1
+          ? 0.5
+          : x / (width - 1);
 
       for (let z = 0; z < depth; z += 1) {
-        const depth01 = depth <= 1 ? 0 : z / (depth - 1);
-        const color = singleViewTexturedColor(
+        const depth01 =
+          depth <= 1
+            ? 0
+            : z / (depth - 1);
+
+        const face = sampleSubjectMapped(
           raster,
           mask,
           bounds,
           nx,
-          ny,
-          depth01
+          ny
         );
+
+        const color =
+          z === 0 ||
+          z === depth - 1
+            ? [
+                face.r,
+                face.g,
+                face.b
+              ] as [
+                number,
+                number,
+                number
+              ]
+            : singleViewTexturedColor(
+                raster,
+                mask,
+                bounds,
+                nx,
+                ny,
+                depth01
+              );
 
         voxels.push({
           x,
           y,
           z,
           c: nearestColor(
-            ditheredColor(color, x, y + z, 2.2),
+            ditheredColor(
+              color,
+              x,
+              y + z,
+              2.2
+            ),
             paletteValues
           )
         });
@@ -1245,16 +1432,39 @@ function buildSingleViewModel(
     }
   }
 
-  if (!voxels.length) throw new Error("No voxels reconstructed");
-
-  const budget = effectiveBudget(options.volumeSize, options.maxVoxels);
-  const limited = voxels.length <= budget ? voxels : spatialBudget(voxels, budget);
-
-  if (options.symmetrize) {
-    symmetrizeVoxels(limited, options.volumeSize, palette.length);
+  if (!voxels.length) {
+    throw new Error(
+      "No voxels reconstructed"
+    );
   }
 
-  const normalized = normalizeToVolume(limited, options.volumeSize);
+  const budget = effectiveBudget(
+    options.volumeSize,
+    options.maxVoxels
+  );
+
+  const limited =
+    voxels.length <= budget
+      ? voxels
+      : spatialBudget(
+          voxels,
+          budget
+        );
+
+  if (options.symmetrize) {
+    symmetrizeVoxels(
+      limited,
+      options.volumeSize,
+      palette.length
+    );
+  }
+
+  const normalized =
+    normalizeToVolume(
+      limited,
+      options.volumeSize
+    );
+
   return {
     width: raster.width,
     height: raster.height,
@@ -1264,32 +1474,81 @@ function buildSingleViewModel(
   };
 }
 
-function spatialBudget(voxels: ImageVoxel[], budget: number) {
-  if (voxels.length <= budget) return voxels;
-
-  const buckets = new Map<string, ImageVoxel>();
-  const ratio = Math.max(1, voxels.length / budget);
-  const cell = Math.max(1, Math.ceil(Math.cbrt(ratio)));
-
-  for (const voxel of voxels) {
-    const bx = Math.floor(voxel.x / cell);
-    const by = Math.floor(voxel.y / cell);
-    const bz = Math.floor(voxel.z / cell);
-    const key = `${bx}:${by}:${bz}`;
-    if (!buckets.has(key)) buckets.set(key, voxel);
+function spatialBudget(
+  voxels: ImageVoxel[],
+  budget: number
+) {
+  if (voxels.length <= budget) {
+    return voxels;
   }
 
-  const result = [...buckets.values()];
-  if (result.length >= budget) return result.slice(0, budget);
+  const buckets =
+    new Map<string, ImageVoxel>();
 
-  const seen = new Set(result.map(voxelKey));
+  const ratio = Math.max(
+    1,
+    voxels.length / budget
+  );
+
+  const cell = Math.max(
+    1,
+    Math.ceil(Math.cbrt(ratio))
+  );
+
   for (const voxel of voxels) {
-    if (result.length >= budget) break;
-    const key = voxelKey(voxel);
-    if (seen.has(key)) continue;
+    const bx = Math.floor(
+      voxel.x / cell
+    );
+    const by = Math.floor(
+      voxel.y / cell
+    );
+    const bz = Math.floor(
+      voxel.z / cell
+    );
+
+    const key =
+      `${bx}:${by}:${bz}`;
+
+    if (!buckets.has(key)) {
+      buckets.set(
+        key,
+        voxel
+      );
+    }
+  }
+
+  const result = [
+    ...buckets.values()
+  ];
+
+  if (result.length >= budget) {
+    return result.slice(
+      0,
+      budget
+    );
+  }
+
+  const seen =
+    new Set(
+      result.map(voxelKey)
+    );
+
+  for (const voxel of voxels) {
+    if (result.length >= budget) {
+      break;
+    }
+
+    const key =
+      voxelKey(voxel);
+
+    if (seen.has(key)) {
+      continue;
+    }
+
     seen.add(key);
     result.push(voxel);
   }
+
   return result;
 }
 
@@ -1297,20 +1556,47 @@ export async function imageToVoxels(
   file: File,
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
-  const normalized: Required<ImageVoxelOptions> = {
-    volumeSize: options.volumeSize ?? 128,
-    heightMax: options.heightMax ?? 16,
-    maxVoxels: options.maxVoxels ?? 100000,
-    symmetrize: options.symmetrize ?? false
+  const normalized:
+    Required<ImageVoxelOptions> = {
+    volumeSize:
+      options.volumeSize ?? 128,
+    heightMax:
+      options.heightMax ?? 16,
+    maxVoxels:
+      options.maxVoxels ??
+      100000,
+    symmetrize:
+      options.symmetrize ??
+      false
   };
 
-  const raster = await loadImage(file);
-  const mask = cleanModelMask(buildMask(raster), raster);
-  const bounds = findBounds(mask);
-  if (!bounds) throw new Error("No visible subject found");
+  const raster =
+    await loadImage(file);
 
-  const palette = createPalette([raster], [mask], 64);
-  const paletteValues = paletteRgb(palette);
+  const mask =
+    cleanModelMask(
+      buildMask(raster),
+      raster
+    );
+
+  const bounds =
+    findBounds(mask);
+
+  if (!bounds) {
+    throw new Error(
+      "No visible subject found"
+    );
+  }
+
+  const palette =
+    createPalette(
+      [raster],
+      [mask],
+      64
+    );
+
+  const paletteValues =
+    paletteRgb(palette);
 
   return buildSingleViewModel(
     raster,
@@ -1326,23 +1612,58 @@ export async function imagesToVoxels(
   views: ImageViews,
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
-  if (!views.front) throw new Error("FRONT IMAGE REQUIRED");
+  if (!views.front) {
+    throw new Error(
+      "FRONT IMAGE REQUIRED"
+    );
+  }
 
-  const normalized: Required<ImageVoxelOptions> = {
-    volumeSize: options.volumeSize ?? 128,
-    heightMax: options.heightMax ?? 16,
-    maxVoxels: options.maxVoxels ?? 100000,
-    symmetrize: options.symmetrize ?? false
+  const normalized:
+    Required<ImageVoxelOptions> = {
+    volumeSize:
+      options.volumeSize ?? 128,
+    heightMax:
+      options.heightMax ?? 16,
+    maxVoxels:
+      options.maxVoxels ??
+      100000,
+    symmetrize:
+      options.symmetrize ??
+      false
   };
 
-  const frontRaster = await loadImage(views.front);
-  const frontMask = cleanModelMask(buildMask(frontRaster), frontRaster);
-  const frontBounds = findBounds(frontMask);
-  if (!frontBounds) throw new Error("No visible subject found in FRONT");
+  const frontRaster =
+    await loadImage(
+      views.front
+    );
 
-  // FRONT-only is a fully valid model. SIDE is an optional quality upgrade.
+  const frontMask =
+    cleanModelMask(
+      buildMask(
+        frontRaster
+      ),
+      frontRaster
+    );
+
+  const frontBounds =
+    findBounds(
+      frontMask
+    );
+
+  if (!frontBounds) {
+    throw new Error(
+      "No visible subject found in FRONT"
+    );
+  }
+
   if (!views.side) {
-    const palette = createPalette([frontRaster], [frontMask], 64);
+    const palette =
+      createPalette(
+        [frontRaster],
+        [frontMask],
+        64
+      );
+
     return buildSingleViewModel(
       frontRaster,
       frontMask,
@@ -1353,27 +1674,61 @@ export async function imagesToVoxels(
     );
   }
 
-  const sideRaster = await loadImage(views.side);
-  const sideMask = cleanModelMask(buildMask(sideRaster), sideRaster);
-  const sideBounds = findBounds(sideMask);
-  if (!sideBounds) throw new Error("No visible subject found in SIDE");
+  const sideRaster =
+    await loadImage(
+      views.side
+    );
 
-  const palette = createPalette(
-    [frontRaster, sideRaster],
-    [frontMask, sideMask],
-    64
-  );
-  const paletteValues = paletteRgb(palette);
+  const sideMask =
+    cleanModelMask(
+      buildMask(
+        sideRaster
+      ),
+      sideRaster
+    );
 
-  const budget = effectiveBudget(normalized.volumeSize, normalized.maxVoxels);
-  const dimensions = adaptiveModelDimensions(
-    frontBounds,
-    sideBounds,
-    normalized.volumeSize,
-    budget,
-    normalized.heightMax,
-    normalized.symmetrize
-  );
+  const sideBounds =
+    findBounds(
+      sideMask
+    );
+
+  if (!sideBounds) {
+    throw new Error(
+      "No visible subject found in SIDE"
+    );
+  }
+
+  const palette =
+    createPalette(
+      [
+        frontRaster,
+        sideRaster
+      ],
+      [
+        frontMask,
+        sideMask
+      ],
+      64
+    );
+
+  const paletteValues =
+    paletteRgb(palette);
+
+  const budget =
+    effectiveBudget(
+      normalized.volumeSize,
+      normalized.maxVoxels
+    );
+
+  const dimensions =
+    adaptiveModelDimensions(
+      frontBounds,
+      sideBounds,
+      normalized.volumeSize,
+      budget,
+      normalized.heightMax,
+      normalized.symmetrize
+    );
 
   return reconstructVisualHull(
     frontRaster,
