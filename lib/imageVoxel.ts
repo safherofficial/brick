@@ -1,5 +1,3 @@
-export type ImageMode = "model";
-
 export type ImageVoxel = {
   x: number;
   y: number;
@@ -17,7 +15,6 @@ export type ImageImport = {
 
 export type ImageVoxelOptions = {
   volumeSize?: number;
-  mode?: ImageMode;
   heightMax?: number;
   maxVoxels?: number;
   symmetrize?: boolean;
@@ -1302,7 +1299,6 @@ export async function imageToVoxels(
 ): Promise<ImageImport> {
   const normalized: Required<ImageVoxelOptions> = {
     volumeSize: options.volumeSize ?? 128,
-    mode: "model",
     heightMax: options.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
     symmetrize: options.symmetrize ?? false
@@ -1334,7 +1330,6 @@ export async function imagesToVoxels(
 
   const normalized: Required<ImageVoxelOptions> = {
     volumeSize: options.volumeSize ?? 128,
-    mode: "model",
     heightMax: options.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
     symmetrize: options.symmetrize ?? false
