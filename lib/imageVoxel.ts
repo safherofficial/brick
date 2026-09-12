@@ -359,14 +359,24 @@ export async function imageToVoxels(
       let radius = 0;
       if (options.mode === "solid") radius = Math.max(2, Math.round(depthMax / 2));
       else if (options.mode === "relief") radius = Math.max(1, Math.round((0.35 + luma * 0.65) * (depthMax / 2)));
-      else if (options.mode === "model") radius = Math.max(1, Math.round(Math.pow(Math.max(t, 0.08), 0.6) * depthMax));
+      else if (options.mode === "model") {
+        // Profilo a cupola: pieno al centro della sagoma (t vicino a 1), si assottiglia
+        // in modo continuo verso i bordi (t vicino a 0) — un solido tondeggiante come se
+        // fosse scolpito a mano, non un blocco a spessore fisso con un taglio netto ai bordi.
+        const dome = Math.sqrt(Math.max(0.03, 1 - Math.pow(1 - t, 1.6)));
+        radius = Math.max(1, Math.round(dome * depthMax));
+      }
       const x = px;
       const y = h - 1 - py;
       for (let dz = -radius; dz <= radius; dz++) {
-        const u = radius === 0 ? 0 : Math.abs(dz) / radius;
-        if (options.mode === "model" && u * u + (1 - t) * 0.18 > 1.05) continue;
-        const backness = radius === 0 ? 0 : (dz + radius) / (2 * radius);
-        const rgb = shade([r, g, b], Math.max(0.38, 1 - backness * 0.5 - u * 0.08));
+        // dz = +radius è la faccia rivolta verso la camera "front" (vedi Builder: la vista
+        // frontale guarda verso -z da z alto): deve restare fedele al colore originale
+        // della foto. dz = -radius è il retro, mai fotografato: lo scuriamo in modo
+        // progressivo usando la stessa palette (che include già varianti più scure di ogni
+        // colore) per simulare l'ombra propria, invece di lasciarlo piatto o invertito.
+        const depthT = radius === 0 ? 0 : (radius - dz) / (2 * radius);
+        const shadeAmt = Math.max(0.42, 1 - depthT * 0.62);
+        const rgb = shade([r, g, b], shadeAmt);
         raw.push({
           x,
           y,
