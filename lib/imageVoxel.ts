@@ -84,6 +84,8 @@ const MAX_RASTER_EDGE = 512;
 const MIN_ALPHA = 20;
 const MODEL_BUDGET_FILL = 0.90;
 const MODEL_MIN_AXIS = 4;
+const MODEL_EDGE_TOLERANCE = 50;
+const MODEL_EDGE_LUMINANCE_TOLERANCE = 38;
 
 const BAYER_4X4 = [
   [0, 8, 2, 10],
@@ -207,9 +209,22 @@ function backgroundLike(
   const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
   const l = 0.299 * s.r + 0.587 * s.g + 0.114 * s.b;
   const saturation = Math.max(s.r, s.g, s.b) - Math.min(s.r, s.g, s.b);
-  const tolerance = mode === "flat" ? 24 : 34;
+  const tolerance =
+    mode === "model"
+      ? MODEL_EDGE_TOLERANCE
+      : mode === "flat"
+        ? 24
+        : 34;
+  const luminanceTolerance =
+    mode === "model"
+      ? MODEL_EDGE_LUMINANCE_TOLERANCE
+      : 26;
 
-  return dist < tolerance && Math.abs(l - bgL) < 26 && saturation < 245;
+  return (
+    dist < tolerance &&
+    Math.abs(l - bgL) < luminanceTolerance &&
+    saturation < 245
+  );
 }
 
 function buildMask(raster: Raster, mode: ImageMode): boolean[][] {
@@ -276,6 +291,95 @@ function buildMask(raster: Raster, mode: ImageMode): boolean[][] {
   }
 
   return mask;
+}
+
+function cleanModelMask(mask: boolean[][]) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  if (!w || !h) return mask;
+
+  const output = mask.map((row) => row.slice());
+
+  // The image importer is intentionally conservative about the silhouette,
+  // but MODEL needs a production-ready matte: remove detached background
+  // specks and one/two-pixel contour hairs without eroding the actual body.
+  // Keep every meaningful connected component; only discard tiny noise.
+  const visited = new Set<string>();
+  const componentSizes: number[] = [];
+  const components: [number, number][][] = [];
+
+  const key = (x: number, y: number) => `${x}:${y}`;
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x]) continue;
+      const startKey = key(x, y);
+      if (visited.has(startKey)) continue;
+
+      const cells: [number, number][] = [];
+      const stack: [number, number][] = [[x, y]];
+      visited.add(startKey);
+
+      while (stack.length) {
+        const [cx, cy] = stack.pop()!;
+        cells.push([cx, cy]);
+
+        for (const [dx, dy] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1]
+        ]) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (!mask[ny][nx]) continue;
+          const nextKey = key(nx, ny);
+          if (visited.has(nextKey)) continue;
+          visited.add(nextKey);
+          stack.push([nx, ny]);
+        }
+      }
+
+      componentSizes.push(cells.length);
+      components.push(cells);
+    }
+  }
+
+  if (!components.length) return output;
+
+  const largest = Math.max(...componentSizes);
+  const minComponent = Math.max(12, Math.round(largest * 0.0008));
+
+  for (let i = 0; i < components.length; i += 1) {
+    if (componentSizes[i] >= minComponent) continue;
+    for (const [x, y] of components[i]) output[y][x] = false;
+  }
+
+  // Remove contour hairs only when the local neighborhood confirms that the
+  // pixel is an isolated protrusion. Thin intentional limbs remain intact.
+  for (let y = 1; y < h - 1; y += 1) {
+    for (let x = 1; x < w - 1; x += 1) {
+      if (!output[y][x]) continue;
+
+      let neighbours8 = 0;
+      let local5x5 = 0;
+      for (let oy = -2; oy <= 2; oy += 1) {
+        for (let ox = -2; ox <= 2; ox += 1) {
+          if (output[y + oy]?.[x + ox]) local5x5 += 1;
+          if (Math.abs(ox) <= 1 && Math.abs(oy) <= 1 && (ox || oy)) {
+            if (output[y + oy]?.[x + ox]) neighbours8 += 1;
+          }
+        }
+      }
+
+      if (neighbours8 <= 1 || (neighbours8 === 2 && local5x5 <= 6)) {
+        output[y][x] = false;
+      }
+    }
+  }
+
+  return repairSilhouette(output);
 }
 
 function findBounds(mask: boolean[][]): Bounds | null {
@@ -780,14 +884,14 @@ function reconstructVisualHull(
 
         // The rear volume is inferred only from the required FRONT + SIDE
         // silhouettes and their colors; no third view is sampled.
-        const shade = 1 - nz * 0.34;
+        const shade = 1 - nz * 0.22;
         color = [color[0] * shade, color[1] * shade, color[2] * shade];
 
         voxels.push({
           x,
           y,
           z,
-          c: nearestColor(ditheredColor(color, x, y + z), paletteValues)
+          c: nearestColor(ditheredColor(color, x, y + z, 3), paletteValues)
         });
       }
     }
@@ -968,7 +1072,10 @@ export async function imagesToVoxels(
 
   const files = [views.front, views.side].filter(Boolean) as File[];
   const rasters = await Promise.all(files.map((file) => loadImage(file)));
-  const masks = rasters.map((raster) => buildMask(raster, normalized.mode));
+  const masks = rasters.map((raster) => {
+    const mask = buildMask(raster, normalized.mode);
+    return normalized.mode === "model" ? cleanModelMask(mask) : mask;
+  });
 
   const palette = createPalette(
     rasters,
