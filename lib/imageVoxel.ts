@@ -327,40 +327,72 @@ function buildMask(
   const bg =
     looksLikeBackground(raster);
 
-  const mask = Array.from(
-    {
-      length: raster.height
-    },
-    () =>
-      Array<boolean>(
-        raster.width
-      ).fill(false)
+  const w = raster.width;
+  const h = raster.height;
+
+  // Candidati "sfondo" per colore, non ancora la maschera finale: una zona in
+  // ombra del soggetto può avere un colore vicino allo sfondo pur non
+  // essendolo. La differenza tra soggetto e sfondo la fa la connettività,
+  // non solo il colore.
+  const candidate = Array.from(
+    { length: h },
+    () => Array<boolean>(w).fill(false)
   );
 
-  for (
-    let y = 0;
-    y < raster.height;
-    y += 1
-  ) {
-    for (
-      let x = 0;
-      x < raster.width;
-      x += 1
-    ) {
-      const s = sampleAt(
-        raster,
-        x,
-        y
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      candidate[y][x] = backgroundLike(
+        sampleAt(raster, x, y),
+        bg,
+        mode
       );
-
-      mask[y][x] =
-        !backgroundLike(
-          s,
-          bg,
-          mode
-        );
     }
   }
+
+  // Flood-fill a 4 vicini a partire dal solo bordo dell'immagine: un pixel
+  // diventa sfondo solo se raggiungibile dal bordo attraverso una catena di
+  // pixel "simili allo sfondo". Una regione in ombra del soggetto (stesso
+  // tono dello sfondo ma circondata dal soggetto stesso) non è collegata al
+  // bordo e resta quindi parte del soggetto: non taglia più la sagoma in due.
+  const isBackground = Array.from(
+    { length: h },
+    () => Array<boolean>(w).fill(false)
+  );
+
+  const stack: [number, number][] = [];
+
+  const seed = (x: number, y: number) => {
+    if (candidate[y][x] && !isBackground[y][x]) {
+      isBackground[y][x] = true;
+      stack.push([x, y]);
+    }
+  };
+
+  for (let x = 0; x < w; x += 1) {
+    seed(x, 0);
+    seed(x, h - 1);
+  }
+  for (let y = 0; y < h; y += 1) {
+    seed(0, y);
+    seed(w - 1, y);
+  }
+
+  while (stack.length) {
+    const [x, y] = stack.pop()!;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      if (isBackground[ny][nx] || !candidate[ny][nx]) continue;
+      isBackground[ny][nx] = true;
+      stack.push([nx, ny]);
+    }
+  }
+
+  const mask = Array.from(
+    { length: h },
+    (_, y) => Array.from({ length: w }, (_, x) => !isBackground[y][x])
+  );
 
   //
   // Remove isolated single-pixel noise.
