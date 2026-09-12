@@ -609,6 +609,16 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
   return dominantPalette([...buckets.values()], size);
 }
 
+const BACKING_COLOR = "#2f3442";
+
+function ensureBackingPalette(palette: string[]) {
+  const next = palette.slice();
+  const existing = next.findIndex((hex) => hex.toLowerCase() === BACKING_COLOR);
+  if (existing >= 0) return { palette: next, backingIndex: existing };
+  next.push(BACKING_COLOR);
+  return { palette: next, backingIndex: next.length - 1 };
+}
+
 function ditheredColor(
   rgb: [number, number, number],
   px: number,
@@ -1057,7 +1067,8 @@ function buildNonModel(
   sideBounds: Bounds | null,
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
-  palette: string[]
+  palette: string[],
+  backingIndex: number
 ): ImageImport {
   const maxAxis = Math.max(4, options.volumeSize - 8);
   const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
@@ -1065,12 +1076,15 @@ function buildNonModel(
   const height = Math.max(1, Math.round(bounds.height * scale));
   const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
 
+  // A generated image is explicitly single-sided. Even FLAT gets a second,
+  // neutral backing layer, because a single voxel is inherently visible from
+  // both directions in a voxel renderer/exporter.
   const depthBase =
     options.mode === "flat"
-      ? 1
+      ? 2
       : options.mode === "relief"
-        ? Math.max(2, Math.round(options.heightMax * 0.30))
-        : Math.max(2, Math.round(options.heightMax * 0.62));
+        ? Math.max(3, Math.round(options.heightMax * 0.30))
+        : Math.max(3, Math.round(options.heightMax * 0.62));
 
   const voxels: ImageVoxel[] = [];
 
@@ -1083,20 +1097,25 @@ function buildNonModel(
       let finalDepth = depthBase;
 
       if (sideMask && sideBounds && maskMapped(sideMask, sideBounds, 0.5, ny)) {
-        finalDepth = Math.max(1, Math.round(depthBase * 1.18));
+        finalDepth = Math.max(2, Math.round(depthBase * 1.18));
       }
 
+      const frontZ = finalDepth - 1;
       for (let z = 0; z < finalDepth; z += 1) {
-        const colorSample = frontColor;
-
+        // The source art exists on ONE plane only. Everything behind it is a
+        // solid structural backing, so the FRONT can never be reproduced on
+        // the RETRO when the result is rotated or exported.
         voxels.push({
           x,
           y,
           z,
-          c: nearestColor(
-            ditheredColor([colorSample.r, colorSample.g, colorSample.b], x, y + z),
-            paletteValues
-          )
+          c:
+            z === frontZ
+              ? nearestColor(
+                  ditheredColor([frontColor.r, frontColor.g, frontColor.b], x, y, 3),
+                  paletteValues
+                )
+              : backingIndex
         });
       }
     }
@@ -1159,15 +1178,17 @@ export async function imageToVoxels(
   };
 
   const raster = await loadImage(file);
-  const mask = buildMask(raster, normalized.mode);
+  const mask = cleanModelMask(buildMask(raster, normalized.mode), raster);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
 
-  const palette = createPalette(
+  const rawPalette = createPalette(
     [raster],
     [mask],
     normalized.mode === "model" ? 64 : 48
   );
+  const paletteWithBacking = ensureBackingPalette(rawPalette);
+  const palette = paletteWithBacking.palette;
   const paletteValues = paletteRgb(palette);
 
   if (normalized.mode === "model") {
@@ -1182,7 +1203,8 @@ export async function imageToVoxels(
     null,
     normalized,
     paletteValues,
-    palette
+    palette,
+    paletteWithBacking.backingIndex
   );
 }
 
@@ -1206,18 +1228,17 @@ export async function imagesToVoxels(
 
   const files = [views.front, views.side].filter(Boolean) as File[];
   const rasters = await Promise.all(files.map((file) => loadImage(file)));
-  const masks = rasters.map((raster) => {
-    const mask = buildMask(raster, normalized.mode);
-    return normalized.mode === "model"
-      ? cleanModelMask(mask, raster)
-      : mask;
-  });
+  const masks = rasters.map((raster) =>
+    cleanModelMask(buildMask(raster, normalized.mode), raster)
+  );
 
-  const palette = createPalette(
+  const rawPalette = createPalette(
     rasters,
     masks,
     normalized.mode === "model" ? 64 : 48
   );
+  const paletteWithBacking = ensureBackingPalette(rawPalette);
+  const palette = paletteWithBacking.palette;
   const paletteValues = paletteRgb(palette);
 
   const frontRaster = rasters[0];
@@ -1272,6 +1293,7 @@ export async function imagesToVoxels(
     sideBounds,
     normalized,
     paletteValues,
-    palette
+    palette,
+    paletteWithBacking.backingIndex
   );
 }
