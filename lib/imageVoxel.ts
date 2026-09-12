@@ -1015,28 +1015,40 @@ function reconstructVisualHull(
         // volumes. There is no later voxel thinning step.
         if (side && !side[y]?.[z]) continue;
 
-        let color: [number, number, number] = [
-          frontColor.r,
-          frontColor.g,
-          frontColor.b
-        ];
+        // MODEL is single-sided: the FRONT artwork belongs only to the
+        // front-facing shell. The interior/rear is structural backing, never
+        // another copy of the FRONT artwork.
+        const isFrontLayer = z === dimensions.depth - 1;
 
-        if (sideRaster && sideBounds && side?.[y]?.[z]) {
-          const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
-          color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
+        if (isFrontLayer) {
+          let color: [number, number, number] = [
+            frontColor.r,
+            frontColor.g,
+            frontColor.b
+          ];
+
+          if (sideRaster && sideBounds && side?.[y]?.[z]) {
+            const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
+            color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
+          }
+
+          voxels.push({
+            x,
+            y,
+            z,
+            c: nearestColor(
+              ditheredColor(color, x, y + z, 3),
+              paletteValues
+            )
+          });
+        } else {
+          voxels.push({
+            x,
+            y,
+            z,
+            c: palette.findIndex((hex) => hex.toLowerCase() === BACKING_COLOR)
+          });
         }
-
-        // The rear volume is inferred only from the required FRONT + SIDE
-        // silhouettes and their colors; no third view is sampled.
-        const shade = 1 - nz * 0.22;
-        color = [color[0] * shade, color[1] * shade, color[2] * shade];
-
-        voxels.push({
-          x,
-          y,
-          z,
-          c: nearestColor(ditheredColor(color, x, y + z, 3), paletteValues)
-        });
       }
     }
   }
