@@ -1191,7 +1191,10 @@ export async function imageToVoxels(
   };
 
   const raster = await loadImage(file);
-  const mask = cleanModelMask(buildMask(raster, normalized.mode), raster);
+  const mask =
+    normalized.mode === "model"
+      ? cleanModelMask(buildMask(raster, normalized.mode), raster)
+      : buildMask(raster, normalized.mode);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
 
@@ -1242,7 +1245,9 @@ export async function imagesToVoxels(
   const files = [views.front, views.side].filter(Boolean) as File[];
   const rasters = await Promise.all(files.map((file) => loadImage(file)));
   const masks = rasters.map((raster) =>
-    cleanModelMask(buildMask(raster, normalized.mode), raster)
+    normalized.mode === "model"
+      ? cleanModelMask(buildMask(raster, normalized.mode), raster)
+      : buildMask(raster, normalized.mode)
   );
 
   const rawPalette = createPalette(
