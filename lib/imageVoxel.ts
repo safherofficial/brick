@@ -88,6 +88,8 @@ const MODEL_EDGE_TOLERANCE = 72;
 const MODEL_EDGE_LUMINANCE_TOLERANCE = 54;
 const MODEL_MIN_COMPONENT_RATIO = 0.0025;
 const MODEL_MIN_COMPONENT_PIXELS = 24;
+const MODEL_BG_COLOR_TOLERANCE = 92;
+const MODEL_BG_LUMINANCE_TOLERANCE = 72;
 
 const BAYER_4X4 = [
   [0, 8, 2, 10],
@@ -197,6 +199,53 @@ function looksLikeBackground(raster: Raster): [number, number, number] {
   return [r / count, g / count, b / count];
 }
 
+function modelBackgroundProbes(raster: Raster): [number, number, number][] {
+  const probes: [number, number, number][] = [];
+  const sampleCount = 24;
+  const add = (x: number, y: number) => {
+    const s = sampleAt(raster, x, y);
+    if (!s.visible) return;
+    const color: [number, number, number] = [s.r, s.g, s.b];
+    if (!probes.some((probe) => rgbDistance(probe, color) < 56 * 56)) {
+      probes.push(color);
+    }
+  };
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    const t = i / Math.max(1, sampleCount - 1);
+    add(Math.round(t * (raster.width - 1)), 0);
+    add(Math.round(t * (raster.width - 1)), raster.height - 1);
+    add(0, Math.round(t * (raster.height - 1)));
+    add(raster.width - 1, Math.round(t * (raster.height - 1)));
+  }
+  return probes;
+}
+
+function modelBackgroundLike(
+  sample: Sample,
+  probes: [number, number, number][]
+) {
+  if (!sample.visible) return true;
+  if (!probes.length) return false;
+
+  const luminance = 0.299 * sample.r + 0.587 * sample.g + 0.114 * sample.b;
+  const saturation = Math.max(sample.r, sample.g, sample.b) - Math.min(sample.r, sample.g, sample.b);
+
+  for (const probe of probes) {
+    const distance = Math.sqrt(rgbDistance([sample.r, sample.g, sample.b], probe));
+    const probeLuminance = 0.299 * probe[0] + 0.587 * probe[1] + 0.114 * probe[2];
+    if (
+      distance <= MODEL_BG_COLOR_TOLERANCE &&
+      Math.abs(luminance - probeLuminance) <= MODEL_BG_LUMINANCE_TOLERANCE &&
+      saturation < 220
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function backgroundLike(
   s: Sample,
   bg: [number, number, number],
@@ -231,13 +280,18 @@ function backgroundLike(
 
 function buildMask(raster: Raster, mode: ImageMode): boolean[][] {
   const bg = looksLikeBackground(raster);
+  const modelProbes = mode === "model" ? modelBackgroundProbes(raster) : [];
   const w = raster.width;
   const h = raster.height;
   const candidate = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
 
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
-      candidate[y][x] = backgroundLike(sampleAt(raster, x, y), bg, mode);
+      const sample = sampleAt(raster, x, y);
+      candidate[y][x] =
+        mode === "model"
+          ? modelBackgroundLike(sample, modelProbes)
+          : backgroundLike(sample, bg, mode);
     }
   }
 
@@ -351,6 +405,7 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
   if (!components.length) return output;
 
   const bg = looksLikeBackground(raster);
+  const bgProbes = modelBackgroundProbes(raster);
   const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
 
   // Opaque reference images often contain a one-to-several-pixel antialias
@@ -406,10 +461,12 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
         (current.b - averageNeighbour.b) ** 2
       );
 
+      const probeMatch = modelBackgroundLike(current, bgProbes);
       if (
-        distanceToBg < 82 &&
-        Math.abs(currentL - bgL) < 58 &&
-        distanceToSubject < 46
+        probeMatch &&
+        distanceToBg < MODEL_BG_COLOR_TOLERANCE &&
+        Math.abs(currentL - bgL) < MODEL_BG_LUMINANCE_TOLERANCE &&
+        distanceToSubject < 56
       ) {
         output[y][x] = false;
       }
