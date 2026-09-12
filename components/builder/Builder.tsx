@@ -4346,18 +4346,29 @@ export default function Builder() {
                       ? "modeOn"
                       : ""
                   }
+                  disabled={
+                    mode ===
+                    "model"
+                  }
+                  title={
+                    mode ===
+                    "model"
+                      ? "MODEL — COMING SOON"
+                      : undefined
+                  }
                   onClick={() => {
+                    if (mode === "model") return;
+
                     setImageMode(
                       mode
                     );
 
-                    setSymmetrize(
-                      mode ===
-                        "model"
-                    );
+                    setSymmetrize(false);
                   }}
                 >
-                  {mode.toUpperCase()}
+                  {mode === "model"
+                    ? "MODEL · COMING SOON"
+                    : mode.toUpperCase()}
                 </button>
               )
             )}
