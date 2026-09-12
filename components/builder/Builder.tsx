@@ -582,11 +582,6 @@ export default function Builder() {
       null
     );
 
-  const backRef =
-    useRef<HTMLInputElement>(
-      null
-    );
-
   const [rev, setRev] =
     useState(0);
 
@@ -690,11 +685,6 @@ export default function Builder() {
     );
 
   const [sideFile, setSideFile] =
-    useState<File | null>(
-      null
-    );
-
-  const [backFile, setBackFile] =
     useState<File | null>(
       null
     );
@@ -875,18 +865,15 @@ export default function Builder() {
             );
 
   const viewLabel =
-    backFile
-      ? "FRONT+SIDE+BACK"
-      : sideFile
-        ? "FRONT+SIDE"
-        : frontFile
-          ? "FRONT"
-          : "NONE";
+    sideFile
+      ? "FRONT+SIDE"
+      : frontFile
+        ? "FRONT"
+        : "NONE";
 
   const viewCount =
     Number(Boolean(frontFile)) +
-    Number(Boolean(sideFile)) +
-    Number(Boolean(backFile));
+    Number(Boolean(sideFile));
 
   useEffect(() => {
     refreshCredits();
@@ -2173,10 +2160,6 @@ export default function Builder() {
         null
       );
 
-      setBackFile(
-        null
-      );
-
       setPaywall(
         false
       );
@@ -2309,10 +2292,6 @@ export default function Builder() {
       );
 
       setSideFile(
-        null
-      );
-
-      setBackFile(
         null
       );
 
@@ -2499,12 +2478,10 @@ export default function Builder() {
     useCallback(
       async ({
         front,
-        side,
-        back
+        side
       }: {
         front: File;
         side?: File;
-        back?: File;
       }) => {
         setBusy(
           true
@@ -2515,8 +2492,7 @@ export default function Builder() {
             await imagesToVoxels(
               {
                 front,
-                side,
-                back
+                side
               },
               {
                 volumeSize:
@@ -2540,20 +2516,13 @@ export default function Builder() {
           );
 
           const usedViews =
-            [
-              front,
-              side,
-              back
-            ].filter(
-              Boolean
-            ).length;
+            Number(Boolean(front)) +
+            Number(Boolean(side));
 
           notify(
-            usedViews >= 3
-              ? `3 VIEWS · ${result.count} VX`
-              : usedViews === 2
-                ? `2 VIEWS · ${result.count} VX`
-                : `${result.count} VX READY`
+            usedViews === 2
+              ? `2 VIEWS · ${result.count} VX`
+              : `${result.count} VX READY`
           );
         } catch (error) {
           notify(
@@ -2586,20 +2555,22 @@ export default function Builder() {
           return;
         }
 
+        if (imageMode === "model" && !sideFile) {
+          notify(
+            "MODEL REQUIRES FRONT + SIDE"
+          );
+
+          return;
+        }
+
         await regenerateMultiView({
-          front:
-            frontFile,
-          side:
-            sideFile ??
-            undefined,
-          back:
-            backFile ??
-            undefined
+          front: frontFile,
+          side: sideFile ?? undefined
         });
       },
       [
-        backFile,
         frontFile,
+        imageMode,
         notify,
         regenerateMultiView,
         sideFile
@@ -2641,39 +2612,10 @@ export default function Builder() {
           );
 
           /*
-           * SIDE and BACK are allowed to survive
-           * while FRONT is replaced. This lets the
-           * user correct the main view without
-           * rebuilding the workflow from scratch.
+           * SIDE survives while FRONT is replaced so the
+           * user can correct the main view without rebuilding
+           * the workflow from scratch.
            */
-          const result =
-            await imageToVoxels(
-              file,
-              {
-                volumeSize:
-                  volumeRef.current.size,
-                mode:
-                  imageMode,
-                heightMax:
-                  imageHeight,
-                maxVoxels:
-                  MAX_SAFE,
-                symmetrize:
-                  imageMode ===
-                  "model"
-                    ? symmetrize
-                    : false
-              }
-            );
-
-          if (
-            !result.voxels.length
-          ) {
-            throw new Error(
-              "Empty image"
-            );
-          }
-
           setPendingName(
             file.name.replace(
               /\.(png|jpe?g|webp)$/i,
@@ -2682,36 +2624,44 @@ export default function Builder() {
           );
 
           setPendingHash(
-            await hashImageFile(
-              file
-            )
+            await hashImageFile(file)
           );
 
-          /*
-           * If additional views already exist,
-           * immediately use the multi-view pipeline.
-           */
-          if (
-            sideFile ||
-            backFile
-          ) {
-            await regenerateMultiView({
-              front: file,
-              side:
-                sideFile ??
-                undefined,
-              back:
-                backFile ??
-                undefined
-            });
+          if (imageMode === "model") {
+            if (!sideFile) {
+              setPendingImage(null);
+              notify("FRONT READY · MODEL REQUIRES SIDE");
+            } else {
+              await regenerateMultiView({
+                front: file,
+                side: sideFile
+              });
+            }
           } else {
-            setPendingImage(
-              result
+            const result = await imageToVoxels(
+              file,
+              {
+                volumeSize: volumeRef.current.size,
+                mode: imageMode,
+                heightMax: imageHeight,
+                maxVoxels: MAX_SAFE,
+                symmetrize: false
+              }
             );
 
-            notify(
-              `${result.count ?? result.voxels.length} VX READY`
-            );
+            if (!result.voxels.length) {
+              throw new Error("Empty image");
+            }
+
+            setPendingImage(result);
+            notify(`${result.count ?? result.voxels.length} VX READY`);
+
+            if (sideFile) {
+              await regenerateMultiView({
+                front: file,
+                side: sideFile
+              });
+            }
           }
 
           setPaywall(
@@ -2730,7 +2680,6 @@ export default function Builder() {
         }
       },
       [
-        backFile,
         imageHeight,
         imageMode,
         notify,
@@ -2758,53 +2707,14 @@ export default function Builder() {
         }
 
         await regenerateMultiView({
-          front:
-            frontFile,
-          side: file,
-          back:
-            backFile ??
-            undefined
+          front: frontFile,
+          side: file
         });
       },
       [
-        backFile,
         frontFile,
         notify,
         regenerateMultiView
-      ]
-    );
-
-  const attachBack =
-    useCallback(
-      async (
-        file: File
-      ) => {
-        setBackFile(
-          file
-        );
-
-        if (!frontFile) {
-          notify(
-            "BACK READY · ADD FRONT PNG"
-          );
-
-          return;
-        }
-
-        await regenerateMultiView({
-          front:
-            frontFile,
-          side:
-            sideFile ??
-            undefined,
-          back: file
-        });
-      },
-      [
-        frontFile,
-        notify,
-        regenerateMultiView,
-        sideFile
       ]
     );
 
@@ -2816,11 +2726,8 @@ export default function Builder() {
 
       if (frontFile) {
         void regenerateMultiView({
-          front:
-            frontFile,
-          back:
-            backFile ??
-            undefined
+          front: frontFile,
+          side: undefined
         });
       } else {
         notify(
@@ -2828,36 +2735,9 @@ export default function Builder() {
         );
       }
     }, [
-      backFile,
       frontFile,
       notify,
       regenerateMultiView
-    ]);
-
-  const removeBack =
-    useCallback(() => {
-      setBackFile(
-        null
-      );
-
-      if (frontFile) {
-        void regenerateMultiView({
-          front:
-            frontFile,
-          side:
-            sideFile ??
-            undefined
-        });
-      } else {
-        notify(
-          "BACK REMOVED"
-        );
-      }
-    }, [
-      frontFile,
-      notify,
-      regenerateMultiView,
-      sideFile
     ]);
 
   const openProject =
@@ -2891,15 +2771,15 @@ export default function Builder() {
                 )
             );
 
+            if (imageMode === "model") {
+              throw new Error("MODEL MODE REQUIRES FRONT + SIDE");
+            }
+
             setFrontFile(
               file
             );
 
             setSideFile(
-              null
-            );
-
-            setBackFile(
               null
             );
 
@@ -3055,9 +2935,6 @@ export default function Builder() {
             null
           );
 
-          setBackFile(
-            null
-          );
 
           packVolume();
 
@@ -3142,9 +3019,6 @@ export default function Builder() {
           null
         );
 
-        setBackFile(
-          null
-        );
 
         setPaywall(
           false
@@ -3778,9 +3652,6 @@ export default function Builder() {
                 {sideFile
                   ? " · SIDE"
                   : ""}
-                {backFile
-                  ? " · BACK"
-                  : ""}
                 {busy
                   ? " · BUSY"
                   : ""}
@@ -4294,11 +4165,11 @@ export default function Builder() {
 
             <div className="foldBody">
               <p className="foldHint">
-                FRONT / SIDE / BACK PNG
+                FRONT / SIDE PNG
                 <br />
                 MULTI-VIEW RECONSTRUCTION
                 <br />
-                MODEL + 3 VIEWS = MAX QUALITY
+                MODEL + 2 VIEWS = MAX QUALITY
                 <br />
                 SYMMETRY = CHARACTER / ARMOR
                 <br />
@@ -4542,7 +4413,7 @@ export default function Builder() {
 
           <p className="category">
             MULTI VIEW ·{" "}
-            {viewCount}/3
+            {viewCount}/2
           </p>
 
           <button
@@ -4587,26 +4458,6 @@ export default function Builder() {
 
           <button
             onClick={() =>
-              backRef.current?.click()
-            }
-            disabled={
-              busy
-            }
-            className={
-              backFile
-                ? "modeOn"
-                : ""
-            }
-          >
-            {
-              backFile
-                ? "BACK ON"
-                : "ADD BACK PNG"
-            }
-          </button>
-
-          <button
-            onClick={() =>
               void rebuildMultiView()
             }
             disabled={
@@ -4619,27 +4470,10 @@ export default function Builder() {
 
           <div className="viewRow">
             <button
-              onClick={
-                removeSide
-              }
-              disabled={
-                busy ||
-                !sideFile
-              }
+              onClick={removeSide}
+              disabled={busy || !sideFile}
             >
               REMOVE SIDE
-            </button>
-
-            <button
-              onClick={
-                removeBack
-              }
-              disabled={
-                busy ||
-                !backFile
-              }
-            >
-              REMOVE BACK
             </button>
           </div>
 
@@ -4669,32 +4503,6 @@ export default function Builder() {
             }}
           />
 
-          <input
-            ref={
-              backRef
-            }
-            type="file"
-            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-            hidden
-            onChange={(
-              e
-            ) => {
-              const file =
-                e.target.files?.[0];
-
-              if (
-                file
-              ) {
-                void attachBack(
-                  file
-                );
-              }
-
-              e.target.value =
-                "";
-            }}
-          />
-
           <p className="foldHint">
             {frontFile
               ? "FRONT READY"
@@ -4702,14 +4510,14 @@ export default function Builder() {
             <br />
             {sideFile
               ? "SIDE READY"
-              : "SIDE OPTIONAL"}
+              : imageMode === "model"
+                ? "SIDE REQUIRED FOR MODEL"
+                : "SIDE OPTIONAL"}
             <br />
-            {backFile
-              ? "BACK READY"
-              : "BACK OPTIONAL"}
-            <br />
-            {viewCount >= 3
-              ? "3-VIEW RECONSTRUCTION READY"
+            {imageMode === "model"
+              ? viewCount === 2
+                ? "2-VIEW MODEL READY"
+                : "MODEL NEEDS FRONT + SIDE"
               : viewCount === 2
                 ? "2-VIEW RECONSTRUCTION READY"
                 : viewCount === 1
