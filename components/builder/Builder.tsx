@@ -3825,21 +3825,21 @@ export default function Builder() {
             <color
               attach="background"
               args={[
-                "#0b0b12"
+                "#151925"
               ]}
             />
 
             <ambientLight
               intensity={
-                0.72
+                1.05
               }
             />
 
             <hemisphereLight
               intensity={
-                0.42
+                0.62
               }
-              groundColor="#05070c"
+              groundColor="#111521"
             />
 
             <directionalLight
@@ -3849,9 +3849,20 @@ export default function Builder() {
                 14
               ]}
               intensity={
-                2.6
+                3.2
               }
               castShadow
+            />
+
+            <directionalLight
+              position={[
+                -18,
+                20,
+                10
+              ]}
+              intensity={
+                1.15
+              }
             />
 
             {grid && (
@@ -3869,12 +3880,12 @@ export default function Builder() {
                 cellThickness={
                   0.55
                 }
-                cellColor="#2a1f40"
+                cellColor="#3c3457"
                 sectionSize={8}
                 sectionThickness={
                   1.1
                 }
-                sectionColor="#9945FF"
+                sectionColor="#a678ff"
                 fadeDistance={
                   volume.size *
                   2
