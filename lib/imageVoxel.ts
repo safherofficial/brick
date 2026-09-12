@@ -649,26 +649,6 @@ function nearestColor(
   return best;
 }
 
-function nearestDifferentColor(
-  rgb: [number, number, number],
-  palette: [number, number, number][],
-  avoid: number
-) {
-  let best = -1;
-  let distance = Infinity;
-
-  for (let i = 0; i < palette.length; i += 1) {
-    if (i === avoid) continue;
-    const d = rgbDistance(rgb, palette[i]);
-    if (d < distance) {
-      distance = d;
-      best = i;
-    }
-  }
-
-  return best >= 0 ? best : avoid;
-}
-
 function blendRgb(a: Sample, b: Sample, t: number): [number, number, number] {
   const amount = clamp(t, 0, 1);
   return [
@@ -999,7 +979,8 @@ function reconstructVisualHull(
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
   dimensions: Dimensions,
-  palette: string[]
+  palette: string[],
+  backingIndex: number
 ) {
   const front = resampleMaskToBounds(
     frontMask,
@@ -1029,87 +1010,54 @@ function reconstructVisualHull(
       for (let z = 0; z < dimensions.depth; z += 1) {
         const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
-        // The voxel exists only where the FRONT and SIDE silhouettes overlap.
-        // This keeps the hard-surface silhouette of weapons/props stable while
-        // allowing the material to change continuously through the depth.
-        if (!side[y]?.[z]) continue;
+        // TRUE VISUAL HULL:
+        // FRONT gives the X/Y silhouette and SIDE gives the Z/Y silhouette.
+        // A voxel exists only in the intersection of the two silhouette
+        // volumes. There is no later voxel thinning step.
+        if (side && !side[y]?.[z]) continue;
 
-        const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
+        // MODEL is single-sided: the FRONT artwork belongs only to the
+        // front-facing shell. The interior/rear is structural backing, never
+        // another copy of the FRONT artwork.
         const isFrontLayer = z === dimensions.depth - 1;
 
         if (isFrontLayer) {
-          // The visible FRONT surface keeps the actual FRONT artwork.
-          const frontIndex = nearestColor(
-            ditheredColor(
-              [frontColor.r, frontColor.g, frontColor.b],
-              x,
-              y + z,
-              3
-            ),
-            paletteValues
-          );
+          let color: [number, number, number] = [
+            frontColor.r,
+            frontColor.g,
+            frontColor.b
+          ];
+
+          if (sideRaster && sideBounds && side?.[y]?.[z]) {
+            const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
+            color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
+          }
 
           voxels.push({
             x,
             y,
             z,
-            c: frontIndex
+            c: nearestColor(
+              ditheredColor(color, x, y + z, 3),
+              paletteValues
+            )
           });
-          continue;
+        } else {
+          voxels.push({
+            x,
+            y,
+            z,
+            c: backingIndex
+          });
         }
-
-        // Reconstruct depth instead of painting the FRONT texture through the
-        // entire volume. SIDE contributes increasingly toward the rear, while
-        // a gentle depth falloff keeps the object readable under game lighting.
-        const depthT = dimensions.depth <= 1
-          ? 0.5
-          : z / (dimensions.depth - 1);
-        const sideWeight = 0.30 + (1 - depthT) * 0.50;
-        let color = blendRgb(frontColor, sideColor, sideWeight);
-        const shade = 0.76 + depthT * 0.18;
-        color = [
-          color[0] * shade,
-          color[1] * shade,
-          color[2] * shade
-        ];
-
-        const colorIndex = nearestColor(
-          ditheredColor(color, x, y + z, 2),
-          paletteValues
-        );
-
-        // The rear-most layer must never become an accidental duplicate of the
-        // FRONT palette index. Force it to a nearby material tone rather than
-        // falling back to the old flat/black backing color.
-        const rearIndex =
-          z === 0
-            ? nearestDifferentColor(
-                ditheredColor(color, x + 1, y + z, 1),
-                paletteValues,
-                nearestColor(
-                  ditheredColor(
-                    [frontColor.r, frontColor.g, frontColor.b],
-                    x,
-                    y + z,
-                    2
-                  ),
-                  paletteValues
-                )
-              )
-            : colorIndex;
-
-        voxels.push({
-          x,
-          y,
-          z,
-          c: rearIndex
-        });
       }
     }
   }
 
   if (!voxels.length) throw new Error("No voxels reconstructed");
 
+  // The adaptive dimensions guarantee the requested budget before this point.
+  // No post-generation decimation is performed.
   if (options.symmetrize) {
     symmetrizeVoxels(voxels, options.volumeSize, palette.length);
   }
@@ -1124,6 +1072,41 @@ function reconstructVisualHull(
   } satisfies ImageImport;
 }
 
+function depthTexturedColor(
+  raster: Raster,
+  bounds: Bounds,
+  nx: number,
+  ny: number,
+  depthFromFront: number
+): [number, number, number] {
+  const t = clamp(depthFromFront, 0, 1);
+  const front = sampleMapped(raster, bounds, nx, ny);
+
+  // A single reference image cannot reveal the real hidden texture.
+  // For SOLID/FLAT/RELIEF we therefore synthesize a continuous rearward
+  // texture from the same source instead of introducing a black/neutral slab.
+  // The farther the voxel is from the source face, the more we blend toward
+  // the mirrored source sample. This keeps weapons and props textured on
+  // every exposed surface without duplicating the exact FRONT bitmap on the
+  // entire depth.
+  const mirrored = sampleMapped(
+    raster,
+    bounds,
+    1 - nx,
+    clamp(ny + (t - 0.5) * 0.06, 0, 1)
+  );
+
+  const blend = t * 0.82;
+  const color = blendRgb(front, mirrored, blend);
+  const shade = 1 - t * 0.08;
+
+  return [
+    clamp(color[0] * shade, 0, 255),
+    clamp(color[1] * shade, 0, 255),
+    clamp(color[2] * shade, 0, 255)
+  ];
+}
+
 function buildNonModel(
   raster: Raster,
   mask: boolean[][],
@@ -1132,8 +1115,7 @@ function buildNonModel(
   sideBounds: Bounds | null,
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
-  palette: string[],
-  backingIndex: number
+  palette: string[]
 ): ImageImport {
   const maxAxis = Math.max(4, options.volumeSize - 8);
   const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
@@ -1158,7 +1140,6 @@ function buildNonModel(
     for (let x = 0; x < width; x += 1) {
       if (!sourceMask[y]?.[x]) continue;
       const nx = width <= 1 ? 0.5 : x / (width - 1);
-      const frontColor = sampleMapped(raster, bounds, nx, ny);
       let finalDepth = depthBase;
 
       if (sideMask && sideBounds && maskMapped(sideMask, sideBounds, 0.5, ny)) {
@@ -1167,20 +1148,24 @@ function buildNonModel(
 
       const frontZ = finalDepth - 1;
       for (let z = 0; z < finalDepth; z += 1) {
-        // The source art exists on ONE plane only. Everything behind it is a
-        // solid structural backing, so the FRONT can never be reproduced on
-        // the RETRO when the result is rotated or exported.
+        const depthFromFront =
+          finalDepth <= 1 ? 0 : (frontZ - z) / Math.max(1, frontZ);
+        const color = depthTexturedColor(
+          raster,
+          bounds,
+          nx,
+          ny,
+          depthFromFront
+        );
+
         voxels.push({
           x,
           y,
           z,
-          c:
-            z === frontZ
-              ? nearestColor(
-                  ditheredColor([frontColor.r, frontColor.g, frontColor.b], x, y, 3),
-                  paletteValues
-                )
-              : backingIndex
+          c: nearestColor(
+            ditheredColor(color, x, y + z, 3),
+            paletteValues
+          )
         });
       }
     }
@@ -1268,8 +1253,7 @@ export async function imageToVoxels(
     null,
     normalized,
     paletteValues,
-    palette,
-    paletteWithBacking.backingIndex
+    palette
   );
 }
 
@@ -1346,7 +1330,8 @@ export async function imagesToVoxels(
       normalized,
       paletteValues,
       dimensions,
-      palette
+      palette,
+      paletteWithBacking.backingIndex
     );
   }
 
@@ -1358,7 +1343,6 @@ export async function imagesToVoxels(
     sideBounds,
     normalized,
     paletteValues,
-    palette,
-    paletteWithBacking.backingIndex
+    palette
   );
 }
