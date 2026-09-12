@@ -1,3 +1,4 @@
+```tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -271,9 +272,17 @@ export default function Builder() {
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
-  const [imageMode, setImageMode] = useState<ImageMode>("model");
+
+  /*
+   * IMAGE IMPORT
+   *
+   * Gli asset normali partono dalla pipeline "solid".
+   * "model" è una modalità esplicitamente dedicata ai personaggi/soggetti organici.
+   */
+  const [imageMode, setImageMode] = useState<ImageMode>("solid");
   const [imageHeight, setImageHeight] = useState(16);
-  const [symmetrize, setSymmetrize] = useState(true);
+  const [symmetrize, setSymmetrize] = useState(false);
+
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [pendingHash, setPendingHash] = useState("");
@@ -805,11 +814,12 @@ export default function Builder() {
         if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
           notify("IMPORTING IMAGE");
           await new Promise((resolve) => window.setTimeout(resolve, 40));
-          // OPEN parte sempre da una singola immagine pulita: un eventuale "side" da una
-          // sessione precedente non deve mai essere riusato qui, o si ottiene una forma
-          // carve-ata dall'incrocio di due sagome non correlate (l'effetto "bifacciale").
+
+          // OPEN parte sempre da singola immagine pulita: un eventuale "side" da una
+          // sessione precedente non deve mai essere riusato qui.
           setFrontFile(file);
           setSideFile(null);
+
           const result = await imageToVoxels(file, {
             volumeSize: volumeRef.current.size,
             mode: imageMode,
@@ -817,7 +827,9 @@ export default function Builder() {
             maxVoxels: MAX_SAFE,
             symmetrize
           });
+
           if (!result.voxels.length) throw new Error("Empty image");
+
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
           setPendingHash(await hashImageFile(file));
           setPendingImage(result);
@@ -825,6 +837,7 @@ export default function Builder() {
           notify(`${result.count ?? result.voxels.length} VX READY`);
           return;
         }
+
         if (lower.endsWith(".vox")) {
           const model = importVox(await file.arrayBuffer());
           volumeRef.current.load({ size: model.size, voxels: model.voxels });
@@ -837,6 +850,7 @@ export default function Builder() {
           setTitle(parsed.title || file.name.replace(/\.json$/i, ""));
           if (parsed.palette?.length) setPalette(clonePalette(parsed.palette));
         }
+
         historyRef.current.reset();
         setSelected(new Set());
         setBoxStart(null);
@@ -861,6 +875,7 @@ export default function Builder() {
       if (el?.tagName === "INPUT" || el?.tagName === "TEXTAREA") return;
       const k = e.key.toLowerCase();
       const mod = e.ctrlKey || e.metaKey;
+
       if (e.key === "Escape") {
         e.preventDefault();
         setBoxStart(null);
@@ -874,45 +889,54 @@ export default function Builder() {
         strokeRef.current = null;
         return;
       }
+
       if (e.key === "Enter" && pendingImage) {
         e.preventDefault();
         applyImage();
         return;
       }
+
       if (k === "f" && !mod) {
         e.preventDefault();
         packVolume();
         notify("FIT");
         return;
       }
+
       if (clip.axis && k === ",") setClip((c) => ({ ...c, value: Math.max(0, c.value - 1) }));
       if (clip.axis && k === ".") setClip((c) => ({ ...c, value: Math.min(volume.size - 1, c.value + 1) }));
+
       if (mod && k === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
         return;
       }
+
       if (mod && k === "y") {
         e.preventDefault();
         redo();
         return;
       }
+
       if (mod && k === "c") {
         e.preventDefault();
         copySelected();
         return;
       }
+
       if (mod && k === "v") {
         e.preventDefault();
         pasteClipboard();
         return;
       }
+
       if (mod && k === "d") {
         e.preventDefault();
         duplicateSelected();
         return;
       }
+
       if (k === "b") setTool("attach");
       if (k === "e") setTool("erase");
       if (k === "p") setTool("paint");
@@ -931,6 +955,7 @@ export default function Builder() {
       if (e.key === "ArrowUp") moveSelected(0, e.shiftKey ? 1 : 0, e.shiftKey ? 0 : -1);
       if (e.key === "ArrowDown") moveSelected(0, e.shiftKey ? -1 : 0, e.shiftKey ? 0 : 1);
     };
+
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
@@ -959,6 +984,7 @@ export default function Builder() {
             <span className="brandMark">◆</span> VOXEL
           </Link>
         </div>
+
         <div className="creationTitle">
           {editingTitle ? (
             <input
@@ -980,6 +1006,7 @@ export default function Builder() {
             </>
           )}
         </div>
+
         <div className="builderActions">
           <button onClick={undo} disabled={!canUndo || busy}>UNDO</button>
           <button onClick={redo} disabled={!canRedo || busy}>REDO</button>
@@ -991,6 +1018,7 @@ export default function Builder() {
           <button className="primaryButton" onClick={() => void publish()} disabled={busy}>
             PUBLISH
           </button>
+
           <input
             ref={fileRef}
             type="file"
@@ -1008,6 +1036,7 @@ export default function Builder() {
       <div className="builderBody voxelBody">
         <aside className="brickPanel">
           <p className="panelLabel">TOOLS</p>
+
           <div className="toolStack">
             {TOOLS.map((item) => (
               <button
@@ -1020,6 +1049,7 @@ export default function Builder() {
               </button>
             ))}
           </div>
+
           {tool === "box" && (
             <div className="viewRow">
               {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
@@ -1033,6 +1063,7 @@ export default function Builder() {
               ))}
             </div>
           )}
+
           <details className="fold">
             <summary>STATUS · {creditLabel}</summary>
             <div className="foldBody">
@@ -1042,20 +1073,29 @@ export default function Builder() {
                 {sideFile ? " · SIDE" : ""}
                 {busy ? " · BUSY" : ""}
               </p>
+
               <button onClick={() => void syncPlan()} disabled={busy}>
                 SYNC WALLET
               </button>
             </div>
           </details>
+
           <p className="category">BRUSH {brush}</p>
+
           <div className="viewRow">
             {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>
+              <button
+                key={n}
+                className={brush === n ? "modeOn" : ""}
+                onClick={() => setBrush(n)}
+              >
                 {n}
               </button>
             ))}
           </div>
+
           <p className="category">MIRROR</p>
+
           <div className="viewRow">
             {(["x", "y", "z"] as const).map((axis) => (
               <button
@@ -1067,7 +1107,9 @@ export default function Builder() {
               </button>
             ))}
           </div>
+
           <p className="category">VOLUME</p>
+
           <div className="viewRow">
             {SIZES.map((size) => (
               <button
@@ -1079,17 +1121,23 @@ export default function Builder() {
               </button>
             ))}
           </div>
+
           <button onClick={packVolume} disabled={!count}>FIT</button>
           <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>HOLLOW</button>
           <button onClick={clearAll}>CLEAR</button>
         </aside>
 
         <section className="viewport">
-          <Canvas shadows dpr={[1, 1.75]} camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}>
+          <Canvas
+            shadows
+            dpr={[1, 1.75]}
+            camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}
+          >
             <color attach="background" args={["#0b0b12"]} />
             <ambientLight intensity={0.72} />
             <hemisphereLight intensity={0.42} groundColor="#05070c" />
             <directionalLight position={[18, 32, 14]} intensity={2.6} castShadow />
+
             {grid && (
               <Grid
                 args={[volume.size, volume.size]}
@@ -1103,8 +1151,10 @@ export default function Builder() {
                 fadeDistance={volume.size * 2}
               />
             )}
+
             <Ground size={volume.size} onHit={onHit} onHover={onHover} />
             <VolumeFrame size={volume.size} />
+
             <VoxelCloud
               volume={volume}
               palette={palette}
@@ -1114,25 +1164,50 @@ export default function Builder() {
               onHit={onHit}
               onHover={onHover}
             />
-            {pendingImage && <PendingPreview voxels={pendingImage.voxels} palette={pendingImage.palette} />}
-            {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
-              <Ghost cell={ghost} color={palette[color]} valid={ghostValid || tool !== "attach"} />
+
+            {pendingImage && (
+              <PendingPreview
+                voxels={pendingImage.voxels}
+                palette={pendingImage.palette}
+              />
             )}
-            {tool === "box" && boxStart && ghost && <BoxPreview a={boxStart} b={ghost} />}
-            {tool !== "box" && clipboard.length > 0 && ghost && <OffsetGhost items={clipboard} origin={ghost} />}
+
+            {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
+              <Ghost
+                cell={ghost}
+                color={palette[color]}
+                valid={ghostValid || tool !== "attach"}
+              />
+            )}
+
+            {tool === "box" && boxStart && ghost && (
+              <BoxPreview a={boxStart} b={ghost} />
+            )}
+
+            {tool !== "box" && clipboard.length > 0 && ghost && (
+              <OffsetGhost items={clipboard} origin={ghost} />
+            )}
+
             <CameraRig view={view} size={volume.size} focus={focus} />
+
             <OrbitControls
               makeDefault
               enableDamping
               dampingFactor={0.08}
               target={focus}
-              mouseButtons={{ LEFT: undefined, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }}
+              mouseButtons={{
+                LEFT: undefined,
+                MIDDLE: THREE.MOUSE.PAN,
+                RIGHT: THREE.MOUSE.ROTATE
+              }}
               enableRotate={view === "iso"}
               minDistance={4}
               maxDistance={volume.size * 4}
             />
           </Canvas>
+
           {toast && <div className="toast">{toast}</div>}
+
           {pendingImage && !paywall && (
             <div className="toast" style={{ bottom: 24, minWidth: 280 }}>
               <div style={{ marginBottom: 8 }}>
@@ -1140,17 +1215,20 @@ export default function Builder() {
                 {pendingImage.height} · {imageMode.toUpperCase()}
                 {sideFile ? " · FRONT+SIDE" : " · FRONT"}
               </div>
+
               <div className="viewRow">
                 <button onClick={applyImage} disabled={busy}>APPLY</button>
                 <button onClick={cancelImage} disabled={busy}>CANCEL</button>
               </div>
             </div>
           )}
+
           {paywall && (
             <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
               <div style={{ marginBottom: 8 }}>
                 FREE LIMIT REACHED · {MONTHLY_SOL} SOL / month · Phantom
               </div>
+
               <div className="viewRow">
                 <button onClick={() => void subscribe()} disabled={busy}>
                   PAY {MONTHLY_SOL} SOL
@@ -1163,6 +1241,7 @@ export default function Builder() {
 
         <aside className="inspector">
           <p className="panelLabel">INSPECTOR</p>
+
           <details className="fold">
             <summary>GUIDE</summary>
             <div className="foldBody">
@@ -1177,54 +1256,93 @@ export default function Builder() {
               </p>
             </div>
           </details>
+
           <div className="viewRow">
             {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
-              <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
+              <button
+                key={mode}
+                className={view === mode ? "modeOn" : ""}
+                onClick={() => setView(mode)}
+              >
                 {mode.toUpperCase()}
               </button>
             ))}
           </div>
-          <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>
+
+          <button
+            className={grid ? "modeOn" : ""}
+            onClick={() => setGrid((g) => !g)}
+          >
             GRID {grid ? "ON" : "OFF"}
           </button>
+
           <p className="category">CLIP</p>
+
           <div className="viewRow">
             {([null, "x", "y", "z"] as const).map((axis) => (
               <button
                 key={String(axis)}
                 className={clip.axis === axis ? "modeOn" : ""}
-                onClick={() => setClip({ axis, value: axis ? Math.floor(volume.size / 2) : volume.size - 1 })}
+                onClick={() =>
+                  setClip({
+                    axis,
+                    value: axis ? Math.floor(volume.size / 2) : volume.size - 1
+                  })
+                }
               >
                 {axis ? axis.toUpperCase() : "OFF"}
               </button>
             ))}
           </div>
+
           {clip.axis && (
             <input
               type="range"
               min={0}
               max={volume.size - 1}
               value={clip.value}
-              onChange={(e) => setClip((c) => ({ ...c, value: Number(e.target.value) }))}
+              onChange={(e) =>
+                setClip((c) => ({ ...c, value: Number(e.target.value) }))
+              }
             />
           )}
+
           <p className="category">IMAGE IMPORT</p>
+
           <div className="viewRow">
             {(["solid", "flat", "relief", "model"] as ImageMode[]).map((mode) => (
-              <button key={mode} className={imageMode === mode ? "modeOn" : ""} onClick={() => setImageMode(mode)}>
+              <button
+                key={mode}
+                className={imageMode === mode ? "modeOn" : ""}
+                onClick={() => {
+                  setImageMode(mode);
+
+                  /*
+                   * La symmetry appartiene esclusivamente alla pipeline MODEL.
+                   * Passando a un asset normale viene immediatamente disattivata.
+                   */
+                  setSymmetrize(mode === "model");
+                }}
+              >
                 {mode.toUpperCase()}
               </button>
             ))}
           </div>
+
           {(imageMode === "solid" || imageMode === "relief" || imageMode === "model") && (
             <div className="viewRow">
               {[4, 8, 12, 16].map((n) => (
-                <button key={n} className={imageHeight === n ? "modeOn" : ""} onClick={() => setImageHeight(n)}>
+                <button
+                  key={n}
+                  className={imageHeight === n ? "modeOn" : ""}
+                  onClick={() => setImageHeight(n)}
+                >
                   H{n}
                 </button>
               ))}
             </div>
           )}
+
           {imageMode === "model" && (
             <button
               className={symmetrize ? "modeOn" : ""}
@@ -1234,9 +1352,11 @@ export default function Builder() {
               SYMMETRY {symmetrize ? "ON" : "OFF"}
             </button>
           )}
+
           <button onClick={() => sideRef.current?.click()} disabled={busy || !frontFile}>
             {sideFile ? "SIDE ON" : "ADD SIDE PNG"}
           </button>
+
           <input
             ref={sideRef}
             type="file"
@@ -1248,7 +1368,9 @@ export default function Builder() {
               e.target.value = "";
             }}
           />
+
           <p className="category">PALETTE</p>
+
           <div className="colorRow dense">
             {palette.slice(0, 64).map((hex, i) => (
               <button
@@ -1259,6 +1381,7 @@ export default function Builder() {
               />
             ))}
           </div>
+
           <input
             type="color"
             value={palette[color]}
@@ -1268,9 +1391,15 @@ export default function Builder() {
               setPalette(next);
             }}
           />
+
           <p className="hint">
-            {selected.size ? `${selected.size} SELECTED` : ghost ? `${ghost.x},${ghost.y},${ghost.z}` : "NO HIT"}
+            {selected.size
+              ? `${selected.size} SELECTED`
+              : ghost
+                ? `${ghost.x},${ghost.y},${ghost.z}`
+                : "NO HIT"}
           </p>
+
           {selected.size > 0 && (
             <>
               <button onClick={copySelected}>COPY</button>
@@ -1279,9 +1408,15 @@ export default function Builder() {
               <button onClick={deleteSelected}>DELETE SEL</button>
             </>
           )}
-          {clipboard.length > 0 && <button onClick={() => pasteClipboard()}>PASTE {clipboard.length}</button>}
+
+          {clipboard.length > 0 && (
+            <button onClick={() => pasteClipboard()}>
+              PASTE {clipboard.length}
+            </button>
+          )}
         </aside>
       </div>
     </main>
   );
 }
+```
