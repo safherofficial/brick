@@ -249,7 +249,7 @@ function targetCell(hit: VoxelHit, tool: Tool): Cell {
 }
 
 export default function Builder() {
-  const volumeRef = useRef(new VoxelVolume(64));
+  const volumeRef = useRef(new VoxelVolume(128));
   const historyRef = useRef(new History());
   const strokeRef = useRef<{ seen: Set<string>; deltas: Delta[] } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -269,8 +269,8 @@ export default function Builder() {
   const [hover, setHover] = useState<VoxelHit | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
-  const [clip, setClip] = useState<Clip>({ axis: null, value: 63 });
-  const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(64));
+  const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
+  const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
 
   /*
    * IMAGE IMPORT
