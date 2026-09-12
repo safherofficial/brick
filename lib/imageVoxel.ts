@@ -1535,6 +1535,18 @@ function reconstructModelVolume(
               backColor,
               backWeight
             );
+        } else {
+          // Nessuna foto del retro: il colore del fronte (o del fronte+side
+          // già miscelato) resterebbe identico dall'altra parte del modello.
+          // Lo scuriamo in modo progressivo verso z alto per simulare l'ombra
+          // propria, così il retro non è indistinguibile dal fronte quando si
+          // ruota il modello.
+          const shade = 1 - nz * 0.42;
+          color = [
+            color[0] * shade,
+            color[1] * shade,
+            color[2] * shade
+          ];
         }
 
         voxels.push({
@@ -1770,6 +1782,66 @@ function voxelKey(
   voxel: ImageVoxel
 ) {
   return `${voxel.x}:${voxel.y}:${voxel.z}`;
+}
+
+function keepLargestComponents(
+  voxels: ImageVoxel[]
+): ImageVoxel[] {
+  // Un asset "game ready" non può avere voxel fluttuanti scollegati dal corpo
+  // (rumore residuo dalla maschera, un pixel di sfondo mal classificato che
+  // dopo il carving finisce isolato). Raggruppiamo per connettività a 6 vicini
+  // e teniamo solo le componenti abbastanza grandi da essere parte del
+  // soggetto, scartando le schegge.
+  if (voxels.length < 2) return voxels;
+
+  const map = new Map<string, ImageVoxel>();
+  for (const v of voxels) map.set(voxelKey(v), v);
+
+  const neighbours: [number, number, number][] = [
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1]
+  ];
+
+  const visited = new Set<string>();
+  const components: ImageVoxel[][] = [];
+
+  for (const start of voxels) {
+    const startKey = voxelKey(start);
+    if (visited.has(startKey)) continue;
+
+    const stack = [start];
+    visited.add(startKey);
+    const component: ImageVoxel[] = [];
+
+    while (stack.length) {
+      const current = stack.pop()!;
+      component.push(current);
+
+      for (const [dx, dy, dz] of neighbours) {
+        const key = `${current.x + dx}:${current.y + dy}:${current.z + dz}`;
+        if (visited.has(key)) continue;
+        const neighbour = map.get(key);
+        if (!neighbour) continue;
+        visited.add(key);
+        stack.push(neighbour);
+      }
+    }
+
+    components.push(component);
+  }
+
+  if (components.length <= 1) return voxels;
+
+  const largest = Math.max(...components.map((c) => c.length));
+  const threshold = Math.max(6, Math.round(largest * 0.015));
+
+  return components
+    .filter((c) => c.length >= threshold)
+    .flat();
 }
 
 function isSurfaceVoxel(
@@ -2502,6 +2574,8 @@ export async function imagesToVoxels(
         "No voxels reconstructed"
       );
     }
+
+    voxels = keepLargestComponents(voxels);
 
     if (
       normalized.symmetrize
