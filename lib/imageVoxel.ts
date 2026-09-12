@@ -150,18 +150,25 @@ function borderProbes(raster: Raster): [number, number, number][] {
   return probes;
 }
 
-function isBackground(sample: Sample, probes: [number, number, number][]) {
+function isBackground(
+  sample: Sample,
+  probes: [number, number, number][],
+  colorTol: number,
+  lumaTol: number,
+  maxSat: number
+) {
   if (!sample.visible) return true;
   if (!probes.length) return false;
   const sampleL = luma(sample.r, sample.g, sample.b);
   const sat =
-    Math.max(sample.r, sample.g, sample.b) - Math.min(sample.r, sample.g, sample.b);
+    Math.max(sample.r, sample.g, sample.b) -
+    Math.min(sample.r, sample.g, sample.b);
   for (const probe of probes) {
     const dist = Math.sqrt(rgbDistance([sample.r, sample.g, sample.b], probe));
     if (
-      dist <= BG_COLOR_TOL &&
-      Math.abs(sampleL - luma(probe[0], probe[1], probe[2])) <= BG_LUMA_TOL &&
-      sat < 70
+      dist <= colorTol &&
+      Math.abs(sampleL - luma(probe[0], probe[1], probe[2])) <= lumaTol &&
+      sat <= maxSat
     ) {
       return true;
     }
@@ -169,14 +176,52 @@ function isBackground(sample: Sample, probes: [number, number, number][]) {
   return false;
 }
 
-function buildMask(raster: Raster): boolean[][] {
+function coverageOf(mask: boolean[][]) {
+  let hits = 0;
+  let total = 0;
+  for (const row of mask) {
+    for (const bit of row) {
+      total += 1;
+      if (bit) hits += 1;
+    }
+  }
+  return total ? hits / total : 0;
+}
+
+function alphaMask(raster: Raster) {
+  return Array.from({ length: raster.height }, (_, y) =>
+    Array.from({ length: raster.width }, (_, x) => sampleAt(raster, x, y).visible)
+  );
+}
+
+function hasUsefulAlpha(raster: Raster) {
+  let transparent = 0;
+  const total = raster.width * raster.height;
+  for (let i = 3; i < raster.rgba.length; i += 4) {
+    if (raster.rgba[i] < 128) transparent += 1;
+  }
+  return transparent / Math.max(1, total) >= 0.01;
+}
+
+function floodBackground(
+  raster: Raster,
+  colorTol: number,
+  lumaTol: number,
+  maxSat: number
+) {
   const probes = borderProbes(raster);
   const w = raster.width;
   const h = raster.height;
   const candidate = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
-      candidate[y][x] = isBackground(sampleAt(raster, x, y), probes);
+      candidate[y][x] = isBackground(
+        sampleAt(raster, x, y),
+        probes,
+        colorTol,
+        lumaTol,
+        maxSat
+      );
     }
   }
 
@@ -214,15 +259,11 @@ function buildMask(raster: Raster): boolean[][] {
   }
 
   return Array.from({ length: h }, (_, y) =>
-    Array.from({ length: w }, (_, x) => !bg[y][x])
+    Array.from({ length: w }, (_, x) => !bg[y][x] && sampleAt(raster, x, y).visible)
   );
 }
 
-function morph(
-  mask: boolean[][],
-  minHits: number,
-  fill: boolean
-): boolean[][] {
+function morph(mask: boolean[][], minHits: number, fill: boolean): boolean[][] {
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
   const out = mask.map((row) => row.slice());
@@ -277,24 +318,61 @@ function dropSmallComponents(mask: boolean[][]) {
 
   if (!parts.length) return mask;
   const largest = Math.max(...parts.map((p) => p.length));
-  const minSize = Math.max(
-    MIN_COMPONENT_PIXELS,
-    Math.round(largest * MIN_COMPONENT_RATIO)
+  const minSize = Math.min(
+    largest,
+    Math.max(MIN_COMPONENT_PIXELS, Math.round(largest * MIN_COMPONENT_RATIO))
   );
   const out = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
   for (const cells of parts) {
-    if (cells.length < minSize) continue;
+    if (cells.length < minSize && cells.length < largest) continue;
     for (const [x, y] of cells) out[y][x] = true;
   }
   return out;
 }
 
+function polishMask(mask: boolean[][]) {
+  let next = morph(mask, 6, true);
+  next = morph(next, 7, false);
+  next = dropSmallComponents(next);
+  return coverageOf(next) > 0 ? next : mask;
+}
+
 function cleanMask(raster: Raster) {
-  let mask = buildMask(raster);
-  mask = morph(mask, 6, true);
-  mask = morph(mask, 6, false);
-  mask = dropSmallComponents(mask);
-  return mask;
+  if (hasUsefulAlpha(raster)) {
+    const fromAlpha = polishMask(alphaMask(raster));
+    if (coverageOf(fromAlpha) >= 0.002) return fromAlpha;
+  }
+
+  const attempts: [number, number, number][] = [
+    [28, 22, 55],
+    [38, 28, 90],
+    [58, 40, 140],
+    [84, 56, 220]
+  ];
+
+  let best: boolean[][] | null = null;
+  let bestScore = -1;
+
+  for (const [colorTol, lumaTol, maxSat] of attempts) {
+    const raw = floodBackground(raster, colorTol, lumaTol, maxSat);
+    const polished = polishMask(raw);
+    const cov = coverageOf(polished);
+    if (cov < 0.004 || cov > 0.97) continue;
+    const score = cov < 0.65 ? cov : 1.3 - cov;
+    if (score > bestScore) {
+      best = polished;
+      bestScore = score;
+    }
+  }
+
+  if (best) return best;
+
+  const opaque = alphaMask(raster);
+  if (coverageOf(opaque) >= 0.002) return polishMask(opaque);
+
+  return Array.from({ length: raster.height }, () =>
+    Array.from({ length: raster.width }, () => true)
+  );
 }
 
 function findBounds(mask: boolean[][]): Bounds | null {
@@ -422,11 +500,7 @@ function nearestColor(rgb: [number, number, number], palette: [number, number, n
   return best;
 }
 
-function createPalette(
-  rasters: Raster[],
-  masks: boolean[][][],
-  size = 48
-) {
+function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
   const buckets = new Map<string, { r: number; g: number; b: number; weight: number }>();
   for (let v = 0; v < rasters.length; v += 1) {
     const raster = rasters[v];
@@ -545,23 +619,20 @@ function placeOnGround(voxels: ImageVoxel[], volumeSize: number) {
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
-  let maxY = -Infinity;
   let minZ = Infinity;
   let maxZ = -Infinity;
   for (const v of voxels) {
     minX = Math.min(minX, v.x);
     maxX = Math.max(maxX, v.x);
     minY = Math.min(minY, v.y);
-    maxY = Math.max(maxY, v.y);
     minZ = Math.min(minZ, v.z);
     maxZ = Math.max(maxZ, v.z);
   }
   const xOffset = Math.floor((volumeSize - (maxX - minX + 1)) / 2) - minX;
   const zOffset = Math.floor((volumeSize - (maxZ - minZ + 1)) / 2) - minZ;
-  const yOffset = -minY;
   return voxels.map((v) => ({
     x: clamp(v.x + xOffset, 0, volumeSize - 1),
-    y: clamp(v.y + yOffset, 0, volumeSize - 1),
+    y: clamp(v.y - minY, 0, volumeSize - 1),
     z: clamp(v.z + zOffset, 0, volumeSize - 1),
     c: v.c
   }));
@@ -630,10 +701,7 @@ function buildSculpted(
       const rgb = colors[y][x];
       if (!rgb) continue;
 
-      const half = Math.max(
-        1,
-        Math.round((dist[y][x] / maxDist) * (dims.depth / 2))
-      );
+      const half = Math.max(1, Math.round((dist[y][x] / maxDist) * (dims.depth / 2)));
 
       for (let z = 0; z < dims.depth; z += 1) {
         if (Math.abs(z - centerZ) > half) continue;
@@ -648,10 +716,7 @@ function buildSculpted(
           x,
           y,
           z,
-          c: nearestColor(
-            [src[0] * shade, src[1] * shade, src[2] * shade],
-            paletteValues
-          )
+          c: nearestColor([src[0] * shade, src[1] * shade, src[2] * shade], paletteValues)
         });
       }
     }
@@ -659,7 +724,6 @@ function buildSculpted(
 
   if (!voxels.length) throw new Error("No voxels reconstructed");
 
-  // Image Y grows down; voxel Y grows up.
   const flipped = voxels.map((v) => ({
     ...v,
     y: dims.height - 1 - v.y
