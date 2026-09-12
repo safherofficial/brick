@@ -84,8 +84,10 @@ const MAX_RASTER_EDGE = 512;
 const MIN_ALPHA = 20;
 const MODEL_BUDGET_FILL = 0.90;
 const MODEL_MIN_AXIS = 4;
-const MODEL_EDGE_TOLERANCE = 50;
-const MODEL_EDGE_LUMINANCE_TOLERANCE = 38;
+const MODEL_EDGE_TOLERANCE = 72;
+const MODEL_EDGE_LUMINANCE_TOLERANCE = 54;
+const MODEL_MIN_COMPONENT_RATIO = 0.0025;
+const MODEL_MIN_COMPONENT_PIXELS = 24;
 
 const BAYER_4X4 = [
   [0, 8, 2, 10],
@@ -293,7 +295,7 @@ function buildMask(raster: Raster, mode: ImageMode): boolean[][] {
   return mask;
 }
 
-function cleanModelMask(mask: boolean[][]) {
+function cleanModelMask(mask: boolean[][], raster: Raster) {
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
   if (!w || !h) return mask;
@@ -348,8 +350,77 @@ function cleanModelMask(mask: boolean[][]) {
 
   if (!components.length) return output;
 
+  const bg = looksLikeBackground(raster);
+  const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
+
+  // Opaque reference images often contain a one-to-several-pixel antialias
+  // halo between the subject and its background. Those pixels are connected
+  // to the subject, so a connected-component cleanup cannot remove them.
+  // Trim only boundary pixels that are both background-like and low-contrast
+  // against their immediate subject neighbours; dark outlines remain intact.
+  for (let y = 1; y < h - 1; y += 1) {
+    for (let x = 1; x < w - 1; x += 1) {
+      if (!output[y][x]) continue;
+
+      let hasBackgroundNeighbour = false;
+      let foregroundNeighbours = 0;
+      let neighbourR = 0;
+      let neighbourG = 0;
+      let neighbourB = 0;
+
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1]
+      ]) {
+        if (!output[y + dy]?.[x + dx]) {
+          hasBackgroundNeighbour = true;
+          continue;
+        }
+
+        const neighbour = sampleAt(raster, x + dx, y + dy);
+        foregroundNeighbours += 1;
+        neighbourR += neighbour.r;
+        neighbourG += neighbour.g;
+        neighbourB += neighbour.b;
+      }
+
+      if (!hasBackgroundNeighbour || foregroundNeighbours < 2) continue;
+
+      const current = sampleAt(raster, x, y);
+      const currentL = 0.299 * current.r + 0.587 * current.g + 0.114 * current.b;
+      const distanceToBg = Math.sqrt(
+        (current.r - bg[0]) ** 2 +
+        (current.g - bg[1]) ** 2 +
+        (current.b - bg[2]) ** 2
+      );
+      const averageNeighbour = {
+        r: neighbourR / foregroundNeighbours,
+        g: neighbourG / foregroundNeighbours,
+        b: neighbourB / foregroundNeighbours
+      };
+      const distanceToSubject = Math.sqrt(
+        (current.r - averageNeighbour.r) ** 2 +
+        (current.g - averageNeighbour.g) ** 2 +
+        (current.b - averageNeighbour.b) ** 2
+      );
+
+      if (
+        distanceToBg < 82 &&
+        Math.abs(currentL - bgL) < 58 &&
+        distanceToSubject < 46
+      ) {
+        output[y][x] = false;
+      }
+    }
+  }
+
   const largest = Math.max(...componentSizes);
-  const minComponent = Math.max(12, Math.round(largest * 0.0008));
+  const minComponent = Math.max(
+    MODEL_MIN_COMPONENT_PIXELS,
+    Math.round(largest * MODEL_MIN_COMPONENT_RATIO)
+  );
 
   for (let i = 0; i < components.length; i += 1) {
     if (componentSizes[i] >= minComponent) continue;
@@ -554,30 +625,40 @@ function resampleMaskToBounds(
     () => Array<boolean>(targetWidth).fill(false)
   );
 
+  // Treat each output voxel as an area sample, not as a nearest-pixel lookup.
+  // This rejects antialiased background fringes and single-pixel contour hairs
+  // while preserving the solid mass of the source silhouette.
+  const samplesPerAxis = 4;
+
   for (let y = 0; y < targetHeight; y += 1) {
-    const ny = targetHeight <= 1 ? 0.5 : y / (targetHeight - 1);
-    const sourceY = bounds.minY + ny * (bounds.height - 1);
-    const iy = Math.round(sourceY);
+    const y0 = bounds.minY + (y / Math.max(1, targetHeight)) * bounds.height;
+    const y1 =
+      bounds.minY +
+      ((y + 1) / Math.max(1, targetHeight)) * bounds.height;
 
     for (let x = 0; x < targetWidth; x += 1) {
-      const nx = targetWidth <= 1 ? 0.5 : x / (targetWidth - 1);
-      const sourceX = bounds.minX + nx * (bounds.width - 1);
-      const ix = Math.round(sourceX);
+      const x0 = bounds.minX + (x / Math.max(1, targetWidth)) * bounds.width;
+      const x1 =
+        bounds.minX +
+        ((x + 1) / Math.max(1, targetWidth)) * bounds.width;
 
-      if (mask[iy]?.[ix]) {
-        result[y][x] = true;
-        continue;
-      }
-
-      // Only use a tiny footprint. This repairs downsampling gaps without
-      // globally dilating the silhouette.
       let hits = 0;
-      for (let oy = -1; oy <= 1; oy += 1) {
-        for (let ox = -1; ox <= 1; ox += 1) {
-          if (mask[iy + oy]?.[ix + ox]) hits += 1;
+      let total = 0;
+
+      for (let sy = 0; sy < samplesPerAxis; sy += 1) {
+        const py = Math.round(
+          y0 + ((sy + 0.5) / samplesPerAxis) * Math.max(0, y1 - y0 - 1)
+        );
+        for (let sx = 0; sx < samplesPerAxis; sx += 1) {
+          const px = Math.round(
+            x0 + ((sx + 0.5) / samplesPerAxis) * Math.max(0, x1 - x0 - 1)
+          );
+          if (mask[py]?.[px]) hits += 1;
+          total += 1;
         }
       }
-      result[y][x] = hits >= 3;
+
+      result[y][x] = hits / total >= 0.5;
     }
   }
 
@@ -833,22 +914,18 @@ function reconstructVisualHull(
   dimensions: Dimensions,
   palette: string[]
 ) {
-  const front = repairSilhouette(
-    resampleMaskToBounds(
-      frontMask,
-      frontBounds,
-      dimensions.width,
-      dimensions.height
-    )
+  const front = resampleMaskToBounds(
+    frontMask,
+    frontBounds,
+    dimensions.width,
+    dimensions.height
   );
 
-  const side = repairSilhouette(
-    resampleMaskToBounds(
-      sideMask,
-      sideBounds,
-      dimensions.depth,
-      dimensions.height
-    )
+  const side = resampleMaskToBounds(
+    sideMask,
+    sideBounds,
+    dimensions.depth,
+    dimensions.height
   );
 
   const voxels: ImageVoxel[] = [];
@@ -1074,7 +1151,9 @@ export async function imagesToVoxels(
   const rasters = await Promise.all(files.map((file) => loadImage(file)));
   const masks = rasters.map((raster) => {
     const mask = buildMask(raster, normalized.mode);
-    return normalized.mode === "model" ? cleanModelMask(mask) : mask;
+    return normalized.mode === "model"
+      ? cleanModelMask(mask, raster)
+      : mask;
   });
 
   const palette = createPalette(
