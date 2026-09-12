@@ -638,14 +638,73 @@ function sampleMapped(raster: Raster, bounds: Bounds, nx: number, ny: number) {
   );
 }
 
-function maskMapped(mask: boolean[][], bounds: Bounds, nx: number, ny: number) {
-  const x = Math.round(
+/**
+ * Texture lookup that is guaranteed to land on the recovered subject matte.
+ * This is important for weapon/prop references where the source can contain
+ * transparent holes, antialiasing or a dark backdrop: background pixels are
+ * never promoted into the material texture.
+ */
+function sampleSubjectMapped(
+  raster: Raster,
+  mask: boolean[][],
+  bounds: Bounds,
+  nx: number,
+  ny: number
+): Sample {
+  const targetX = Math.round(
     bounds.minX + clamp(nx, 0, 1) * (bounds.maxX - bounds.minX)
   );
-  const y = Math.round(
+  const targetY = Math.round(
     bounds.minY + clamp(ny, 0, 1) * (bounds.maxY - bounds.minY)
   );
-  return Boolean(mask[y]?.[x]);
+
+  if (mask[targetY]?.[targetX]) {
+    return sampleAt(raster, targetX, targetY);
+  }
+
+  // Search only locally. The texture stays spatially faithful instead of
+  // pulling a distant random color from another weapon component.
+  for (let radius = 1; radius <= 7; radius += 1) {
+    let bestX = -1;
+    let bestY = -1;
+    let bestDistance = Infinity;
+
+    for (let oy = -radius; oy <= radius; oy += 1) {
+      for (let ox = -radius; ox <= radius; ox += 1) {
+        if (Math.max(Math.abs(ox), Math.abs(oy)) !== radius) continue;
+        const x = targetX + ox;
+        const y = targetY + oy;
+        if (!mask[y]?.[x]) continue;
+        const distance = ox * ox + oy * oy;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestX = x;
+          bestY = y;
+        }
+      }
+    }
+
+    if (bestX >= 0) return sampleAt(raster, bestX, bestY);
+  }
+
+  // The matte can legitimately contain a large interior cut-out. Use a
+  // center-subject sample as the final material fallback, never the raw
+  // background.
+  for (let radius = 0; radius <= 12; radius += 1) {
+    const x = clamp(
+      Math.round((bounds.minX + bounds.maxX) * 0.5) + radius,
+      bounds.minX,
+      bounds.maxX
+    );
+    const y = clamp(
+      Math.round((bounds.minY + bounds.maxY) * 0.5),
+      bounds.minY,
+      bounds.maxY
+    );
+    if (mask[y]?.[x]) return sampleAt(raster, x, y);
+  }
+
+  return sampleAt(raster, targetX, targetY);
 }
 
 /**
@@ -935,6 +994,47 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   return components.filter((c) => c.length >= threshold).flat();
 }
 
+function triplanarWeaponColor(
+  samples: {
+    front: [number, number, number];
+    back: [number, number, number];
+    left: [number, number, number];
+    right: [number, number, number];
+  },
+  nx: number,
+  nz: number
+): [number, number, number] {
+  // Treat every voxel as a tiny texel on the closest visible surface.
+  // Front/back are driven by the FRONT reference; left/right by SIDE when
+  // available (or a generated opposite projection for single-view mode).
+  // This is the same family of idea as triplanar projection: every exposed
+  // direction receives a real material color, so the rear never falls back to
+  // a black/default material.
+  const frontWeight = 0.08 + Math.pow(1 - nz, 2.35);
+  const backWeight = 0.08 + Math.pow(nz, 2.35);
+  const leftWeight = 0.08 + Math.pow(1 - nx, 2.35);
+  const rightWeight = 0.08 + Math.pow(nx, 2.35);
+  const total = frontWeight + backWeight + leftWeight + rightWeight;
+
+  return [
+    (samples.front[0] * frontWeight +
+      samples.back[0] * backWeight +
+      samples.left[0] * leftWeight +
+      samples.right[0] * rightWeight) /
+      total,
+    (samples.front[1] * frontWeight +
+      samples.back[1] * backWeight +
+      samples.left[1] * leftWeight +
+      samples.right[1] * rightWeight) /
+      total,
+    (samples.front[2] * frontWeight +
+      samples.back[2] * backWeight +
+      samples.left[2] * leftWeight +
+      samples.right[2] * rightWeight) /
+      total
+  ];
+}
+
 function reconstructVisualHull(
   frontRaster: Raster,
   frontMask: boolean[][],
@@ -968,20 +1068,53 @@ function reconstructVisualHull(
     for (let x = 0; x < dimensions.width; x += 1) {
       if (!front[y]?.[x]) continue;
       const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
-      const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
 
       for (let z = 0; z < dimensions.depth; z += 1) {
         if (!side[y]?.[z]) continue;
         const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
-        const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
 
-        // Every voxel carries real color. The front dominates near the
-        // primary view, while the side contributes progressively toward the
-        // lateral/rear volume. This avoids a black backing and avoids simply
-        // duplicating the front image through the entire depth.
-        const sideWeight = 0.12 + nz * 0.76;
-        const color = blendRgb(frontColor, sideColor, sideWeight);
-        const shade = 1 - Math.abs(nz - 0.5) * 0.08;
+        const frontColor = sampleSubjectMapped(
+          frontRaster,
+          frontMask,
+          frontBounds,
+          nx,
+          ny
+        );
+        const backColor = sampleSubjectMapped(
+          frontRaster,
+          frontMask,
+          frontBounds,
+          1 - nx,
+          ny + (nz - 0.5) * 0.035
+        );
+        const leftColor = sampleSubjectMapped(
+          sideRaster,
+          sideMask,
+          sideBounds,
+          nz,
+          ny
+        );
+        const rightColor = sampleSubjectMapped(
+          sideRaster,
+          sideMask,
+          sideBounds,
+          1 - nz,
+          ny + (nx - 0.5) * 0.035
+        );
+
+        const color = triplanarWeaponColor(
+          {
+            front: [frontColor.r, frontColor.g, frontColor.b],
+            back: [backColor.r, backColor.g, backColor.b],
+            left: [leftColor.r, leftColor.g, leftColor.b],
+            right: [rightColor.r, rightColor.g, rightColor.b]
+          },
+          nx,
+          nz
+        );
+
+        // Mild material lighting only. Never crush the source texture to black.
+        const shade = 0.96 + 0.04 * (1 - Math.abs(nz - 0.5) * 2);
 
         voxels.push({
           x,
@@ -992,7 +1125,7 @@ function reconstructVisualHull(
               [color[0] * shade, color[1] * shade, color[2] * shade],
               x,
               y + z,
-              3
+              2.2
             ),
             paletteValues
           )
@@ -1019,30 +1152,54 @@ function reconstructVisualHull(
 
 function singleViewTexturedColor(
   raster: Raster,
+  mask: boolean[][],
   bounds: Bounds,
   nx: number,
   ny: number,
   depth01: number
 ): [number, number, number] {
   const t = clamp(depth01, 0, 1);
-  const primary = sampleMapped(raster, bounds, nx, ny);
 
-  // With one image the hidden surface is unknowable. Instead of a black
-  // backing or a literal FRONT copy, derive a coherent wrapped texture from
-  // the source: mirrored horizontally, subtly shifted vertically, and
-  // continuously blended through the thickness.
-  const wrapX = clamp(1 - nx + Math.sin(t * Math.PI) * 0.07, 0, 1);
-  const wrapY = clamp(ny + (t - 0.5) * 0.08, 0, 1);
-  const secondary = sampleMapped(raster, bounds, wrapX, wrapY);
-  const color = blendRgb(primary, secondary, t * 0.78);
+  const front = sampleSubjectMapped(raster, mask, bounds, nx, ny);
+  const back = sampleSubjectMapped(
+    raster,
+    mask,
+    bounds,
+    1 - nx + Math.sin((t - 0.5) * Math.PI) * 0.06,
+    ny + (t - 0.5) * 0.035
+  );
 
-  // Preserve readable material color while giving depth a light falloff.
-  const shade = 1 - t * 0.14;
-  return [
-    clamp(color[0] * shade, 0, 255),
-    clamp(color[1] * shade, 0, 255),
-    clamp(color[2] * shade, 0, 255)
-  ];
+  // A single reference cannot reveal hidden faces, so MODEL generates a
+  // deterministic texture continuation instead of a black rear material.
+  // Left/right are derived from the same source with a shallow anisotropic
+  // warp; once a SIDE reference exists, the real side texture supersedes this.
+  const left = sampleSubjectMapped(
+    raster,
+    mask,
+    bounds,
+    clamp(nx * 0.74 + t * 0.16, 0, 1),
+    clamp(ny + (0.5 - nx) * 0.045, 0, 1)
+  );
+  const right = sampleSubjectMapped(
+    raster,
+    mask,
+    bounds,
+    clamp(1 - nx * 0.74 - t * 0.16, 0, 1),
+    clamp(ny + (nx - 0.5) * 0.045, 0, 1)
+  );
+
+  const color = triplanarWeaponColor(
+    {
+      front: [front.r, front.g, front.b],
+      back: [back.r, back.g, back.b],
+      left: [left.r, left.g, left.b],
+      right: [right.r, right.g, right.b]
+    },
+    nx,
+    t
+  );
+
+  return [color[0], color[1], color[2]];
 }
 
 function buildSingleViewModel(
@@ -1071,6 +1228,7 @@ function buildSingleViewModel(
         const depth01 = depth <= 1 ? 0 : z / (depth - 1);
         const color = singleViewTexturedColor(
           raster,
+          mask,
           bounds,
           nx,
           ny,
@@ -1082,7 +1240,7 @@ function buildSingleViewModel(
           y,
           z,
           c: nearestColor(
-            ditheredColor(color, x, y + z, 3),
+            ditheredColor(color, x, y + z, 2.2),
             paletteValues
           )
         });
@@ -1235,4 +1393,3 @@ export async function imagesToVoxels(
     palette
   );
 }
-
