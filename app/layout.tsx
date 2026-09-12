@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Brick Builder",
-  description: "Build anything, one brick at a time."
+  title: "VOXEL — PNG to game-ready voxels",
+  description: "Drop a PNG. Export GLB, VOX or OBJ with a ground pivot."
 };
 
 export default function RootLayout({
