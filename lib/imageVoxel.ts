@@ -1,4 +1,3 @@
-```ts
 import type { Cell } from "@/lib/voxelEngine";
 
 export type ImageMode = "solid" | "flat" | "relief" | "model";
@@ -1130,4 +1129,3 @@ export async function imagesToVoxels(
     count: raw.length
   };
 }
-```
