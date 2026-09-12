@@ -791,6 +791,36 @@ function paletteRgb(
   );
 }
 
+const BAYER_4X4 = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5]
+];
+
+function ditheredColor(
+  rgb: [number, number, number],
+  px: number,
+  py: number,
+  strength = 14
+): [number, number, number] {
+  // Una palette piccola (48-72 colori) su un degradé morbido (l'ombreggiatura
+  // di un render 3D, un'illuminazione ambientale) crea bande nette visibili
+  // quando ogni pixel viene arrotondato al colore più vicino allo stesso modo.
+  // Un dither ordinato (matrice di Bayer) sposta leggermente il colore prima
+  // dell'arrotondamento in modo diverso pixel per pixel: le bande nette
+  // diventano una transizione granulare, molto meno visibile all'occhio, e la
+  // geometria/silhouette non cambia in alcun modo.
+  const offset =
+    (BAYER_4X4[py & 3][px & 3] / 16 - 0.5) * strength;
+
+  return [
+    clamp(rgb[0] + offset, 0, 255),
+    clamp(rgb[1] + offset, 0, 255),
+    clamp(rgb[2] + offset, 0, 255)
+  ];
+}
+
 function nearestColor(
   rgb: [
     number,
@@ -1223,11 +1253,11 @@ function buildSingleView(
       ) {
         const c =
           nearestColor(
-            [
-              sample.r,
-              sample.g,
-              sample.b
-            ],
+            ditheredColor(
+              [sample.r, sample.g, sample.b],
+              x,
+              y
+            ),
             paletteValues
           );
 
@@ -1590,7 +1620,7 @@ function reconstructModelVolume(
           ),
           z,
           c: nearestColor(
-            color,
+            ditheredColor(color, x, y + z),
             paletteValues
           )
         });
@@ -2818,11 +2848,11 @@ export async function imagesToVoxels(
           z,
 
           c: nearestColor(
-            [
-              colorSample.r,
-              colorSample.g,
-              colorSample.b
-            ],
+            ditheredColor(
+              [colorSample.r, colorSample.g, colorSample.b],
+              x,
+              y + z
+            ),
             paletteRgbValues
           )
         });
