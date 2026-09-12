@@ -3825,21 +3825,22 @@ export default function Builder() {
             <color
               attach="background"
               args={[
-                "#151925"
+                "#222737"
               ]}
             />
 
             <ambientLight
               intensity={
-                1.05
+                1.45
               }
             />
 
             <hemisphereLight
               intensity={
-                0.62
+                0.9
               }
-              groundColor="#111521"
+              groundColor="#1b2130"
+              skyColor="#68758f"
             />
 
             <directionalLight
@@ -3849,7 +3850,7 @@ export default function Builder() {
                 14
               ]}
               intensity={
-                3.2
+                3.8
               }
               castShadow
             />
@@ -3861,7 +3862,7 @@ export default function Builder() {
                 10
               ]}
               intensity={
-                1.15
+                1.7
               }
             />
 
