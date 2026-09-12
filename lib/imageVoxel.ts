@@ -648,9 +648,11 @@ function normalizeToVolume(
   const yOffset = Math.max(0, Math.floor((volumeSize - maxY - 1) * 0.14));
   const zOffset = Math.floor((volumeSize - Math.min(maxZ + 1, volumeSize)) / 2);
 
+  // Raster Y grows downward; voxel/world Y grows upward.
+  // Flip the reconstructed subject vertically before centering it.
   return voxels.map((v) => ({
     x: clamp(v.x + centerOffset, 0, volumeSize - 1),
-    y: clamp(v.y + yOffset, 0, volumeSize - 1),
+    y: clamp((maxY - v.y) + yOffset, 0, volumeSize - 1),
     z: clamp(v.z + zOffset, 0, volumeSize - 1),
     c: v.c
   }));
@@ -665,7 +667,18 @@ function symmetrizeVoxels(
     voxels.map((v) => `${v.x}:${v.y}:${v.z}`)
   );
 
-  const center = (volumeSize - 1) / 2;
+  // Mirror around the actual object center, not the volume center.
+  // Using the volume center can create a second detached copy of the asset.
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const voxel of voxels) {
+    minX = Math.min(minX, voxel.x);
+    maxX = Math.max(maxX, voxel.x);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return;
+
+  const center = (minX + maxX) / 2;
   const additions: ImageVoxel[] = [];
 
   for (const voxel of voxels) {
