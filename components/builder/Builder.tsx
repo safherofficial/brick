@@ -2796,10 +2796,7 @@ export default function Builder() {
                   maxVoxels:
                     MAX_SAFE,
                   symmetrize:
-                    imageMode ===
-                    "model"
-                      ? symmetrize
-                      : false
+                    false
                 }
               );
 
