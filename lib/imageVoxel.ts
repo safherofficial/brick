@@ -218,6 +218,63 @@ function blurField(src: Float32Array, w: number, h: number) {
   return out;
 }
 
+function smoothAlpha(data: Uint8ClampedArray, w: number, h: number) {
+  // Leggero blur del solo canale alpha prima della sogliatura: ripulisce il seghettato
+  // dovuto a compressione JPEG/anti-aliasing sui contorni complessi (ciocche di capelli,
+  // dita, profilo del viso) senza toccare i colori RGB. Un blur 3x3 non richiude i varchi
+  // reali tra braccia/gambe e busto, che restano larghi diversi pixel alla risoluzione usata.
+  const src = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) src[i] = data[i * 4 + 3];
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          s += src[ny * w + nx];
+          n++;
+        }
+      }
+      out[y * w + x] = s / n;
+    }
+  }
+  for (let i = 0; i < w * h; i++) data[i * 4 + 3] = Math.round(out[i]);
+}
+
+function symmetrizeX(voxels: ImageVoxel[]): ImageVoxel[] {
+  // Specchia la metà con più voxel (di solito la meglio illuminata/rilevata in foto)
+  // sull'altra metà, cancellando le piccole asimmetrie che una foto reale introduce sempre
+  // (luce laterale, ombre) e che su un personaggio si notano molto più che su un'arma.
+  if (!voxels.length) return voxels;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const v of voxels) {
+    if (v.x < minX) minX = v.x;
+    if (v.x > maxX) maxX = v.x;
+  }
+  const mid = minX + (maxX - minX) / 2;
+  let leftCount = 0;
+  let rightCount = 0;
+  for (const v of voxels) {
+    if (v.x < mid) leftCount++;
+    else if (v.x > mid) rightCount++;
+  }
+  const sourceIsLeft = leftCount >= rightCount;
+  const map = new Map<string, ImageVoxel>();
+  for (const v of voxels) map.set(`${v.x},${v.y},${v.z}`, v);
+  for (const v of voxels) {
+    const onSourceSide = sourceIsLeft ? v.x <= mid : v.x >= mid;
+    if (!onSourceSide) continue;
+    const mirroredX = Math.round(2 * mid - v.x);
+    map.set(`${mirroredX},${v.y},${v.z}`, { x: mirroredX, y: v.y, z: v.z, c: v.c });
+  }
+  return [...map.values()];
+}
+
 function shiftToCenter(voxels: ImageVoxel[], volumeSize: number) {
   if (!voxels.length) return voxels;
   let minX = Infinity;
@@ -267,6 +324,7 @@ async function rasterMask(file: File, w: number, h: number) {
   ctx.drawImage(img, ox, oy, dw, dh);
   const data = ctx.getImageData(0, 0, w, h).data;
   const mask = new Uint8Array(w * h);
+  smoothAlpha(data, w, h);
   for (let i = 0; i < w * h; i++) if (data[i * 4 + 3] >= 24) mask[i] = 1;
   floodBackdrop(data, mask, w, h);
   knockFringe(mask, data, w, h);
@@ -282,10 +340,14 @@ export async function imageToVoxels(
     heightMax: number;
     maxEdge?: number;
     maxVoxels?: number;
+    symmetrize?: boolean;
   }
 ): Promise<ImageImport> {
   const img = await loadImage(file);
-  const maxEdge = Math.min(options.maxEdge ?? 112, options.volumeSize);
+  // "model" (personaggi/soggetti organici) ha bisogno di più pixel dei semplici oggetti
+  // per non perdere occhi, bocca, cuciture dei vestiti: risoluzione di default più alta.
+  const defaultEdge = options.mode === "model" ? 176 : 112;
+  const maxEdge = Math.min(options.maxEdge ?? defaultEdge, options.volumeSize);
   const scale = Math.min(1, maxEdge / Math.max(img.width, img.height, 1));
   const w = Math.max(1, Math.round(img.width * scale));
   const h = Math.max(1, Math.round(img.height * scale));
@@ -300,6 +362,7 @@ export async function imageToVoxels(
   const data = ctx.getImageData(0, 0, w, h).data;
 
   const mask = new Uint8Array(w * h);
+  smoothAlpha(data, w, h);
   for (let i = 0; i < w * h; i++) if (data[i * 4 + 3] >= 24) mask[i] = 1;
   floodBackdrop(data, mask, w, h);
   knockFringe(mask, data, w, h);
@@ -318,7 +381,9 @@ export async function imageToVoxels(
   }
   if (!visible) throw new Error("Empty image");
 
-  const baseColors = quantize([...unique], options.mode === "model" ? 40 : 64);
+  // Più colori distinti in "model": un personaggio ha materiali diversi (pelle, capelli,
+  // maglietta, pantaloni, scarpe, occhi) che con soli 40 toni si fondevano tra loro.
+  const baseColors = quantize([...unique], options.mode === "model" ? 72 : 64);
   const colors: [number, number, number][] = [];
   for (const rgb of baseColors) {
     colors.push(rgb);
@@ -388,7 +453,7 @@ export async function imageToVoxels(
     }
   }
 
-  const voxels = shiftToCenter(raw, options.volumeSize);
+  const voxels = shiftToCenter(options.symmetrize ? symmetrizeX(raw) : raw, options.volumeSize);
   return { voxels, palette, width: w, height: h, count: voxels.length };
 }
 
@@ -400,11 +465,13 @@ export async function imagesToVoxels(
     heightMax: number;
     maxEdge?: number;
     maxVoxels?: number;
+    symmetrize?: boolean;
   }
 ): Promise<ImageImport> {
   if (!views.side) return imageToVoxels(views.front, options);
 
-  const maxEdge = Math.min(options.maxEdge ?? 96, options.volumeSize);
+  const defaultEdge = options.mode === "model" ? 160 : 96;
+  const maxEdge = Math.min(options.maxEdge ?? defaultEdge, options.volumeSize);
   const frontImg = await loadImage(views.front);
   const sideImg = await loadImage(views.side);
   const srcH = Math.max(frontImg.height, sideImg.height, 1);
@@ -423,7 +490,7 @@ export async function imagesToVoxels(
   }
   if (!unique.size) return imageToVoxels(views.front, options);
 
-  const colors = quantize([...unique], 48);
+  const colors = quantize([...unique], options.mode === "model" ? 72 : 48);
   const palette = Array.from({ length: 256 }, (_, i) => (colors[i] ? hexOf(...colors[i]) : "#000000"));
   const cap = options.maxVoxels ?? 160_000;
   const raw: ImageVoxel[] = [];
@@ -438,8 +505,10 @@ export async function imagesToVoxels(
       const fb = front.data[fi * 4 + 2];
       for (let pz = 0; pz < depth; pz++) {
         if (!side.mask[py * depth + pz]) continue;
-        const backness = depth <= 1 ? 0 : pz / (depth - 1);
-        const rgb = shade([fr, fg, fb], Math.max(0.38, 1 - backness * 0.52));
+        // pz più alto = più vicino alla camera frontale (stessa convenzione usata in
+        // imageToVoxels): il colore fedele della foto sta sul fronte, il retro si scurisce.
+        const depthT = depth <= 1 ? 0 : pz / (depth - 1);
+        const rgb = shade([fr, fg, fb], 0.42 + depthT * 0.58);
         raw.push({
           x: px,
           y,
@@ -453,7 +522,7 @@ export async function imagesToVoxels(
 
   if (!raw.length) return imageToVoxels(views.front, options);
   return {
-    voxels: shiftToCenter(raw, options.volumeSize),
+    voxels: shiftToCenter(options.symmetrize ? symmetrizeX(raw) : raw, options.volumeSize),
     palette,
     width: w,
     height: h,
