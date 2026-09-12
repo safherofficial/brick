@@ -1007,19 +1007,31 @@ function reconstructVisualHull(
       const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
       const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
 
-      for (let z = 0; z < dimensions.depth; z += 1) {
-        const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
+      // Il voxel "di superficie" da colorare col colore vero della foto non è
+      // sempre l'ultimo strato dell'intero volume: per un oggetto arrotondato
+      // o rastremato, la sagoma laterale limita la profondità reale in modo
+      // diverso riga per riga. Cerchiamo lo z più alto (più vicino alla
+      // camera frontale) effettivamente presente per QUESTA colonna, così la
+      // shell colorata segue il vero contorno dell'oggetto invece di un
+      // valore fisso che quasi mai coincide con la superficie reale.
+      let frontZ = -1;
+      for (let z = dimensions.depth - 1; z >= 0; z -= 1) {
+        if (!side || side[y]?.[z]) {
+          frontZ = z;
+          break;
+        }
+      }
+      if (frontZ === -1) continue;
 
-        // TRUE VISUAL HULL:
-        // FRONT gives the X/Y silhouette and SIDE gives the Z/Y silhouette.
-        // A voxel exists only in the intersection of the two silhouette
-        // volumes. There is no later voxel thinning step.
+      for (let z = 0; z <= frontZ; z += 1) {
         if (side && !side[y]?.[z]) continue;
+
+        const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
         // MODEL is single-sided: the FRONT artwork belongs only to the
         // front-facing shell. The interior/rear is structural backing, never
         // another copy of the FRONT artwork.
-        const isFrontLayer = z === dimensions.depth - 1;
+        const isFrontLayer = z === frontZ;
 
         if (isFrontLayer) {
           let color: [number, number, number] = [
