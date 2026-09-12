@@ -43,8 +43,7 @@ import { exportGlb } from "@/lib/voxelGlb";
 import {
   imageToVoxels,
   imagesToVoxels,
-  type ImageImport,
-  type ImageMode
+  type ImageImport
 } from "@/lib/imageVoxel";
 import {
   consumeImageApply,
@@ -656,8 +655,6 @@ export default function Builder() {
     >(() =>
       volumeCenter(128)
     );
-
-  const imageMode: ImageMode = "model";
 
   const [imageHeight, setImageHeight] =
     useState(16);
@@ -2494,8 +2491,6 @@ export default function Builder() {
               {
                 volumeSize:
                   volumeRef.current.size,
-                mode:
-                  "model",
                 heightMax:
                   imageHeight,
                 maxVoxels:
@@ -2532,7 +2527,6 @@ export default function Builder() {
       },
       [
         imageHeight,
-        imageMode,
         notify,
         symmetrize
       ]
@@ -2556,7 +2550,6 @@ export default function Builder() {
       },
       [
         frontFile,
-        imageMode,
         notify,
         regenerateMultiView,
         sideFile
@@ -2618,7 +2611,6 @@ export default function Builder() {
                 { front: file, side: sideFile },
                 {
                   volumeSize: volumeRef.current.size,
-                  mode: "model",
                   heightMax: imageHeight,
                   maxVoxels: MAX_SAFE,
                   symmetrize
@@ -2628,7 +2620,6 @@ export default function Builder() {
                 file,
                 {
                   volumeSize: volumeRef.current.size,
-                  mode: "model",
                   heightMax: imageHeight,
                   maxVoxels: MAX_SAFE,
                   symmetrize
@@ -2659,7 +2650,6 @@ export default function Builder() {
       },
       [
         imageHeight,
-        imageMode,
         notify,
         regenerateMultiView,
         sideFile,
@@ -2763,8 +2753,6 @@ export default function Builder() {
                 {
                   volumeSize:
                     volumeRef.current.size,
-                  mode:
-                    "model",
                   heightMax:
                     imageHeight,
                   maxVoxels:
@@ -2926,7 +2914,6 @@ export default function Builder() {
       },
       [
         imageHeight,
-        imageMode,
         notify,
         packVolume,
         symmetrize
