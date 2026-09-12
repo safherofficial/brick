@@ -12,33 +12,309 @@ export type ImageImport = {
   count: number;
 };
 
+type RGB = [number, number, number];
+type Lab = [number, number, number];
+
+type ColorEntry = {
+  rgb: RGB;
+  lab: Lab;
+};
+
+function clamp(value: number, min = 0, max = 255) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function hexOf(r: number, g: number, b: number) {
-  return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+  return `#${[r, g, b]
+    .map((n) => clamp(Math.round(n)).toString(16).padStart(2, "0"))
+    .join("")}`;
 }
 
 function pack(r: number, g: number, b: number) {
   return (r << 16) | (g << 8) | b;
 }
 
-function unpack(n: number): [number, number, number] {
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+function unpack(n: number): RGB {
+  return [
+    (n >> 16) & 255,
+    (n >> 8) & 255,
+    n & 255
+  ];
+}
+
+function srgbToLinear(value: number) {
+  const v = value / 255;
+  return v <= 0.04045
+    ? v / 12.92
+    : Math.pow((v + 0.055) / 1.055, 2.4);
+}
+
+function linearToSrgb(value: number) {
+  const v = Math.max(0, value);
+  return v <= 0.0031308
+    ? v * 12.92
+    : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+}
+
+function rgbToOklab(rgb: RGB): Lab {
+  const r = srgbToLinear(rgb[0]);
+  const g = srgbToLinear(rgb[1]);
+  const b = srgbToLinear(rgb[2]);
+
+  const l =
+    0.4122214708 * r +
+    0.5363325363 * g +
+    0.0514459929 * b;
+
+  const m =
+    0.2119034982 * r +
+    0.6806995451 * g +
+    0.1073969566 * b;
+
+  const s =
+    0.0883024619 * r +
+    0.2817188376 * g +
+    0.6299787005 * b;
+
+  const l3 = Math.cbrt(Math.max(0, l));
+  const m3 = Math.cbrt(Math.max(0, m));
+  const s3 = Math.cbrt(Math.max(0, s));
+
+  return [
+    0.2104542553 * l3 +
+      0.793617785 * m3 -
+      0.0040720468 * s3,
+
+    1.9779984951 * l3 -
+      2.428592205 * m3 +
+      0.4505937099 * s3,
+
+    0.0259040371 * l3 +
+      0.7827717662 * m3 -
+      0.808675766 * s3
+  ];
+}
+
+function oklabDistanceSquared(a: Lab, b: Lab) {
+  const dl = a[0] - b[0];
+  const da = a[1] - b[1];
+  const db = a[2] - b[2];
+
+  return dl * dl + da * da + db * db;
+}
+
+function shade(rgb: RGB, amount: number): RGB {
+  return [
+    clamp(Math.round(rgb[0] * amount)),
+    clamp(Math.round(rgb[1] * amount)),
+    clamp(Math.round(rgb[2] * amount))
+  ];
+}
+
+function makeColorEntries(
+  colors: RGB[]
+): ColorEntry[] {
+  return colors.map((rgb) => ({
+    rgb,
+    lab: rgbToOklab(rgb)
+  }));
+}
+
+function quantize(
+  histogram: Map<number, number>,
+  maxColors: number
+): RGB[] {
+  const entries = [...histogram.entries()].map(
+    ([packed, count]) => ({
+      rgb: unpack(packed),
+      count,
+      lab: rgbToOklab(unpack(packed))
+    })
+  );
+
+  if (entries.length <= maxColors) {
+    return entries
+      .sort((a, b) => b.count - a.count)
+      .map((item) => item.rgb);
+  }
+
+  /*
+   * First reduce the number of candidates.
+   * This prevents the farthest-point pass from becoming expensive
+   * on photographic PNGs with thousands of subtly different RGB values.
+   */
+  const bucketShift =
+    entries.length > 12000
+      ? 4
+      : entries.length > 4000
+        ? 3
+        : 2;
+
+  const buckets = new Map<
+    number,
+    {
+      count: number;
+      r: number;
+      g: number;
+      b: number;
+    }
+  >();
+
+  for (const item of entries) {
+    const r = item.rgb[0];
+    const g = item.rgb[1];
+    const b = item.rgb[2];
+
+    const key = pack(
+      r >> bucketShift,
+      g >> bucketShift,
+      b >> bucketShift
+    );
+
+    const bucket = buckets.get(key) ?? {
+      count: 0,
+      r: 0,
+      g: 0,
+      b: 0
+    };
+
+    bucket.count += item.count;
+    bucket.r += r * item.count;
+    bucket.g += g * item.count;
+    bucket.b += b * item.count;
+
+    buckets.set(key, bucket);
+  }
+
+  const candidates = [...buckets.values()]
+    .map((bucket) => {
+      const rgb: RGB = [
+        Math.round(bucket.r / bucket.count),
+        Math.round(bucket.g / bucket.count),
+        Math.round(bucket.b / bucket.count)
+      ];
+
+      return {
+        rgb,
+        count: bucket.count,
+        lab: rgbToOklab(rgb)
+      };
+    })
+    .sort((a, b) => b.count - a.count)
+    .slice(0, Math.max(maxColors * 6, 192));
+
+  if (candidates.length <= maxColors) {
+    return candidates.map((item) => item.rgb);
+  }
+
+  /*
+   * Farthest-point selection in OKLab.
+   *
+   * First pick the most frequent color.
+   * Then repeatedly select the color that adds the most
+   * perceptual separation while still rewarding frequency.
+   */
+  const selected: typeof candidates = [];
+  const used = new Uint8Array(candidates.length);
+
+  selected.push(candidates[0]);
+  used[0] = 1;
+
+  const minDistance = new Float32Array(
+    candidates.length
+  );
+
+  for (let i = 0; i < candidates.length; i++) {
+    minDistance[i] =
+      oklabDistanceSquared(
+        candidates[i].lab,
+        candidates[0].lab
+      );
+  }
+
+  while (selected.length < maxColors) {
+    let bestIndex = -1;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < candidates.length; i++) {
+      if (used[i]) continue;
+
+      const frequencyWeight =
+        Math.sqrt(
+          candidates[i].count /
+            Math.max(1, candidates[0].count)
+        );
+
+      const distanceWeight = Math.min(
+        1,
+        Math.sqrt(minDistance[i]) * 7
+      );
+
+      const score =
+        distanceWeight *
+          (0.72 + frequencyWeight * 0.28);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex < 0) break;
+
+    used[bestIndex] = 1;
+    selected.push(candidates[bestIndex]);
+
+    const selectedLab =
+      candidates[bestIndex].lab;
+
+    for (
+      let i = 0;
+      i < candidates.length;
+      i++
+    ) {
+      if (used[i]) continue;
+
+      const d =
+        oklabDistanceSquared(
+          candidates[i].lab,
+          selectedLab
+        );
+
+      if (d < minDistance[i]) {
+        minDistance[i] = d;
+      }
+    }
+  }
+
+  return selected.map((item) => item.rgb);
 }
 
 function nearestIndex(
   r: number,
   g: number,
   b: number,
-  colors: [number, number, number][]
+  colors: ColorEntry[],
+  cache: Map<number, number>
 ) {
+  const key = pack(r, g, b);
+  const cached = cache.get(key);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const target = rgbToOklab([r, g, b]);
+
   let best = 0;
   let dist = Infinity;
 
   for (let i = 0; i < colors.length; i++) {
-    const [pr, pg, pb] = colors[i];
     const d =
-      (r - pr) ** 2 +
-      (g - pg) ** 2 +
-      (b - pb) ** 2;
+      oklabDistanceSquared(
+        target,
+        colors[i].lab
+      );
 
     if (d < dist) {
       dist = d;
@@ -46,65 +322,17 @@ function nearestIndex(
     }
   }
 
+  cache.set(key, best);
   return best;
 }
 
-function shade(
-  rgb: [number, number, number],
-  t: number
-): [number, number, number] {
-  return [
-    Math.max(0, Math.min(255, Math.round(rgb[0] * t))),
-    Math.max(0, Math.min(255, Math.round(rgb[1] * t))),
-    Math.max(0, Math.min(255, Math.round(rgb[2] * t)))
-  ];
-}
-
-function quantize(unique: number[], maxColors: number) {
-  if (unique.length <= maxColors) return unique.map((n) => unpack(n));
-
-  const buckets = new Map<
-    number,
-    { n: number; r: number; g: number; b: number }
-  >();
-
-  const shift = unique.length > 1800 ? 3 : 2;
-
-  for (const p of unique) {
-    const [r, g, b] = unpack(p);
-    const key = pack(r >> shift, g >> shift, b >> shift);
-
-    const cur = buckets.get(key) ?? {
-      n: 0,
-      r: 0,
-      g: 0,
-      b: 0
-    };
-
-    cur.n += 1;
-    cur.r += r;
-    cur.g += g;
-    cur.b += b;
-
-    buckets.set(key, cur);
-  }
-
-  return [...buckets.values()]
-    .sort((a, b) => b.n - a.n)
-    .slice(0, maxColors)
-    .map(
-      (c) =>
-        [
-          Math.round(c.r / c.n),
-          Math.round(c.g / c.n),
-          Math.round(c.b / c.n)
-        ] as [number, number, number]
-    );
-}
-
-function loadImage(file: File): Promise<HTMLImageElement> {
+function loadImage(
+  file: File
+): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
+    const url =
+      URL.createObjectURL(file);
+
     const img = new Image();
 
     img.onload = () => {
@@ -114,11 +342,80 @@ function loadImage(file: File): Promise<HTMLImageElement> {
 
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error("Invalid image"));
+      reject(
+        new Error("Invalid image")
+      );
     };
 
     img.src = url;
   });
+}
+
+function smoothAlpha(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number
+) {
+  const src = new Float32Array(
+    w * h
+  );
+
+  for (let i = 0; i < w * h; i++) {
+    src[i] =
+      data[i * 4 + 3];
+  }
+
+  const out = new Float32Array(
+    w * h
+  );
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      let count = 0;
+
+      for (
+        let dy = -1;
+        dy <= 1;
+        dy++
+      ) {
+        for (
+          let dx = -1;
+          dx <= 1;
+          dx++
+        ) {
+          const nx = x + dx;
+          const ny = y + dy;
+
+          if (
+            nx < 0 ||
+            ny < 0 ||
+            nx >= w ||
+            ny >= h
+          ) {
+            continue;
+          }
+
+          sum +=
+            src[ny * w + nx];
+
+          count++;
+        }
+      }
+
+      out[y * w + x] =
+        sum / count;
+    }
+  }
+
+  for (
+    let i = 0;
+    i < w * h;
+    i++
+  ) {
+    data[i * 4 + 3] =
+      Math.round(out[i]);
+  }
 }
 
 function knockFringe(
@@ -127,18 +424,32 @@ function knockFringe(
   w: number,
   h: number
 ) {
-  const next = new Uint8Array(mask);
+  const next =
+    new Uint8Array(mask);
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
+
       if (!mask[i]) continue;
-      if (data[i * 4 + 3] >= 250) continue;
+
+      const alpha =
+        data[i * 4 + 3];
+
+      if (alpha >= 245) continue;
 
       let empty = 0;
 
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
+      for (
+        let dy = -1;
+        dy <= 1;
+        dy++
+      ) {
+        for (
+          let dx = -1;
+          dx <= 1;
+          dx++
+        ) {
           if (!dx && !dy) continue;
 
           const nx = x + dx;
@@ -156,7 +467,17 @@ function knockFringe(
         }
       }
 
-      if (empty >= 2) next[i] = 0;
+      /*
+       * Only remove very weak edge pixels.
+       * This preserves thin details significantly better
+       * than the previous aggressive fringe cleanup.
+       */
+      if (
+        alpha < 80 &&
+        empty >= 3
+      ) {
+        next[i] = 0;
+      }
     }
   }
 
@@ -169,30 +490,71 @@ function dropIslands(
   h: number,
   minSize: number
 ) {
-  const seen = new Uint8Array(w * h);
+  if (minSize <= 1) return;
+
+  const seen =
+    new Uint8Array(
+      w * h
+    );
+
   const stack: number[] = [];
 
-  for (let s = 0; s < mask.length; s++) {
-    if (!mask[s] || seen[s]) continue;
+  for (
+    let start = 0;
+    start < mask.length;
+    start++
+  ) {
+    if (
+      !mask[start] ||
+      seen[start]
+    ) {
+      continue;
+    }
 
     stack.length = 0;
-    stack.push(s);
-    seen[s] = 1;
+    stack.push(start);
+    seen[start] = 1;
 
-    const cells = [s];
+    const cells: number[] = [
+      start
+    ];
 
     while (stack.length) {
-      const i = stack.pop()!;
-      const x = i % w;
-      const y = (i / w) | 0;
+      const i =
+        stack.pop()!;
 
-      for (const n of [i - 1, i + 1, i - w, i + w]) {
-        if (n < 0 || n >= mask.length || seen[n] || !mask[n]) continue;
+      const x = i % w;
+      const y =
+        (i / w) | 0;
+
+      for (
+        const n of [
+          i - 1,
+          i + 1,
+          i - w,
+          i + w
+        ]
+      ) {
+        if (
+          n < 0 ||
+          n >= mask.length ||
+          seen[n] ||
+          !mask[n]
+        ) {
+          continue;
+        }
 
         const nx = n % w;
-        const ny = (n / w) | 0;
+        const ny =
+          (n / w) | 0;
 
-        if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
+        if (
+          Math.abs(nx - x) +
+            Math.abs(ny - y) !==
+          1
+        ) {
+          continue;
+        }
 
         seen[n] = 1;
         stack.push(n);
@@ -200,8 +562,14 @@ function dropIslands(
       }
     }
 
-    if (cells.length < minSize) {
-      for (const i of cells) mask[i] = 0;
+    if (
+      cells.length < minSize
+    ) {
+      for (
+        const i of cells
+      ) {
+        mask[i] = 0;
+      }
     }
   }
 }
@@ -214,11 +582,26 @@ function floodBackdrop(
 ) {
   let opaque = 0;
 
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] > 8) opaque++;
+  for (
+    let i = 3;
+    i < data.length;
+    i += 4
+  ) {
+    if (data[i] > 8) {
+      opaque++;
+    }
   }
 
-  if (opaque / (w * h) < 0.97) return;
+  /*
+   * Only treat the image as having a removable flat background
+   * when nearly all pixels are opaque.
+   */
+  if (
+    opaque / (w * h) <
+    0.965
+  ) {
+    return;
+  }
 
   const corners = [
     0,
@@ -227,13 +610,18 @@ function floodBackdrop(
     h * w - 1
   ];
 
-  const samples = corners.map((i) => [
-    data[i * 4],
-    data[i * 4 + 1],
-    data[i * 4 + 2]
-  ]);
+  const samples =
+    corners.map((i) => [
+      data[i * 4],
+      data[i * 4 + 1],
+      data[i * 4 + 2]
+    ]);
 
-  const [cr, cg, cb] = samples[0];
+  const [
+    cr,
+    cg,
+    cb
+  ] = samples[0];
 
   if (
     !samples.every(
@@ -241,99 +629,208 @@ function floodBackdrop(
         (r - cr) ** 2 +
           (g - cg) ** 2 +
           (b - cb) ** 2 <
-        900
+        1150
     )
   ) {
     return;
   }
 
-  const seen = new Uint8Array(w * h);
-  const q = [...corners];
+  const seen =
+    new Uint8Array(
+      w * h
+    );
 
-  for (const i of q) seen[i] = 1;
+  const queue =
+    [...corners];
 
-  while (q.length) {
-    const i = q.pop()!;
+  for (
+    const i of queue
+  ) {
+    seen[i] = 1;
+  }
+
+  while (queue.length) {
+    const i =
+      queue.pop()!;
+
     const x = i % w;
-    const y = (i / w) | 0;
+    const y =
+      (i / w) | 0;
 
     const r = data[i * 4];
     const g = data[i * 4 + 1];
     const b = data[i * 4 + 2];
 
-    if (
+    const distance =
       (r - cr) ** 2 +
-        (g - cg) ** 2 +
-        (b - cb) ** 2 >=
-      1400
-    ) {
+      (g - cg) ** 2 +
+      (b - cb) ** 2;
+
+    if (distance >= 1700) {
       continue;
     }
 
     mask[i] = 0;
 
-    for (const [nx, ny] of [
-      [x - 1, y],
-      [x + 1, y],
-      [x, y - 1],
-      [x, y + 1]
-    ] as const) {
-      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+    for (
+      const [nx, ny] of [
+        [x - 1, y],
+        [x + 1, y],
+        [x, y - 1],
+        [x, y + 1]
+      ] as const
+    ) {
+      if (
+        nx < 0 ||
+        ny < 0 ||
+        nx >= w ||
+        ny >= h
+      ) {
+        continue;
+      }
 
-      const n = ny * w + nx;
+      const n =
+        ny * w + nx;
 
       if (seen[n]) continue;
 
       seen[n] = 1;
-      q.push(n);
+      queue.push(n);
     }
   }
 }
 
-function distanceField(mask: Uint8Array, w: number, h: number) {
-  const INF = w + h + 8;
-  const d = new Float32Array(w * h);
+function distanceField(
+  mask: Uint8Array,
+  w: number,
+  h: number
+) {
+  const INF =
+    w + h + 8;
 
-  for (let i = 0; i < d.length; i++) {
-    d[i] = mask[i] ? INF : 0;
+  const d =
+    new Float32Array(
+      w * h
+    );
+
+  for (
+    let i = 0;
+    i < d.length;
+    i++
+  ) {
+    d[i] = mask[i]
+      ? INF
+      : 0;
   }
 
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
+  for (
+    let y = 0;
+    y < h;
+    y++
+  ) {
+    for (
+      let x = 0;
+      x < w;
+      x++
+    ) {
+      const i =
+        y * w + x;
+
       if (!mask[i]) continue;
 
       let best = d[i];
 
-      if (x > 0) best = Math.min(best, d[i - 1] + 1);
-      if (y > 0) best = Math.min(best, d[i - w] + 1);
-      if (x > 0 && y > 0) {
-        best = Math.min(best, d[i - w - 1] + 1.414);
+      if (x > 0) {
+        best = Math.min(
+          best,
+          d[i - 1] + 1
+        );
       }
-      if (x + 1 < w && y > 0) {
-        best = Math.min(best, d[i - w + 1] + 1.414);
+
+      if (y > 0) {
+        best = Math.min(
+          best,
+          d[i - w] + 1
+        );
+      }
+
+      if (
+        x > 0 &&
+        y > 0
+      ) {
+        best = Math.min(
+          best,
+          d[i - w - 1] +
+            1.414
+        );
+      }
+
+      if (
+        x + 1 < w &&
+        y > 0
+      ) {
+        best = Math.min(
+          best,
+          d[i - w + 1] +
+            1.414
+        );
       }
 
       d[i] = best;
     }
   }
 
-  for (let y = h - 1; y >= 0; y--) {
-    for (let x = w - 1; x >= 0; x--) {
-      const i = y * w + x;
+  for (
+    let y = h - 1;
+    y >= 0;
+    y--
+  ) {
+    for (
+      let x = w - 1;
+      x >= 0;
+      x--
+    ) {
+      const i =
+        y * w + x;
+
       if (!mask[i]) continue;
 
       let best = d[i];
 
-      if (x + 1 < w) best = Math.min(best, d[i + 1] + 1);
-      if (y + 1 < h) best = Math.min(best, d[i + w] + 1);
-
-      if (x + 1 < w && y + 1 < h) {
-        best = Math.min(best, d[i + w + 1] + 1.414);
+      if (x + 1 < w) {
+        best = Math.min(
+          best,
+          d[i + 1] + 1
+        );
       }
 
-      if (x > 0 && y + 1 < h) {
-        best = Math.min(best, d[i + w - 1] + 1.414);
+      if (y + 1 < h) {
+        best = Math.min(
+          best,
+          d[i + w] + 1
+        );
+      }
+
+      if (
+        x + 1 < w &&
+        y + 1 < h
+      ) {
+        best = Math.min(
+          best,
+          d[i + w + 1] +
+            1.414
+        );
+      }
+
+      if (
+        x > 0 &&
+        y + 1 < h
+      ) {
+        best = Math.min(
+          best,
+          d[i + w - 1] +
+            1.414
+        );
       }
 
       d[i] = best;
@@ -343,112 +840,361 @@ function distanceField(mask: Uint8Array, w: number, h: number) {
   return d;
 }
 
-function blurField(src: Float32Array, w: number, h: number) {
-  const out = new Float32Array(src.length);
+function blurField(
+  src: Float32Array,
+  w: number,
+  h: number
+) {
+  const out =
+    new Float32Array(
+      src.length
+    );
 
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let s = 0;
-      let n = 0;
+  for (
+    let y = 0;
+    y < h;
+    y++
+  ) {
+    for (
+      let x = 0;
+      x < w;
+      x++
+    ) {
+      let sum = 0;
+      let count = 0;
 
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
+      for (
+        let dy = -1;
+        dy <= 1;
+        dy++
+      ) {
+        for (
+          let dx = -1;
+          dx <= 1;
+          dx++
+        ) {
+          const nx =
+            x + dx;
+          const ny =
+            y + dy;
 
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (
+            nx < 0 ||
+            ny < 0 ||
+            nx >= w ||
+            ny >= h
+          ) {
+            continue;
+          }
 
-          s += src[ny * w + nx];
-          n++;
+          sum +=
+            src[ny * w + nx];
+
+          count++;
         }
       }
 
-      out[y * w + x] = s / n;
+      out[
+        y * w + x
+      ] =
+        sum / count;
     }
   }
 
   return out;
 }
 
-function smoothAlpha(
+function prepareImage(
   data: Uint8ClampedArray,
   w: number,
-  h: number
+  h: number,
+  mode: ImageMode
 ) {
-  // Leggero blur del solo canale alpha prima della sogliatura.
-  const src = new Float32Array(w * h);
+  const mask =
+    new Uint8Array(
+      w * h
+    );
 
-  for (let i = 0; i < w * h; i++) {
-    src[i] = data[i * 4 + 3];
-  }
+  smoothAlpha(
+    data,
+    w,
+    h
+  );
 
-  const out = new Float32Array(w * h);
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let s = 0;
-      let n = 0;
-
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-
-          s += src[ny * w + nx];
-          n++;
-        }
-      }
-
-      out[y * w + x] = s / n;
+  for (
+    let i = 0;
+    i < w * h;
+    i++
+  ) {
+    if (
+      data[i * 4 + 3] >=
+      16
+    ) {
+      mask[i] = 1;
     }
   }
 
-  for (let i = 0; i < w * h; i++) {
-    data[i * 4 + 3] = Math.round(out[i]);
-  }
+  floodBackdrop(
+    data,
+    mask,
+    w,
+    h
+  );
+
+  knockFringe(
+    mask,
+    data,
+    w,
+    h
+  );
+
+  /*
+   * Model keeps tiny components.
+   * Weapons/props are also protected from over-cleaning.
+   */
+  const minIslandSize =
+    mode === "flat"
+      ? 1
+      : mode === "model"
+        ? 2
+        : 2;
+
+  dropIslands(
+    mask,
+    w,
+    h,
+    minIslandSize
+  );
+
+  return mask;
 }
 
-function symmetrizeX(voxels: ImageVoxel[]): ImageVoxel[] {
-  // Questa trasformazione è specifica per la modalità MODEL.
-  // Non deve mai essere applicata automaticamente ad armi o oggetti.
-  if (!voxels.length) return voxels;
+function imageCanvas(
+  img: HTMLImageElement,
+  w: number,
+  h: number
+) {
+  const canvas =
+    document.createElement(
+      "canvas"
+    );
+
+  canvas.width = w;
+  canvas.height = h;
+
+  const ctx =
+    canvas.getContext(
+      "2d",
+      {
+        willReadFrequently: true
+      }
+    );
+
+  if (!ctx) {
+    throw new Error(
+      "No 2d context"
+    );
+  }
+
+  const sourceScale =
+    Math.max(
+      img.width / Math.max(w, 1),
+      img.height / Math.max(h, 1)
+    );
+
+  const shouldSmooth =
+    sourceScale > 1.08;
+
+  ctx.imageSmoothingEnabled =
+    shouldSmooth;
+
+  if (
+    "imageSmoothingQuality" in
+    ctx
+  ) {
+    ctx.imageSmoothingQuality =
+      "high";
+  }
+
+  ctx.clearRect(
+    0,
+    0,
+    w,
+    h
+  );
+
+  ctx.drawImage(
+    img,
+    0,
+    0,
+    w,
+    h
+  );
+
+  return {
+    canvas,
+    ctx,
+    data: ctx.getImageData(
+      0,
+      0,
+      w,
+      h
+    ).data
+  };
+}
+
+function makePalette(
+  histogram: Map<number, number>,
+  maxBaseColors: number
+) {
+  const baseColors =
+    quantize(
+      histogram,
+      maxBaseColors
+    );
+
+  /*
+   * Four controlled tonal variants per base color:
+   * full, soft shadow, medium shadow, deep shadow.
+   *
+   * 64 base colors × 4 = 256 maximum.
+   */
+  const colors: RGB[] = [];
+
+  for (
+    const rgb of baseColors.slice(
+      0,
+      64
+    )
+  ) {
+    colors.push(
+      rgb
+    );
+
+    colors.push(
+      shade(
+        rgb,
+        0.82
+      )
+    );
+
+    colors.push(
+      shade(
+        rgb,
+        0.62
+      )
+    );
+
+    colors.push(
+      shade(
+        rgb,
+        0.46
+      )
+    );
+  }
+
+  const palette =
+    Array.from(
+      {
+        length: 256
+      },
+      (_, i) =>
+        colors[i]
+          ? hexOf(
+              ...colors[i]
+            )
+          : "#000000"
+    );
+
+  return {
+    colors,
+    palette,
+    entries:
+      makeColorEntries(
+        colors
+      )
+  };
+}
+
+function symmetrizeX(
+  voxels: ImageVoxel[]
+): ImageVoxel[] {
+  if (!voxels.length) {
+    return voxels;
+  }
 
   let minX = Infinity;
   let maxX = -Infinity;
 
-  for (const v of voxels) {
-    if (v.x < minX) minX = v.x;
-    if (v.x > maxX) maxX = v.x;
+  for (
+    const v of voxels
+  ) {
+    minX = Math.min(
+      minX,
+      v.x
+    );
+
+    maxX = Math.max(
+      maxX,
+      v.x
+    );
   }
 
-  const mid = minX + (maxX - minX) / 2;
+  const mid =
+    minX +
+    (maxX - minX) /
+      2;
 
   let leftCount = 0;
   let rightCount = 0;
 
-  for (const v of voxels) {
-    if (v.x < mid) leftCount++;
-    else if (v.x > mid) rightCount++;
+  for (
+    const v of voxels
+  ) {
+    if (v.x < mid) {
+      leftCount++;
+    } else if (
+      v.x > mid
+    ) {
+      rightCount++;
+    }
   }
 
-  const sourceIsLeft = leftCount >= rightCount;
+  const sourceIsLeft =
+    leftCount >=
+    rightCount;
 
-  const map = new Map<string, ImageVoxel>();
+  const map =
+    new Map<
+      string,
+      ImageVoxel
+    >();
 
-  for (const v of voxels) {
-    map.set(`${v.x},${v.y},${v.z}`, v);
+  for (
+    const v of voxels
+  ) {
+    map.set(
+      `${v.x},${v.y},${v.z}`,
+      v
+    );
   }
 
-  for (const v of voxels) {
-    const onSourceSide = sourceIsLeft
-      ? v.x <= mid
-      : v.x >= mid;
+  for (
+    const v of voxels
+  ) {
+    const source =
+      sourceIsLeft
+        ? v.x <= mid
+        : v.x >= mid;
 
-    if (!onSourceSide) continue;
+    if (!source) {
+      continue;
+    }
 
-    const mirroredX = Math.round(2 * mid - v.x);
+    const mirroredX =
+      Math.round(
+        2 * mid - v.x
+      );
 
     map.set(
       `${mirroredX},${v.y},${v.z}`,
@@ -461,14 +1207,18 @@ function symmetrizeX(voxels: ImageVoxel[]): ImageVoxel[] {
     );
   }
 
-  return [...map.values()];
+  return [
+    ...map.values()
+  ];
 }
 
 function shiftToCenter(
   voxels: ImageVoxel[],
   volumeSize: number
 ) {
-  if (!voxels.length) return voxels;
+  if (!voxels.length) {
+    return voxels;
+  }
 
   let minX = Infinity;
   let minY = Infinity;
@@ -477,25 +1227,57 @@ function shiftToCenter(
   let maxY = -Infinity;
   let maxZ = -Infinity;
 
-  for (const v of voxels) {
-    minX = Math.min(minX, v.x);
-    minY = Math.min(minY, v.y);
-    minZ = Math.min(minZ, v.z);
-    maxX = Math.max(maxX, v.x);
-    maxY = Math.max(maxY, v.y);
-    maxZ = Math.max(maxZ, v.z);
+  for (
+    const v of voxels
+  ) {
+    minX = Math.min(
+      minX,
+      v.x
+    );
+
+    minY = Math.min(
+      minY,
+      v.y
+    );
+
+    minZ = Math.min(
+      minZ,
+      v.z
+    );
+
+    maxX = Math.max(
+      maxX,
+      v.x
+    );
+
+    maxY = Math.max(
+      maxY,
+      v.y
+    );
+
+    maxZ = Math.max(
+      maxZ,
+      v.z
+    );
   }
 
   const sx =
     Math.floor(
-      (volumeSize - (maxX - minX + 1)) / 2
+      (
+        volumeSize -
+        (maxX - minX + 1)
+      ) / 2
     ) - minX;
 
-  const sy = 0 - minY;
+  const sy =
+    -minY;
 
   const sz =
     Math.floor(
-      (volumeSize - (maxZ - minZ + 1)) / 2
+      (
+        volumeSize -
+        (maxZ - minZ + 1)
+      ) / 2
     ) - minZ;
 
   return voxels
@@ -516,60 +1298,228 @@ function shiftToCenter(
     );
 }
 
+function calculateDepthMax(
+  mode: ImageMode,
+  volumeSize: number,
+  heightMax: number,
+  spanX: number
+) {
+  if (
+    mode === "flat"
+  ) {
+    return 0;
+  }
+
+  const hardLimit =
+    Math.max(
+      4,
+      Math.floor(
+        volumeSize / 2.5
+      )
+    );
+
+  const ratio =
+    mode === "solid"
+      ? 0.46
+      : mode === "relief"
+        ? 0.26
+        : 0.52;
+
+  return Math.max(
+    3,
+    Math.min(
+      heightMax,
+      hardLimit,
+      Math.round(
+        spanX * ratio
+      )
+    )
+  );
+}
+
+function buildDepthRadius(
+  mode: ImageMode,
+  depthMax: number,
+  t: number,
+  luma: number
+) {
+  if (
+    mode === "flat"
+  ) {
+    return 0;
+  }
+
+  const half =
+    Math.max(
+      1,
+      depthMax / 2
+    );
+
+  if (
+    mode === "solid"
+  ) {
+    /*
+     * Solid objects stay robust,
+     * but edges become slightly thinner.
+     * This preserves silhouettes of weapons and props.
+     */
+    return Math.max(
+      1,
+      Math.round(
+        half *
+          (0.58 + 0.42 * t)
+      )
+    );
+  }
+
+  if (
+    mode === "relief"
+  ) {
+    return Math.max(
+      1,
+      Math.round(
+        half *
+          (
+            0.28 +
+            luma * 0.52 +
+            t * 0.20
+          )
+      )
+    );
+  }
+
+  /*
+   * MODEL:
+   * organic dome with additional
+   * silhouette-aware falloff.
+   */
+  const dome =
+    Math.sqrt(
+      Math.max(
+        0.035,
+        1 -
+          Math.pow(
+            1 - t,
+            1.65
+          )
+      )
+    );
+
+  return Math.max(
+    1,
+    Math.round(
+      dome * depthMax
+    )
+  );
+}
+
+function depthShade(
+  rgb: RGB,
+  depthT: number
+) {
+  /*
+   * Preserve the original image on the front.
+   * Progressively darken hidden/rear surfaces.
+   */
+  const amount =
+    Math.max(
+      0.44,
+      1 -
+        depthT * 0.58
+    );
+
+  return shade(
+    rgb,
+    amount
+  );
+}
+
 async function rasterMask(
   file: File,
   w: number,
-  h: number
+  h: number,
+  mode: ImageMode
 ) {
-  const img = await loadImage(file);
+  const img =
+    await loadImage(
+      file
+    );
 
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
+  const canvasData =
+    imageCanvas(
+      img,
+      w,
+      h
+    );
 
-  const ctx = canvas.getContext("2d", {
-    willReadFrequently: true
-  });
+  const mask =
+    prepareImage(
+      canvasData.data,
+      w,
+      h,
+      mode
+    );
 
-  if (!ctx) throw new Error("No 2d context");
+  return {
+    data:
+      canvasData.data,
+    mask
+  };
+}
 
-  ctx.imageSmoothingEnabled = false;
+function chooseSingleViewSize(
+  img: HTMLImageElement,
+  mode: ImageMode,
+  volumeSize: number,
+  requested?: number
+) {
+  /*
+   * The voxel volume remains the final resolution ceiling.
+   * The working edge is therefore tied to the actual editable volume.
+   *
+   * The defaults are intentionally higher than the previous pipeline.
+   */
+  const modeDefault =
+    mode === "model"
+      ? 192
+      : mode === "flat"
+        ? 160
+        : 176;
 
-  const scale = Math.min(
-    w / Math.max(img.width, 1),
-    h / Math.max(img.height, 1)
+  const maxEdge = Math.max(
+    32,
+    Math.min(
+      requested ??
+        modeDefault,
+      volumeSize
+    )
   );
 
-  const dw = Math.max(
-    1,
-    Math.round(img.width * scale)
-  );
+  const scale =
+    Math.min(
+      1,
+      maxEdge /
+        Math.max(
+          img.width,
+          img.height,
+          1
+        )
+    );
 
-  const dh = Math.max(
-    1,
-    Math.round(img.height * scale)
-  );
-
-  const ox = Math.floor((w - dw) / 2);
-  const oy = Math.floor((h - dh) / 2);
-
-  ctx.clearRect(0, 0, w, h);
-  ctx.drawImage(img, ox, oy, dw, dh);
-
-  const data = ctx.getImageData(0, 0, w, h).data;
-  const mask = new Uint8Array(w * h);
-
-  smoothAlpha(data, w, h);
-
-  for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] >= 24) mask[i] = 1;
-  }
-
-  floodBackdrop(data, mask, w, h);
-  knockFringe(mask, data, w, h);
-  dropIslands(mask, w, h, 6);
-
-  return { data, mask };
+  return {
+    width: Math.max(
+      1,
+      Math.round(
+        img.width * scale
+      )
+    ),
+    height: Math.max(
+      1,
+      Math.round(
+        img.height * scale
+      )
+    )
+  };
 }
 
 export async function imageToVoxels(
@@ -583,180 +1533,180 @@ export async function imageToVoxels(
     symmetrize?: boolean;
   }
 ): Promise<ImageImport> {
-  const img = await loadImage(file);
+  const img =
+    await loadImage(
+      file
+    );
 
-  /*
-   * MODEL mantiene la risoluzione superiore specifica per i personaggi.
-   * Gli altri mode mantengono la pipeline asset originale.
-   */
-  const defaultEdge =
-    options.mode === "model" ? 176 : 112;
+  const size =
+    chooseSingleViewSize(
+      img,
+      options.mode,
+      options.volumeSize,
+      options.maxEdge
+    );
 
-  const maxEdge = Math.min(
-    options.maxEdge ?? defaultEdge,
-    options.volumeSize
-  );
+  const rendered =
+    imageCanvas(
+      img,
+      size.width,
+      size.height
+    );
 
-  const scale = Math.min(
-    1,
-    maxEdge /
-      Math.max(
-        img.width,
-        img.height,
-        1
-      )
-  );
+  const data =
+    rendered.data;
 
-  const w = Math.max(
-    1,
-    Math.round(img.width * scale)
-  );
+  const mask =
+    prepareImage(
+      data,
+      size.width,
+      size.height,
+      options.mode
+    );
 
-  const h = Math.max(
-    1,
-    Math.round(img.height * scale)
-  );
+  const histogram =
+    new Map<number, number>();
 
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-
-  const ctx = canvas.getContext("2d", {
-    willReadFrequently: true
-  });
-
-  if (!ctx) throw new Error("No 2d context");
-
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(img, 0, 0, w, h);
-
-  const data = ctx.getImageData(
-    0,
-    0,
-    w,
-    h
-  ).data;
-
-  const mask = new Uint8Array(w * h);
-
-  smoothAlpha(data, w, h);
-
-  for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] >= 24) mask[i] = 1;
-  }
-
-  floodBackdrop(data, mask, w, h);
-  knockFringe(mask, data, w, h);
-  dropIslands(mask, w, h, 6);
-
-  const unique = new Set<number>();
   let visible = 0;
-  let minPx = w;
+  let minPx = size.width;
   let maxPx = 0;
 
-  for (let i = 0; i < w * h; i++) {
-    if (!mask[i]) continue;
+  for (
+    let i = 0;
+    i <
+      size.width *
+        size.height;
+    i++
+  ) {
+    if (!mask[i]) {
+      continue;
+    }
 
-    visible += 1;
+    visible++;
 
-    minPx = Math.min(
-      minPx,
-      i % w
-    );
+    minPx =
+      Math.min(
+        minPx,
+        i % size.width
+      );
 
-    maxPx = Math.max(
-      maxPx,
-      i % w
-    );
+    maxPx =
+      Math.max(
+        maxPx,
+        i % size.width
+      );
 
-    unique.add(
+    const packed =
       pack(
         data[i * 4],
         data[i * 4 + 1],
         data[i * 4 + 2]
-      )
+      );
+
+    histogram.set(
+      packed,
+      (histogram.get(
+        packed
+      ) ?? 0) + 1
     );
   }
 
-  if (!visible) throw new Error("Empty image");
-
-  /*
-   * La palette est più ampia esclusivamente per MODEL.
-   * La pipeline degli asset mantiene il proprio comportamento.
-   */
-  const baseColors = quantize(
-    [...unique],
-    options.mode === "model" ? 72 : 64
-  );
-
-  const colors: [number, number, number][] = [];
-
-  for (const rgb of baseColors) {
-    colors.push(rgb);
-    colors.push(shade(rgb, 0.72));
-    colors.push(shade(rgb, 0.48));
+  if (!visible) {
+    throw new Error(
+      "Empty image"
+    );
   }
 
-  const palette = Array.from(
-    { length: 256 },
-    (_, i) =>
-      colors[i]
-        ? hexOf(...colors[i])
-        : "#000000"
-  );
+  /*
+   * Keep the base palette within 64 colors
+   * so four tonal variants fit exactly in 256 slots.
+   */
+  const paletteData =
+    makePalette(
+      histogram,
+      64
+    );
 
-  const field = blurField(
-    distanceField(mask, w, h),
-    w,
-    h
-  );
+  const field =
+    blurField(
+      distanceField(
+        mask,
+        size.width,
+        size.height
+      ),
+      size.width,
+      size.height
+    );
 
   let fieldMax = 1;
 
-  for (let i = 0; i < field.length; i++) {
-    if (field[i] > fieldMax) fieldMax = field[i];
+  for (
+    let i = 0;
+    i < field.length;
+    i++
+  ) {
+    if (
+      field[i] >
+      fieldMax
+    ) {
+      fieldMax =
+        field[i];
+    }
   }
 
-  const spanX = Math.max(
-    6,
-    maxPx - minPx + 1
-  );
+  const spanX =
+    Math.max(
+      6,
+      maxPx - minPx + 1
+    );
 
   const depthMax =
-    options.mode === "flat"
-      ? 0
-      : Math.max(
-          3,
-          Math.min(
-            options.heightMax,
-            Math.floor(options.volumeSize / 3),
-            Math.round(
-              spanX *
-                (
-                  options.mode === "solid"
-                    ? 0.38
-                    : options.mode === "relief"
-                      ? 0.22
-                      : 0.46
-                )
-            )
-          )
-        );
+    calculateDepthMax(
+      options.mode,
+      options.volumeSize,
+      options.heightMax,
+      spanX
+    );
 
   const cap =
-    options.maxVoxels ?? 160_000;
+    options.maxVoxels ??
+    160_000;
 
-  const raw: ImageVoxel[] = [];
+  const raw: ImageVoxel[] =
+    [];
 
-  for (let py = 0; py < h; py++) {
-    for (let px = 0; px < w; px++) {
-      const i = py * w + px;
+  const cache =
+    new Map<
+      number,
+      number
+    >();
 
-      if (!mask[i]) continue;
+  for (
+    let py = 0;
+    py < size.height;
+    py++
+  ) {
+    for (
+      let px = 0;
+      px < size.width;
+      px++
+    ) {
+      const i =
+        py * size.width +
+        px;
 
-      const r = data[i * 4];
-      const g = data[i * 4 + 1];
-      const b = data[i * 4 + 2];
+      if (!mask[i]) {
+        continue;
+      }
+
+      const r =
+        data[i * 4];
+
+      const g =
+        data[i * 4 + 1];
+
+      const b =
+        data[i * 4 + 2];
 
       const luma =
         (
@@ -765,48 +1715,28 @@ export async function imageToVoxels(
           0.0722 * b
         ) / 255;
 
-      const t = Math.sqrt(
-        field[i] / fieldMax
-      );
-
-      let radius = 0;
-
-      if (options.mode === "solid") {
-        radius = Math.max(
-          2,
-          Math.round(depthMax / 2)
-        );
-      } else if (options.mode === "relief") {
-        radius = Math.max(
-          1,
-          Math.round(
-            (0.35 + luma * 0.65) *
-              (depthMax / 2)
-          )
-        );
-      } else if (options.mode === "model") {
-        /*
-         * Character pipeline:
-         * profilo a cupola, più pieno al centro e
-         * più sottile verso i bordi.
-         */
-        const dome = Math.sqrt(
+      const t =
+        Math.sqrt(
           Math.max(
-            0.03,
-            1 - Math.pow(1 - t, 1.6)
+            0,
+            field[i] /
+              fieldMax
           )
         );
 
-        radius = Math.max(
-          1,
-          Math.round(
-            dome * depthMax
-          )
+      const radius =
+        buildDepthRadius(
+          options.mode,
+          depthMax,
+          t,
+          luma
         );
-      }
 
       const x = px;
-      const y = h - 1 - py;
+      const y =
+        size.height -
+        1 -
+        py;
 
       for (
         let dz = -radius;
@@ -814,34 +1744,37 @@ export async function imageToVoxels(
         dz++
       ) {
         const depthT =
-          radius === 0
+          radius <= 0
             ? 0
             : (radius - dz) /
               (2 * radius);
 
-        const shadeAmt = Math.max(
-          0.42,
-          1 - depthT * 0.62
-        );
+        const rgb =
+          depthShade(
+            [r, g, b],
+            depthT
+          );
 
-        const rgb = shade(
-          [r, g, b],
-          shadeAmt
-        );
+        const c =
+          nearestIndex(
+            rgb[0],
+            rgb[1],
+            rgb[2],
+            paletteData.entries,
+            cache
+          );
 
         raw.push({
           x,
           y,
           z: dz,
-          c: nearestIndex(
-            rgb[0],
-            rgb[1],
-            rgb[2],
-            colors
-          )
+          c
         });
 
-        if (raw.length > cap) {
+        if (
+          raw.length >
+          cap
+        ) {
           throw new Error(
             "Image too dense"
           );
@@ -850,31 +1783,33 @@ export async function imageToVoxels(
     }
   }
 
-  /*
-   * IMPORTANT:
-   * la simmetrizzazione è ora rigidamente confinata
-   * alla modalità MODEL.
-   *
-   * Quindi armi e oggetti non vengono più specchiati
-   * anche se un caller passa symmetrize: true.
-   */
   const shouldSymmetrize =
-    options.mode === "model" &&
-    options.symmetrize === true;
+    options.mode ===
+      "model" &&
+    options.symmetrize ===
+      true;
 
-  const voxels = shiftToCenter(
+  const resultVoxels =
     shouldSymmetrize
       ? symmetrizeX(raw)
-      : raw,
-    options.volumeSize
-  );
+      : raw;
+
+  const voxels =
+    shiftToCenter(
+      resultVoxels,
+      options.volumeSize
+    );
 
   return {
     voxels,
-    palette,
-    width: w,
-    height: h,
-    count: voxels.length
+    palette:
+      paletteData.palette,
+    width:
+      size.width,
+    height:
+      size.height,
+    count:
+      voxels.length
   };
 }
 
@@ -899,198 +1834,285 @@ export async function imagesToVoxels(
     );
   }
 
-  /*
-   * MODEL mantiene la risoluzione più alta
-   * anche nella pipeline FRONT + SIDE.
-   */
-  const defaultEdge =
-    options.mode === "model"
-      ? 160
-      : 96;
-
-  const maxEdge = Math.min(
-    options.maxEdge ?? defaultEdge,
-    options.volumeSize
-  );
-
   const frontImg =
-    await loadImage(views.front);
+    await loadImage(
+      views.front
+    );
 
   const sideImg =
-    await loadImage(views.side);
+    await loadImage(
+      views.side
+    );
 
-  const srcH = Math.max(
-    frontImg.height,
-    sideImg.height,
-    1
-  );
+  const modeDefault =
+    options.mode ===
+      "model"
+      ? 192
+      : 160;
 
-  const srcW = Math.max(
-    frontImg.width,
-    sideImg.width,
-    1
-  );
-
-  const h = Math.max(
-    8,
-    Math.min(
-      maxEdge,
-      Math.round(
-        srcH *
-          Math.min(
-            1,
-            maxEdge /
-              Math.max(srcH, srcW)
-          )
+  const maxEdge =
+    Math.max(
+      32,
+      Math.min(
+        options.maxEdge ??
+          modeDefault,
+        options.volumeSize
       )
-    )
-  );
+    );
 
-  const w = Math.max(
-    8,
+  const srcH =
+    Math.max(
+      frontImg.height,
+      sideImg.height,
+      1
+    );
+
+  const srcW =
+    Math.max(
+      frontImg.width,
+      sideImg.width,
+      1
+    );
+
+  const scale =
     Math.min(
-      maxEdge,
+      1,
+      maxEdge /
+        Math.max(
+          srcH,
+          srcW
+        )
+    );
+
+  const h =
+    Math.max(
+      8,
       Math.round(
-        frontImg.width *
-          (h /
-            Math.max(
-              frontImg.height,
-              1
-            ))
+        srcH * scale
       )
-    )
-  );
+    );
 
-  const depth = Math.max(
-    8,
-    Math.min(
-      maxEdge,
-      Math.round(
-        sideImg.width *
-          (h /
-            Math.max(
-              sideImg.height,
-              1
-            ))
+  const w =
+    Math.max(
+      8,
+      Math.min(
+        maxEdge,
+        Math.round(
+          frontImg.width *
+            (
+              h /
+              Math.max(
+                frontImg.height,
+                1
+              )
+            )
+        )
       )
-    )
-  );
+    );
 
-  const front = await rasterMask(
-    views.front,
-    w,
-    h
-  );
+  const depth =
+    Math.max(
+      8,
+      Math.min(
+        maxEdge,
+        Math.round(
+          sideImg.width *
+            (
+              h /
+              Math.max(
+                sideImg.height,
+                1
+              )
+            )
+        )
+      )
+    );
 
-  const side = await rasterMask(
-    views.side,
-    depth,
-    h
-  );
+  const front =
+    await rasterMask(
+      views.front,
+      w,
+      h,
+      options.mode
+    );
 
-  const unique = new Set<number>();
+  const side =
+    await rasterMask(
+      views.side,
+      depth,
+      h,
+      options.mode
+    );
+
+  const histogram =
+    new Map<number, number>();
 
   for (
     let i = 0;
     i < w * h;
     i++
   ) {
-    if (!front.mask[i]) continue;
+    if (!front.mask[i]) {
+      continue;
+    }
 
-    unique.add(
+    const packed =
       pack(
         front.data[i * 4],
         front.data[i * 4 + 1],
         front.data[i * 4 + 2]
-      )
+      );
+
+    histogram.set(
+      packed,
+      (histogram.get(
+        packed
+      ) ?? 0) + 1
     );
   }
 
-  if (!unique.size) {
+  if (!histogram.size) {
     return imageToVoxels(
       views.front,
       options
     );
   }
 
-  const colors = quantize(
-    [...unique],
-    options.mode === "model"
-      ? 72
-      : 48
-  );
-
-  const palette = Array.from(
-    { length: 256 },
-    (_, i) =>
-      colors[i]
-        ? hexOf(...colors[i])
-        : "#000000"
-  );
+  const paletteData =
+    makePalette(
+      histogram,
+      64
+    );
 
   const cap =
     options.maxVoxels ??
     160_000;
 
-  const raw: ImageVoxel[] = [];
+  const raw: ImageVoxel[] =
+    [];
 
-  for (let py = 0; py < h; py++) {
-    for (let px = 0; px < w; px++) {
+  const cache =
+    new Map<
+      number,
+      number
+    >();
+
+  for (
+    let py = 0;
+    py < h;
+    py++
+  ) {
+    for (
+      let px = 0;
+      px < w;
+      px++
+    ) {
       const fi =
         py * w + px;
 
-      if (!front.mask[fi]) continue;
+      if (!front.mask[fi]) {
+        continue;
+      }
 
       const y =
         h - 1 - py;
 
       const fr =
-        front.data[fi * 4];
+        front.data[
+          fi * 4
+        ];
 
       const fg =
-        front.data[fi * 4 + 1];
+        front.data[
+          fi * 4 + 1
+        ];
 
       const fb =
-        front.data[fi * 4 + 2];
+        front.data[
+          fi * 4 + 2
+        ];
+
+      const localDepth =
+        Math.max(
+          0,
+          Math.min(
+            1,
+            py /
+              Math.max(
+                1,
+                h - 1
+              )
+          )
+        );
 
       for (
         let pz = 0;
         pz < depth;
         pz++
       ) {
+        const sideIndex =
+          py * depth +
+          pz;
+
         if (
           !side.mask[
-            py * depth + pz
+            sideIndex
           ]
         ) {
           continue;
         }
 
+        /*
+         * Front view controls material/color.
+         * Side view controls occupancy/depth.
+         */
         const depthT =
           depth <= 1
             ? 0
             : pz /
               (depth - 1);
 
-        const rgb = shade(
-          [fr, fg, fb],
-          0.42 +
-            depthT * 0.58
-        );
+        /*
+         * Slightly adaptive shading:
+         * stronger differentiation in rear surfaces,
+         * while keeping the front visually faithful.
+         */
+        const shadeAmount =
+          Math.max(
+            0.46,
+            1 -
+              (
+                depthT *
+                0.52
+              )
+          );
+
+        const rgb =
+          shade(
+            [fr, fg, fb],
+            shadeAmount
+          );
+
+        const c =
+          nearestIndex(
+            rgb[0],
+            rgb[1],
+            rgb[2],
+            paletteData.entries,
+            cache
+          );
 
         raw.push({
           x: px,
           y,
           z: pz,
-          c: nearestIndex(
-            rgb[0],
-            rgb[1],
-            rgb[2],
-            colors
-          )
+          c
         });
 
-        if (raw.length > cap) {
+        if (
+          raw.length >
+          cap
+        ) {
           throw new Error(
             "Image too dense"
           );
@@ -1107,25 +2129,34 @@ export async function imagesToVoxels(
   }
 
   /*
-   * Anche FRONT + SIDE rispetta la stessa regola:
-   * symmetry solo per MODEL.
+   * The side-view mask can sometimes create a small amount
+   * of staircase noise. A character/armor workflow benefits
+   * from symmetry, but weapons and props must never inherit it.
    */
   const shouldSymmetrize =
-    options.mode === "model" &&
-    options.symmetrize === true;
+    options.mode ===
+      "model" &&
+    options.symmetrize ===
+      true;
 
-  const voxels = shiftToCenter(
+  const resultVoxels =
     shouldSymmetrize
       ? symmetrizeX(raw)
-      : raw,
-    options.volumeSize
-  );
+      : raw;
+
+  const voxels =
+    shiftToCenter(
+      resultVoxels,
+      options.volumeSize
+    );
 
   return {
     voxels,
-    palette,
+    palette:
+      paletteData.palette,
     width: w,
     height: h,
-    count: raw.length
+    count:
+      voxels.length
   };
 }
