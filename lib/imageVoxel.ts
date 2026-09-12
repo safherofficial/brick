@@ -30,7 +30,6 @@ export type ImageVoxelOptions = {
 export type ImageViews = {
   front: File;
   side?: File;
-  back?: File;
 };
 
 type Raster = {
@@ -718,85 +717,13 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   return components.filter((c) => c.length >= threshold).flat();
 }
 
-function buildSingleModel(
-  raster: Raster,
-  mask: boolean[][],
-  bounds: Bounds,
-  options: Required<ImageVoxelOptions>,
-  paletteValues: [number, number, number][],
-  palette: string[]
-): ImageImport {
-  const dimensions = adaptiveModelDimensions(
-    bounds,
-    null,
-    options.volumeSize,
-    options.maxVoxels,
-    options.heightMax,
-    options.symmetrize
-  );
-
-  const front = repairSilhouette(
-    resampleMaskToBounds(mask, bounds, dimensions.width, dimensions.height)
-  );
-
-  const voxels: ImageVoxel[] = [];
-
-  for (let y = 0; y < dimensions.height; y += 1) {
-    const ny = dimensions.height <= 1 ? 0.5 : y / (dimensions.height - 1);
-    for (let x = 0; x < dimensions.width; x += 1) {
-      if (!front[y]?.[x]) continue;
-
-      const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
-      const sample = sampleMapped(raster, bounds, nx, ny);
-
-      // Single-view MODEL remains a 2.5D reconstruction. Depth is generated
-      // uniformly for the resolved volume instead of varying by image color.
-      for (let z = 0; z < dimensions.depth; z += 1) {
-        const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
-        const shade = 1 - nz * 0.30;
-        voxels.push({
-          x,
-          y,
-          z,
-          c: nearestColor(
-            ditheredColor([
-              sample.r * shade,
-              sample.g * shade,
-              sample.b * shade
-            ], x, y + z),
-            paletteValues
-          )
-        });
-      }
-    }
-  }
-
-  if (!voxels.length) throw new Error("No voxels reconstructed");
-
-  if (options.symmetrize) {
-    symmetrizeVoxels(voxels, options.volumeSize, palette.length);
-  }
-
-  const normalized = normalizeToVolume(voxels, options.volumeSize);
-  return {
-    width: raster.width,
-    height: raster.height,
-    voxels: normalized,
-    palette,
-    count: normalized.length
-  };
-}
-
 function reconstructVisualHull(
   frontRaster: Raster,
   frontMask: boolean[][],
   frontBounds: Bounds,
-  sideRaster: Raster | undefined,
-  sideMask: boolean[][] | undefined,
-  sideBounds: Bounds | null,
-  backRaster: Raster | undefined,
-  backMask: boolean[][] | undefined,
-  backBounds: Bounds | null,
+  sideRaster: Raster,
+  sideMask: boolean[][],
+  sideBounds: Bounds,
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
   dimensions: Dimensions,
@@ -811,27 +738,14 @@ function reconstructVisualHull(
     )
   );
 
-  const side = sideMask && sideBounds
-    ? repairSilhouette(
-        resampleMaskToBounds(
-          sideMask,
-          sideBounds,
-          dimensions.depth,
-          dimensions.height
-        )
-      )
-    : undefined;
-
-  const back = backMask && backBounds
-    ? repairSilhouette(
-        resampleMaskToBounds(
-          backMask,
-          backBounds,
-          dimensions.width,
-          dimensions.height
-        )
-      )
-    : undefined;
+  const side = repairSilhouette(
+    resampleMaskToBounds(
+      sideMask,
+      sideBounds,
+      dimensions.depth,
+      dimensions.height
+    )
+  );
 
   const voxels: ImageVoxel[] = [];
 
@@ -864,25 +778,10 @@ function reconstructVisualHull(
           color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
         }
 
-        if (backRaster && backBounds && back?.[y]?.[x]) {
-          const backColor = sampleMapped(backRaster, backBounds, nx, ny);
-          color = blendRgb(
-            {
-              r: color[0],
-              g: color[1],
-              b: color[2],
-              a: 255,
-              visible: true
-            },
-            backColor,
-            nz * 0.68
-          );
-        } else {
-          // A small deterministic rear shade prevents a front-only color
-          // texture from looking like a second copy of the front image.
-          const shade = 1 - nz * 0.34;
-          color = [color[0] * shade, color[1] * shade, color[2] * shade];
-        }
+        // The rear volume is inferred only from the required FRONT + SIDE
+        // silhouettes and their colors; no third view is sampled.
+        const shade = 1 - nz * 0.34;
+        color = [color[0] * shade, color[1] * shade, color[2] * shade];
 
         voxels.push({
           x,
@@ -918,8 +817,6 @@ function buildNonModel(
   bounds: Bounds,
   sideMask: boolean[][] | undefined,
   sideBounds: Bounds | null,
-  backRaster: Raster | undefined,
-  backBounds: Bounds | null,
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
   palette: string[]
@@ -952,20 +849,7 @@ function buildNonModel(
       }
 
       for (let z = 0; z < finalDepth; z += 1) {
-        const zRatio = finalDepth <= 1 ? 0 : z / (finalDepth - 1);
-        let colorSample = frontColor;
-
-        if (backRaster && backBounds) {
-          const backColor = sampleMapped(backRaster, backBounds, nx, ny);
-          const blended = blendRgb(frontColor, backColor, zRatio);
-          colorSample = {
-            r: blended[0],
-            g: blended[1],
-            b: blended[2],
-            a: 255,
-            visible: true
-          };
-        }
+        const colorSample = frontColor;
 
         voxels.push({
           x,
@@ -1049,22 +933,13 @@ export async function imageToVoxels(
   const paletteValues = paletteRgb(palette);
 
   if (normalized.mode === "model") {
-    return buildSingleModel(
-      raster,
-      mask,
-      bounds,
-      normalized,
-      paletteValues,
-      palette
-    );
+    throw new Error("MODEL MODE REQUIRES FRONT + SIDE");
   }
 
   return buildNonModel(
     raster,
     mask,
     bounds,
-    undefined,
-    null,
     undefined,
     null,
     normalized,
@@ -1087,7 +962,11 @@ export async function imagesToVoxels(
     symmetrize: options.symmetrize ?? false
   };
 
-  const files = [views.front, views.side, views.back].filter(Boolean) as File[];
+  if (normalized.mode === "model" && !views.side) {
+    throw new Error("MODEL MODE REQUIRES FRONT + SIDE");
+  }
+
+  const files = [views.front, views.side].filter(Boolean) as File[];
   const rasters = await Promise.all(files.map((file) => loadImage(file)));
   const masks = rasters.map((raster) => buildMask(raster, normalized.mode));
 
@@ -1107,10 +986,6 @@ export async function imagesToVoxels(
   const sideMask = views.side ? masks[1] : undefined;
   const sideBounds = sideMask ? findBounds(sideMask) : null;
 
-  const backIndex = views.side ? 2 : 1;
-  const backRaster = views.back ? rasters[backIndex] : undefined;
-  const backMask = views.back ? masks[backIndex] : undefined;
-  const backBounds = backMask ? findBounds(backMask) : null;
 
   if (normalized.mode === "model") {
     const budget = effectiveBudget(
@@ -1128,6 +1003,10 @@ export async function imagesToVoxels(
       normalized.symmetrize
     );
 
+    if (!sideRaster || !sideMask || !sideBounds) {
+      throw new Error("MODEL MODE REQUIRES A VALID SIDE VIEW");
+    }
+
     return reconstructVisualHull(
       frontRaster,
       frontMask,
@@ -1135,9 +1014,6 @@ export async function imagesToVoxels(
       sideRaster,
       sideMask,
       sideBounds,
-      backRaster,
-      backMask,
-      backBounds,
       normalized,
       paletteValues,
       dimensions,
@@ -1151,8 +1027,6 @@ export async function imagesToVoxels(
     frontBounds,
     sideMask,
     sideBounds,
-    backRaster,
-    backBounds,
     normalized,
     paletteValues,
     palette
