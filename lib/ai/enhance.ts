@@ -16,19 +16,25 @@ function modelSize(dims: readonly number[] | undefined, fallback: number) {
   return { width: w, height: h };
 }
 
+function rasterToCanvas(raster: AiRaster) {
+  const canvas = document.createElement("canvas");
+  canvas.width = raster.width;
+  canvas.height = raster.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas unavailable");
+  const image = ctx.createImageData(raster.width, raster.height);
+  image.data.set(raster.rgba);
+  ctx.putImageData(image, 0, 0);
+  return canvas;
+}
+
 function toNchw(raster: AiRaster, width: number, height: number, imagenet: boolean) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Canvas unavailable");
-  const src = document.createElement("canvas");
-  src.width = raster.width;
-  src.height = raster.height;
-  const srcCtx = src.getContext("2d");
-  if (!srcCtx) throw new Error("Canvas unavailable");
-  srcCtx.putImageData(new ImageData(raster.rgba, raster.width, raster.height), 0, 0);
-  ctx.drawImage(src, 0, 0, width, height);
+  ctx.drawImage(rasterToCanvas(raster), 0, 0, width, height);
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const plane = width * height;
   const data = new Float32Array(3 * plane);
@@ -101,7 +107,7 @@ async function runMap(id: "segment" | "depth", raster: AiRaster, imagenet: boole
   );
   const result = await session.run({ [inputName]: tensor });
   const output = result[session.outputNames[0]];
-  const values = output.data as Float32Array;
+  const values = output.data;
   return resizeMap(values, size.width, size.height, raster.width, raster.height);
 }
 
