@@ -1,4 +1,3 @@
-```ts
 import { aiAvailable, loadModel } from "@/lib/ai/runtime";
 
 export type AiRaster = {
@@ -526,4 +525,3 @@ export async function enhanceRaster(
     depth
   };
 }
-```
