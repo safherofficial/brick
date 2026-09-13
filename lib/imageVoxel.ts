@@ -48,10 +48,25 @@ type Bounds = {
   height: number;
 };
 
+type Rgb = [number, number, number];
+
 const DEFAULT_PALETTE = [
-  "#111111", "#ffffff", "#d9d9d9", "#8a8a8a", "#3f3f3f",
-  "#d72d32", "#ff6b2d", "#f0c52b", "#4fae4f", "#1596d1",
-  "#3456c1", "#754bc4", "#d34893", "#7a4b2a", "#5a9b47", "#9e6a3a"
+  "#4a4a4a",
+  "#ffffff",
+  "#d9d9d9",
+  "#8a8a8a",
+  "#3f3f3f",
+  "#d72d32",
+  "#ff6b2d",
+  "#f0c52b",
+  "#4fae4f",
+  "#1596d1",
+  "#3456c1",
+  "#754bc4",
+  "#d34893",
+  "#7a4b2a",
+  "#5a9b47",
+  "#9e6a3a"
 ];
 
 const MAX_RASTER_EDGE = 512;
@@ -71,7 +86,7 @@ function hexOf(r: number, g: number, b: number) {
     .join("")}`;
 }
 
-function rgbDistance(a: [number, number, number], b: [number, number, number]) {
+function rgbDistance(a: Rgb, b: Rgb) {
   const dr = a[0] - b[0];
   const dg = a[1] - b[1];
   const db = a[2] - b[2];
@@ -80,6 +95,15 @@ function rgbDistance(a: [number, number, number], b: [number, number, number]) {
 
 function luma(r: number, g: number, b: number) {
   return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
+  const k = clamp(t, 0, 1);
+  return [
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k
+  ];
 }
 
 function loadImage(file: File): Promise<Raster> {
@@ -131,12 +155,12 @@ function sampleAt(raster: Raster, x: number, y: number): Sample {
   return { r, g, b, a, visible: a >= MIN_ALPHA };
 }
 
-function borderProbes(raster: Raster): [number, number, number][] {
-  const probes: [number, number, number][] = [];
+function borderProbes(raster: Raster): Rgb[] {
+  const probes: Rgb[] = [];
   const add = (x: number, y: number) => {
     const s = sampleAt(raster, x, y);
     if (!s.visible) return;
-    const color: [number, number, number] = [s.r, s.g, s.b];
+    const color: Rgb = [s.r, s.g, s.b];
     if (!probes.some((p) => rgbDistance(p, color) < 28 * 28)) probes.push(color);
   };
   const n = 32;
@@ -152,7 +176,7 @@ function borderProbes(raster: Raster): [number, number, number][] {
 
 function isBackground(
   sample: Sample,
-  probes: [number, number, number][],
+  probes: Rgb[],
   colorTol: number,
   lumaTol: number,
   maxSat: number
@@ -161,8 +185,7 @@ function isBackground(
   if (!probes.length) return false;
   const sampleL = luma(sample.r, sample.g, sample.b);
   const sat =
-    Math.max(sample.r, sample.g, sample.b) -
-    Math.min(sample.r, sample.g, sample.b);
+    Math.max(sample.r, sample.g, sample.b) - Math.min(sample.r, sample.g, sample.b);
   for (const probe of probes) {
     const dist = Math.sqrt(rgbDistance([sample.r, sample.g, sample.b], probe));
     if (
@@ -330,16 +353,42 @@ function dropSmallComponents(mask: boolean[][]) {
   return out;
 }
 
-function polishMask(mask: boolean[][]) {
+function peelHalo(mask: boolean[][], raster: Raster, probes: Rgb[]) {
+  if (!probes.length) return mask;
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const out = mask.map((row) => row.slice());
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x]) continue;
+      let exposed = false;
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1]
+      ]) {
+        if (!mask[y + dy]?.[x + dx]) exposed = true;
+      }
+      if (!exposed) continue;
+      const s = sampleAt(raster, x, y);
+      if (isBackground(s, probes, 34, 24, 80)) out[y][x] = false;
+    }
+  }
+  return coverageOf(out) >= 0.002 ? out : mask;
+}
+
+function polishMask(mask: boolean[][], raster?: Raster) {
   let next = morph(mask, 6, true);
   next = morph(next, 7, false);
   next = dropSmallComponents(next);
+  if (raster) next = peelHalo(next, raster, borderProbes(raster));
   return coverageOf(next) > 0 ? next : mask;
 }
 
 function cleanMask(raster: Raster) {
   if (hasUsefulAlpha(raster)) {
-    const fromAlpha = polishMask(alphaMask(raster));
+    const fromAlpha = polishMask(alphaMask(raster), raster);
     if (coverageOf(fromAlpha) >= 0.002) return fromAlpha;
   }
 
@@ -355,7 +404,7 @@ function cleanMask(raster: Raster) {
 
   for (const [colorTol, lumaTol, maxSat] of attempts) {
     const raw = floodBackground(raster, colorTol, lumaTol, maxSat);
-    const polished = polishMask(raw);
+    const polished = polishMask(raw, raster);
     const cov = coverageOf(polished);
     if (cov < 0.004 || cov > 0.97) continue;
     const score = cov < 0.65 ? cov : 1.3 - cov;
@@ -368,7 +417,7 @@ function cleanMask(raster: Raster) {
   if (best) return best;
 
   const opaque = alphaMask(raster);
-  if (coverageOf(opaque) >= 0.002) return polishMask(opaque);
+  if (coverageOf(opaque) >= 0.002) return polishMask(opaque, raster);
 
   return Array.from({ length: raster.height }, () =>
     Array.from({ length: raster.width }, () => true)
@@ -423,16 +472,13 @@ function resampleColor(
   width: number,
   height: number
 ) {
-  const colors: ([number, number, number] | null)[][] = Array.from(
-    { length: height },
-    () => Array(width).fill(null)
+  const colors: (Rgb | null)[][] = Array.from({ length: height }, () =>
+    Array(width).fill(null)
   );
   for (let y = 0; y < height; y += 1) {
-    const srcY =
-      bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1);
+    const srcY = bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1);
     for (let x = 0; x < width; x += 1) {
-      const srcX =
-        bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1);
+      const srcX = bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1);
       const sx = Math.round(srcX);
       const sy = Math.round(srcY);
       if (!mask[sy]?.[sx]) continue;
@@ -441,6 +487,71 @@ function resampleColor(
     }
   }
   return colors;
+}
+
+function nearestPaint(colors: (Rgb | null)[][], mask: boolean[][], x: number, y: number): Rgb {
+  const h = colors.length;
+  const w = colors[0]?.length ?? 0;
+  const ox = clamp(Math.round(x), 0, w - 1);
+  const oy = clamp(Math.round(y), 0, h - 1);
+  const direct = colors[oy]?.[ox];
+  if (direct) return direct;
+  for (let radius = 1; radius <= 12; radius += 1) {
+    for (let dy = -radius; dy <= radius; dy += 1) {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+        const nx = ox + dx;
+        const ny = oy + dy;
+        const hit = colors[ny]?.[nx];
+        if (hit && mask[ny]?.[nx]) return hit;
+      }
+    }
+  }
+  return [210, 210, 210];
+}
+
+function edgeColor(colors: (Rgb | null)[][], mask: boolean[][], y: number, fromLeft: boolean): Rgb {
+  const w = colors[0]?.length ?? 0;
+  if (fromLeft) {
+    for (let x = 0; x < w; x += 1) if (mask[y]?.[x]) return nearestPaint(colors, mask, x, y);
+  } else {
+    for (let x = w - 1; x >= 0; x -= 1) if (mask[y]?.[x]) return nearestPaint(colors, mask, x, y);
+  }
+  return nearestPaint(colors, mask, fromLeft ? 0 : w - 1, y);
+}
+
+function wrapColor(
+  x: number,
+  y: number,
+  z: number,
+  width: number,
+  height: number,
+  depth: number,
+  frontMask: boolean[][],
+  frontColors: (Rgb | null)[][],
+  sideColors?: (Rgb | null)[][] | null,
+  sideMask?: boolean[][] | null
+): Rgb {
+  const front = nearestPaint(frontColors, frontMask, x, y);
+  const back = nearestPaint(frontColors, frontMask, width - 1 - x, y);
+  const nz = depth <= 1 ? 0 : z / (depth - 1);
+  const nx = width <= 1 ? 0.5 : x / (width - 1);
+
+  if (z === 0) return front;
+  if (z === depth - 1) return back;
+
+  if (sideColors && sideMask) {
+    const side = nearestPaint(sideColors, sideMask, z, y);
+    const along = mixRgb(front, back, nz);
+    return mixRgb(along, side, 0.55);
+  }
+
+  const left = edgeColor(frontColors, frontMask, y, true);
+  const right = edgeColor(frontColors, frontMask, y, false);
+  const rim = mixRgb(left, right, nx);
+  const wrapped = mixRgb(front, back, nz);
+  const rimMix = nx < 0.12 || nx > 0.88 ? 0.65 : 0.28;
+  return mixRgb(wrapped, rim, rimMix);
 }
 
 function distanceField(mask: boolean[][]) {
@@ -476,18 +587,18 @@ function distanceField(mask: boolean[][]) {
   return dist;
 }
 
-function paletteRgb(palette: string[]): [number, number, number][] {
+function paletteRgb(palette: string[]): Rgb[] {
   return palette.map((hex) => {
     const h = hex.replace("#", "");
     return [
-      Number.parseInt(h.slice(0, 2), 16),
-      Number.parseInt(h.slice(2, 4), 16),
-      Number.parseInt(h.slice(4, 6), 16)
+      Number.parseInt(h.slice(0, 2), 16) || 0,
+      Number.parseInt(h.slice(2, 4), 16) || 0,
+      Number.parseInt(h.slice(4, 6), 16) || 0
     ];
   });
 }
 
-function nearestColor(rgb: [number, number, number], palette: [number, number, number][]) {
+function nearestColor(rgb: Rgb, palette: Rgb[]) {
   let best = 0;
   let bestD = Infinity;
   for (let i = 0; i < palette.length; i += 1) {
@@ -523,9 +634,9 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
   }
 
   const sorted = [...buckets.values()].sort((a, b) => b.weight - a.weight);
-  const chosen: [number, number, number][] = [];
+  const chosen: Rgb[] = [];
   for (const item of sorted) {
-    const rgb: [number, number, number] = [item.r, item.g, item.b];
+    const rgb: Rgb = [item.r, item.g, item.b];
     if (chosen.every((c) => rgbDistance(rgb, c) > 900)) chosen.push(rgb);
     if (chosen.length >= size) break;
   }
@@ -533,7 +644,7 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
     for (const hex of DEFAULT_PALETTE) {
       if (chosen.length >= size) break;
       const h = hex.replace("#", "");
-      const rgb: [number, number, number] = [
+      const rgb: Rgb = [
         Number.parseInt(h.slice(0, 2), 16),
         Number.parseInt(h.slice(2, 4), 16),
         Number.parseInt(h.slice(4, 6), 16)
@@ -685,7 +796,7 @@ function buildSculpted(
   for (const row of dist) for (const v of row) maxDist = Math.max(maxDist, v);
 
   let sideMask: boolean[][] | null = null;
-  let sideColors: ([number, number, number] | null)[][] | null = null;
+  let sideColors: (Rgb | null)[][] | null = null;
   if (side) {
     sideMask = resampleMask(side.mask, side.bounds, dims.depth, dims.height);
     sideColors = resampleColor(side.raster, side.mask, side.bounds, dims.depth, dims.height);
@@ -698,25 +809,27 @@ function buildSculpted(
   for (let y = 0; y < dims.height; y += 1) {
     for (let x = 0; x < dims.width; x += 1) {
       if (!front[y][x]) continue;
-      const rgb = colors[y][x];
-      if (!rgb) continue;
-
       const half = Math.max(1, Math.round((dist[y][x] / maxDist) * (dims.depth / 2)));
-
       for (let z = 0; z < dims.depth; z += 1) {
         if (Math.abs(z - centerZ) > half) continue;
         if (sideMask && !sideMask[y]?.[z]) continue;
-
-        const useSide =
-          sideColors?.[y]?.[z] &&
-          (z === 0 || z === dims.depth - 1 || Math.abs(z - centerZ) > half - 1);
-        const shade = 0.88 + 0.12 * (1 - Math.abs(z - centerZ) / Math.max(1, half));
-        const src = useSide ? sideColors![y][z]! : rgb;
+        const rgb = wrapColor(
+          x,
+          y,
+          z,
+          dims.width,
+          dims.height,
+          dims.depth,
+          front,
+          colors,
+          sideColors,
+          sideMask
+        );
         voxels.push({
           x,
           y,
           z,
-          c: nearestColor([src[0] * shade, src[1] * shade, src[2] * shade], paletteValues)
+          c: nearestColor(rgb, paletteValues)
         });
       }
     }
