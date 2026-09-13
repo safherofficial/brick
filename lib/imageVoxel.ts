@@ -56,8 +56,8 @@ const DEFAULT_PALETTE = [
   "#7ec8e8",
   "#f4a04a",
   "#8b5a2b",
-  "#111111",
-  "#6b7280",
+  "#4b5563",
+  "#9ca3af",
   "#f2f0e8",
   "#ffffff"
 ];
@@ -88,6 +88,15 @@ function luma(rgb: Rgb) {
 
 function sat(rgb: Rgb) {
   return Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
+}
+
+function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
+  const k = clamp(t, 0, 1);
+  return [
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k
+  ];
 }
 
 function loadImage(file: File): Promise<Raster> {
@@ -129,8 +138,8 @@ function loadImage(file: File): Promise<Raster> {
 }
 
 function pixel(raster: Raster, x: number, y: number) {
-  const xx = clamp(x, 0, raster.width - 1);
-  const yy = clamp(y, 0, raster.height - 1);
+  const xx = clamp(Math.round(x), 0, raster.width - 1);
+  const yy = clamp(Math.round(y), 0, raster.height - 1);
   const i = (yy * raster.width + xx) * 4;
   return {
     rgb: [raster.rgba[i], raster.rgba[i + 1], raster.rgba[i + 2]] as Rgb,
@@ -139,7 +148,7 @@ function pixel(raster: Raster, x: number, y: number) {
 }
 
 function cornerBackground(raster: Raster): Rgb {
-  const pts = [
+  const pts: [number, number][] = [
     [2, 2],
     [raster.width - 3, 2],
     [2, raster.height - 3],
@@ -162,120 +171,86 @@ function cornerBackground(raster: Raster): Rgb {
     n += 1;
   }
   if (!n) return [255, 255, 255];
-  return [r / n, g / n, b / b ? b / n : 255];
+  return [r / n, g / n, b / n];
 }
 
-function isBg(rgb: Rgb, a: number, bg: Rgb, tol: number) {
+function isBackground(rgb: Rgb, a: number, bg: Rgb, tol: number) {
   if (a < MIN_ALPHA) return true;
   const d = Math.sqrt(dist2(rgb, bg));
   const dl = Math.abs(luma(rgb) - luma(bg));
-  const colorful = sat(rgb) >= 40;
-  if (colorful && d > 28) return false;
-  return d <= tol && dl <= tol * 0.85;
+  if (sat(rgb) >= 40 && d > 28) return false;
+  return d <= tol && dl <= tol * 0.9;
 }
 
-function buildSubjectMask(raster: Raster) {
+function floodSubject(raster: Raster, tol: number, useAlpha: boolean) {
   const w = raster.width;
   const h = raster.height;
   const bg = cornerBackground(raster);
-  const alphaCount = (() => {
-    let n = 0;
-    for (let i = 3; i < raster.rgba.length; i += 4) if (raster.rgba[i] < 128) n += 1;
-    return n;
-  })();
-  const useAlpha = alphaCount / (w * h) >= 0.02;
-
-  const tryTol = (tol: number) => {
-    const candidate = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
-    for (let y = 0; y < h; y += 1) {
-      for (let x = 0; x < w; x += 1) {
-        const p = pixel(raster, x, y);
-        candidate[y][x] = useAlpha
-          ? p.a < MIN_ALPHA || isBg(p.rgb, p.a, bg, tol)
-          : isBg(p.rgb, p.a, bg, tol);
-      }
-    }
-    const visited = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
-    const stack: [number, number][] = [];
-    const seed = (x: number, y: number) => {
-      if (x < 0 || y < 0 || x >= w || y >= h) return;
-      if (!candidate[y][x] || visited[y][x]) return;
-      visited[y][x] = true;
-      stack.push([x, y]);
-    };
+  const candidate = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
+  for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
-      seed(x, 0);
-      seed(x, h - 1);
+      const p = pixel(raster, x, y);
+      candidate[y][x] = useAlpha
+        ? p.a < MIN_ALPHA || isBackground(p.rgb, p.a, bg, tol)
+        : isBackground(p.rgb, p.a, bg, tol);
     }
-    for (let y = 0; y < h; y += 1) {
-      seed(0, y);
-      seed(w - 1, y);
-    }
-    while (stack.length) {
-      const [x, y] = stack.pop()!;
-      seed(x + 1, y);
-      seed(x - 1, y);
-      seed(x, y + 1);
-      seed(x, y - 1);
-    }
-    return Array.from({ length: h }, (_, y) =>
-      Array.from({ length: w }, (_, x) => !visited[y][x] && pixel(raster, x, y).a >= MIN_ALPHA)
-    );
+  }
+
+  const seen = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
+  const stack: [number, number][] = [];
+  const seed = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    if (!candidate[y][x] || seen[y][x]) return;
+    seen[y][x] = true;
+    stack.push([x, y]);
   };
-
-  const scoreMask = (mask: boolean[][]) => {
-    let hits = 0;
-    let minX = w;
-    let minY = h;
-    let maxX = -1;
-    let maxY = -1;
-    for (let y = 0; y < h; y += 1) {
-      for (let x = 0; x < w; x += 1) {
-        if (!mask[y][x]) continue;
-        hits += 1;
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-      }
-    }
-    if (hits < 32) return { hits, fill: 0, frame: true, mask };
-    const bw = maxX - minX + 1;
-    const bh = maxY - minY + 1;
-    const fill = hits / (bw * bh);
-    const fullPlane = bw >= w * 0.92 && bh >= h * 0.92;
-    const frame = fullPlane && fill < 0.12;
-    return { hits, fill, frame, mask };
-  };
-
-  let best: boolean[][] | null = null;
-  let bestHits = 0;
-  for (const tol of [26, 36, 48, 64, 84]) {
-    const scored = scoreMask(tryTol(tol));
-    if (scored.frame) continue;
-    if (scored.hits > bestHits && scored.fill >= 0.12) {
-      best = scored.mask;
-      bestHits = scored.hits;
-    }
+  for (let x = 0; x < w; x += 1) {
+    seed(x, 0);
+    seed(x, h - 1);
+  }
+  for (let y = 0; y < h; y += 1) {
+    seed(0, y);
+    seed(w - 1, y);
+  }
+  while (stack.length) {
+    const [x, y] = stack.pop()!;
+    seed(x + 1, y);
+    seed(x - 1, y);
+    seed(x, y + 1);
+    seed(x, y - 1);
   }
 
-  if (!best) {
-    for (const tol of [22, 40, 72]) {
-      const scored = scoreMask(tryTol(tol));
-      if (!scored.frame && scored.hits > bestHits) {
-        best = scored.mask;
-        bestHits = scored.hits;
-      }
+  return Array.from({ length: h }, (_, y) =>
+    Array.from({ length: w }, (_, x) => !seen[y][x] && pixel(raster, x, y).a >= MIN_ALPHA)
+  );
+}
+
+function measureMask(mask: boolean[][]) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  let hits = 0;
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x]) continue;
+      hits += 1;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
     }
   }
-
-  if (!best || bestHits < 32) {
-    throw new Error("No visible subject found");
+  if (hits < 24) {
+    return { hits, fill: 0, frame: true, full: false };
   }
-
-  const kept = dropIslands(best);
-  if (scoreMask(kept).hits < 32) throw new Error("No visible subject found");
-  return kept;
+  const bw = maxX - minX + 1;
+  const bh = maxY - minY + 1;
+  const fill = hits / (bw * bh);
+  const full = bw >= w * 0.92 && bh >= h * 0.92;
+  return { hits, fill, frame: full && fill < 0.12, full };
 }
 
 function dropIslands(mask: boolean[][]) {
@@ -310,14 +285,40 @@ function dropIslands(mask: boolean[][]) {
     }
   }
   if (!parts.length) return mask;
-  const largest = Math.max(...parts.map((p) => p.length));
-  const min = Math.max(24, Math.round(largest * 0.02));
+  const largest = Math.max(...parts.map((part) => part.length));
+  const min = Math.max(24, Math.round(largest * 0.015));
   const out = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
   for (const cells of parts) {
     if (cells.length < min) continue;
     for (const [x, y] of cells) out[y][x] = true;
   }
   return out;
+}
+
+function buildSubjectMask(raster: Raster) {
+  let alphaHits = 0;
+  for (let i = 3; i < raster.rgba.length; i += 4) {
+    if (raster.rgba[i] < 128) alphaHits += 1;
+  }
+  const useAlpha = alphaHits / (raster.width * raster.height) >= 0.02;
+
+  let best: boolean[][] | null = null;
+  let bestScore = -1;
+
+  for (const tol of [24, 32, 40, 52, 64, 80]) {
+    const raw = dropIslands(floodSubject(raster, tol, useAlpha));
+    const stats = measureMask(raw);
+    if (stats.hits < 24 || stats.frame) continue;
+    if (stats.full && stats.fill > 0.94) continue;
+    const score = stats.hits * (stats.fill < 0.2 ? 0.35 : 1);
+    if (score > bestScore) {
+      best = raw;
+      bestScore = score;
+    }
+  }
+
+  if (!best) throw new Error("No visible subject found");
+  return best;
 }
 
 function findBounds(mask: boolean[][]): Bounds | null {
@@ -345,6 +346,142 @@ function findBounds(mask: boolean[][]): Bounds | null {
   };
 }
 
+function resampleMask(mask: boolean[][], bounds: Bounds, width: number, height: number) {
+  const out = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
+  for (let y = 0; y < height; y += 1) {
+    const srcY = Math.round(
+      bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1)
+    );
+    for (let x = 0; x < width; x += 1) {
+      const srcX = Math.round(
+        bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1)
+      );
+      out[y][x] = !!mask[srcY]?.[srcX];
+    }
+  }
+  return out;
+}
+
+function resampleColor(
+  raster: Raster,
+  mask: boolean[][],
+  bounds: Bounds,
+  width: number,
+  height: number
+) {
+  const colors: (Rgb | null)[][] = Array.from({ length: height }, () =>
+    Array(width).fill(null)
+  );
+  for (let y = 0; y < height; y += 1) {
+    const srcY = bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1);
+    for (let x = 0; x < width; x += 1) {
+      const srcX = bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1);
+      if (!mask[Math.round(srcY)]?.[Math.round(srcX)]) continue;
+      colors[y][x] = pixel(raster, srcX, srcY).rgb;
+    }
+  }
+  return colors;
+}
+
+function nearestPaint(colors: (Rgb | null)[][], mask: boolean[][], x: number, y: number): Rgb {
+  const h = colors.length;
+  const w = colors[0]?.length ?? 0;
+  const ox = clamp(Math.round(x), 0, Math.max(0, w - 1));
+  const oy = clamp(Math.round(y), 0, Math.max(0, h - 1));
+  const direct = colors[oy]?.[ox];
+  if (direct) return direct;
+  for (let radius = 1; radius <= 14; radius += 1) {
+    for (let dy = -radius; dy <= radius; dy += 1) {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+        const hit = colors[oy + dy]?.[ox + dx];
+        if (hit && mask[oy + dy]?.[ox + dx]) return hit;
+      }
+    }
+  }
+  return [214, 214, 214];
+}
+
+function edgeColor(colors: (Rgb | null)[][], mask: boolean[][], y: number, fromLeft: boolean): Rgb {
+  const w = colors[0]?.length ?? 0;
+  if (fromLeft) {
+    for (let x = 0; x < w; x += 1) {
+      if (mask[y]?.[x]) return nearestPaint(colors, mask, x, y);
+    }
+  } else {
+    for (let x = w - 1; x >= 0; x -= 1) {
+      if (mask[y]?.[x]) return nearestPaint(colors, mask, x, y);
+    }
+  }
+  return nearestPaint(colors, mask, fromLeft ? 0 : Math.max(0, w - 1), y);
+}
+
+function wrapColor(
+  x: number,
+  y: number,
+  z: number,
+  width: number,
+  depth: number,
+  frontMask: boolean[][],
+  frontColors: (Rgb | null)[][],
+  sideMask?: boolean[][] | null,
+  sideColors?: (Rgb | null)[][] | null
+): Rgb {
+  const front = nearestPaint(frontColors, frontMask, x, y);
+  const back = nearestPaint(frontColors, frontMask, width - 1 - x, y);
+  if (z === 0) return front;
+  if (z === depth - 1) return back;
+
+  const nz = depth <= 1 ? 0.5 : z / (depth - 1);
+  const nx = width <= 1 ? 0.5 : x / (width - 1);
+  let color = mixRgb(front, back, nz);
+
+  if (sideColors && sideMask) {
+    color = mixRgb(color, nearestPaint(sideColors, sideMask, z, y), 0.45);
+  }
+
+  const rim = mixRgb(
+    edgeColor(frontColors, frontMask, y, true),
+    edgeColor(frontColors, frontMask, y, false),
+    nx
+  );
+  const rimMix = nx < 0.1 || nx > 0.9 ? 0.55 : 0.18;
+  return mixRgb(color, rim, rimMix);
+}
+
+function distanceField(mask: boolean[][]) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const inf = w + h;
+  const dist = Array.from({ length: h }, (_, y) =>
+    Array.from({ length: w }, (_, x) => (mask[y][x] ? inf : 0))
+  );
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x]) continue;
+      let best = dist[y][x];
+      if (x > 0) best = Math.min(best, dist[y][x - 1] + 1);
+      if (y > 0) best = Math.min(best, dist[y - 1][x] + 1);
+      if (x > 0 && y > 0) best = Math.min(best, dist[y - 1][x - 1] + 1.414);
+      if (x + 1 < w && y > 0) best = Math.min(best, dist[y - 1][x + 1] + 1.414);
+      dist[y][x] = best;
+    }
+  }
+  for (let y = h - 1; y >= 0; y -= 1) {
+    for (let x = w - 1; x >= 0; x -= 1) {
+      if (!mask[y][x]) continue;
+      let best = dist[y][x];
+      if (x + 1 < w) best = Math.min(best, dist[y][x + 1] + 1);
+      if (y + 1 < h) best = Math.min(best, dist[y + 1][x] + 1);
+      if (x + 1 < w && y + 1 < h) best = Math.min(best, dist[y + 1][x + 1] + 1.414);
+      if (x > 0 && y + 1 < h) best = Math.min(best, dist[y + 1][x - 1] + 1.414);
+      dist[y][x] = best;
+    }
+  }
+  return dist;
+}
+
 function nearestColor(rgb: Rgb, palette: Rgb[]) {
   let best = 0;
   let bestD = Infinity;
@@ -358,26 +495,32 @@ function nearestColor(rgb: Rgb, palette: Rgb[]) {
   return best;
 }
 
-function createPalette(raster: Raster, mask: boolean[][], size = 48) {
+function createPalette(rasters: Raster[], masks: boolean[][][], size = 56) {
   const buckets = new Map<string, { rgb: Rgb; n: number }>();
-  for (let y = 0; y < raster.height; y += 2) {
-    for (let x = 0; x < raster.width; x += 2) {
-      if (!mask[y]?.[x]) continue;
-      const p = pixel(raster, x, y);
-      if (p.a < MIN_ALPHA) continue;
-      const r = Math.round(p.rgb[0] / 8) * 8;
-      const g = Math.round(p.rgb[1] / 8) * 8;
-      const b = Math.round(p.rgb[2] / 8) * 8;
-      const key = `${r}:${g}:${b}`;
-      const hit = buckets.get(key);
-      if (hit) hit.n += 1;
-      else buckets.set(key, { rgb: [r, g, b], n: 1 });
+  for (let v = 0; v < rasters.length; v += 1) {
+    const raster = rasters[v];
+    const mask = masks[v];
+    for (let y = 0; y < raster.height; y += 2) {
+      for (let x = 0; x < raster.width; x += 2) {
+        if (!mask[y]?.[x]) continue;
+        const p = pixel(raster, x, y);
+        if (p.a < MIN_ALPHA) continue;
+        const rgb: Rgb = [
+          Math.round(p.rgb[0] / 8) * 8,
+          Math.round(p.rgb[1] / 8) * 8,
+          Math.round(p.rgb[2] / 8) * 8
+        ];
+        const key = rgb.join(":");
+        const hit = buckets.get(key);
+        if (hit) hit.n += 1;
+        else buckets.set(key, { rgb, n: 1 });
+      }
     }
   }
-  const sorted = [...buckets.values()].sort((a, b) => b.n - a.n);
+
   const chosen: Rgb[] = [];
-  for (const item of sorted) {
-    if (chosen.every((c) => dist2(c, item.rgb) > 650)) chosen.push(item.rgb);
+  for (const item of [...buckets.values()].sort((a, b) => b.n - a.n)) {
+    if (chosen.every((c) => dist2(c, item.rgb) > 600)) chosen.push(item.rgb);
     if (chosen.length >= size) break;
   }
   for (const hex of DEFAULT_PALETTE) {
@@ -397,11 +540,75 @@ function paletteRgb(palette: string[]): Rgb[] {
   return palette.map((hex) => {
     const h = hex.replace("#", "");
     return [
-      Number.parseInt(h.slice(0, 2), 16),
-      Number.parseInt(h.slice(2, 4), 16),
-      Number.parseInt(h.slice(4, 6), 16)
+      Number.parseInt(h.slice(0, 2), 16) || 0,
+      Number.parseInt(h.slice(2, 4), 16) || 0,
+      Number.parseInt(h.slice(4, 6), 16) || 0
     ];
   });
+}
+
+function voxelKey(v: ImageVoxel) {
+  return `${v.x}:${v.y}:${v.z}`;
+}
+
+function keepLargest(voxels: ImageVoxel[]) {
+  if (voxels.length < 2) return voxels;
+  const map = new Map(voxels.map((v) => [voxelKey(v), v]));
+  const seen = new Set<string>();
+  const parts: ImageVoxel[][] = [];
+  const dirs = [
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1]
+  ] as const;
+
+  for (const start of voxels) {
+    const startKey = voxelKey(start);
+    if (seen.has(startKey)) continue;
+    const part: ImageVoxel[] = [];
+    const stack = [start];
+    seen.add(startKey);
+    while (stack.length) {
+      const cur = stack.pop()!;
+      part.push(cur);
+      for (const [dx, dy, dz] of dirs) {
+        const key = `${cur.x + dx}:${cur.y + dy}:${cur.z + dz}`;
+        if (seen.has(key)) continue;
+        const next = map.get(key);
+        if (!next) continue;
+        seen.add(key);
+        stack.push(next);
+      }
+    }
+    parts.push(part);
+  }
+
+  const largest = Math.max(...parts.map((part) => part.length));
+  const min = Math.max(10, Math.round(largest * 0.02));
+  return parts.filter((part) => part.length >= min).flat();
+}
+
+function symmetrizeVoxels(voxels: ImageVoxel[], volumeSize: number) {
+  if (!voxels.length) return;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const v of voxels) {
+    minX = Math.min(minX, v.x);
+    maxX = Math.max(maxX, v.x);
+  }
+  const center = (minX + maxX) / 2;
+  const existing = new Set(voxels.map(voxelKey));
+  for (const voxel of [...voxels]) {
+    const mx = Math.round(center * 2 - voxel.x);
+    if (mx < 0 || mx >= volumeSize) continue;
+    const key = `${mx}:${voxel.y}:${voxel.z}`;
+    if (existing.has(key)) continue;
+    existing.add(key);
+    voxels.push({ x: mx, y: voxel.y, z: voxel.z, c: voxel.c });
+  }
 }
 
 function placeOnGround(voxels: ImageVoxel[], volumeSize: number) {
@@ -428,41 +635,98 @@ function placeOnGround(voxels: ImageVoxel[], volumeSize: number) {
   }));
 }
 
-function buildSolidModel(
-  raster: Raster,
-  mask: boolean[][],
-  bounds: Bounds,
-  options: Required<ImageVoxelOptions>,
-  palette: string[]
-): ImageImport {
-  const maxAxis = Math.max(8, options.volumeSize - 6);
+function modelSize(bounds: Bounds, volumeSize: number, heightMax: number) {
+  const maxAxis = Math.max(8, volumeSize - 6);
   const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
-  const width = Math.max(4, Math.round(bounds.width * scale));
-  const height = Math.max(4, Math.round(bounds.height * scale));
-  const depth = Math.max(2, Math.min(maxAxis, Math.round(options.heightMax)));
+  return {
+    width: Math.max(4, Math.round(bounds.width * scale)),
+    height: Math.max(4, Math.round(bounds.height * scale)),
+    depth: Math.max(3, Math.min(maxAxis, Math.round(heightMax)))
+  };
+}
+
+function buildModel(
+  frontRaster: Raster,
+  frontMask: boolean[][],
+  frontBounds: Bounds,
+  options: Required<ImageVoxelOptions>,
+  palette: string[],
+  side?: { raster: Raster; mask: boolean[][]; bounds: Bounds }
+): ImageImport {
+  const dims = modelSize(frontBounds, options.volumeSize, options.heightMax);
+  const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
+  const frontColors = resampleColor(
+    frontRaster,
+    frontMask,
+    frontBounds,
+    dims.width,
+    dims.height
+  );
+  const dist = distanceField(front);
+  let maxDist = 1;
+  for (const row of dist) {
+    for (const value of row) maxDist = Math.max(maxDist, value);
+  }
+
+  let sideMask: boolean[][] | null = null;
+  let sideColors: (Rgb | null)[][] | null = null;
+  if (side) {
+    sideMask = resampleMask(side.mask, side.bounds, dims.depth, dims.height);
+    sideColors = resampleColor(side.raster, side.mask, side.bounds, dims.depth, dims.height);
+  }
+
   const colors = paletteRgb(palette);
   const voxels: ImageVoxel[] = [];
+  const centerZ = (dims.depth - 1) / 2;
+  const maxRadius = Math.max(1, Math.floor((dims.depth - 1) / 2));
 
-  for (let y = 0; y < height; y += 1) {
-    const srcY = Math.round(bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1));
-    for (let x = 0; x < width; x += 1) {
-      const srcX = Math.round(bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1));
-      if (!mask[srcY]?.[srcX]) continue;
-      const p = pixel(raster, srcX, srcY);
-      const c = nearestColor(p.rgb, colors);
-      for (let z = 0; z < depth; z += 1) {
-        voxels.push({ x, y, z, c });
+  for (let y = 0; y < dims.height; y += 1) {
+    for (let x = 0; x < dims.width; x += 1) {
+      if (!front[y][x]) continue;
+      const radius = Math.max(
+        1,
+        Math.round((dist[y][x] / maxDist) * maxRadius)
+      );
+      for (let z = 0; z < dims.depth; z += 1) {
+        if (Math.abs(z - centerZ) > radius) continue;
+        if (sideMask && !sideMask[y]?.[z]) continue;
+        voxels.push({
+          x,
+          y,
+          z,
+          c: nearestColor(
+            wrapColor(
+              x,
+              y,
+              z,
+              dims.width,
+              dims.depth,
+              front,
+              frontColors,
+              sideMask,
+              sideColors
+            ),
+            colors
+          )
+        });
       }
     }
   }
 
   if (!voxels.length) throw new Error("No voxels reconstructed");
 
-  const flipped = voxels.map((v) => ({ ...v, y: height - 1 - v.y }));
-  const grounded = placeOnGround(flipped, options.volumeSize);
+  let cleaned = keepLargest(
+    voxels.map((v) => ({ ...v, y: dims.height - 1 - v.y }))
+  );
+  if (options.symmetrize) {
+    symmetrizeVoxels(cleaned, options.volumeSize);
+    cleaned = keepLargest(cleaned);
+  }
+
+  const grounded = placeOnGround(cleaned, options.volumeSize);
   return {
-    width: raster.width,
-    height: raster.height,
+    width: frontRaster.width,
+    height: frontRaster.height,
     voxels: grounded,
     palette,
     count: grounded.length
@@ -472,25 +736,27 @@ function buildSolidModel(
 function normalizeOptions(options: ImageVoxelOptions): Required<ImageVoxelOptions> {
   return {
     volumeSize: options.volumeSize ?? 128,
-    heightMax: options.heightMax ?? 12,
+    heightMax: options.heightMax ?? 8,
     maxVoxels: options.maxVoxels ?? 100000,
     symmetrize: options.symmetrize ?? false
   };
-}
-
-function convert(raster: Raster, options: Required<ImageVoxelOptions>): ImageImport {
-  const mask = buildSubjectMask(raster);
-  const bounds = findBounds(mask);
-  if (!bounds) throw new Error("No visible subject found");
-  const palette = createPalette(raster, mask, 64);
-  return buildSolidModel(raster, mask, bounds, options, palette);
 }
 
 export async function imageToVoxels(
   file: File,
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
-  return convert(await loadImage(file), normalizeOptions(options));
+  const raster = await loadImage(file);
+  const mask = buildSubjectMask(raster);
+  const bounds = findBounds(mask);
+  if (!bounds) throw new Error("No visible subject found");
+  return buildModel(
+    raster,
+    mask,
+    bounds,
+    normalizeOptions(options),
+    createPalette([raster], [mask])
+  );
 }
 
 export async function imagesToVoxels(
@@ -498,5 +764,32 @@ export async function imagesToVoxels(
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
   if (!views.front) throw new Error("FRONT IMAGE REQUIRED");
-  return convert(await loadImage(views.front), normalizeOptions(options));
+  const frontRaster = await loadImage(views.front);
+  const frontMask = buildSubjectMask(frontRaster);
+  const frontBounds = findBounds(frontMask);
+  if (!frontBounds) throw new Error("No visible subject found in FRONT");
+  const normalized = normalizeOptions(options);
+
+  if (!views.side) {
+    return buildModel(
+      frontRaster,
+      frontMask,
+      frontBounds,
+      normalized,
+      createPalette([frontRaster], [frontMask])
+    );
+  }
+
+  const sideRaster = await loadImage(views.side);
+  const sideMask = buildSubjectMask(sideRaster);
+  const sideBounds = findBounds(sideMask);
+  if (!sideBounds) throw new Error("No visible subject found in SIDE");
+  return buildModel(
+    frontRaster,
+    frontMask,
+    frontBounds,
+    normalized,
+    createPalette([frontRaster, sideRaster], [frontMask, sideMask]),
+    { raster: sideRaster, mask: sideMask, bounds: sideBounds }
+  );
 }
