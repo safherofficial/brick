@@ -1,4 +1,4 @@
-import { loadModel } from "@/lib/ai/runtime";
+import { aiAvailable, loadModel } from "@/lib/ai/runtime";
 
 export type AiRaster = {
   width: number;
@@ -107,25 +107,34 @@ async function runMap(id: "segment" | "depth", raster: AiRaster, imagenet: boole
   );
   const result = await session.run({ [inputName]: tensor });
   const output = result[session.outputNames[0]];
-  const values = output.data;
-  return resizeMap(values, size.width, size.height, raster.width, raster.height);
+  return resizeMap(output.data, size.width, size.height, raster.width, raster.height);
 }
 
 export async function enhanceRaster(raster: AiRaster) {
+  const available = await aiAvailable();
+  if (!available.segment && !available.depth) {
+    return { raster, depth: null as Float32Array | null };
+  }
+
   const next: AiRaster = {
     width: raster.width,
     height: raster.height,
     rgba: new Uint8ClampedArray(raster.rgba)
   };
 
-  const alpha = await runMap("segment", raster, false);
+  const alpha = available.segment ? await runMap("segment", raster, false) : null;
   if (alpha) {
+    let kept = 0;
     for (let i = 0; i < alpha.length; i += 1) {
-      next.rgba[i * 4 + 3] = clamp(Math.round(alpha[i] * 255), 0, 255);
+      if (alpha[i] >= 0.35) kept += 1;
+    }
+    if (kept >= raster.width * raster.height * 0.01) {
+      for (let i = 0; i < alpha.length; i += 1) {
+        next.rgba[i * 4 + 3] = clamp(Math.round(alpha[i] * 255), 0, 255);
+      }
     }
   }
 
-  const rawDepth = await runMap("depth", raster, true);
-  const depth = rawDepth ? normalizeDepth(rawDepth) : null;
-  return { raster: next, depth };
+  const rawDepth = available.depth ? await runMap("depth", raster, true) : null;
+  return { raster: next, depth: rawDepth ? normalizeDepth(rawDepth) : null };
 }
