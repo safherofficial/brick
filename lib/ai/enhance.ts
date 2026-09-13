@@ -13,7 +13,7 @@ function clamp(n: number, lo: number, hi: number) {
 function modelSize(dims: readonly number[] | undefined, fallback: number) {
   const w = dims?.[3] && dims[3] > 0 ? dims[3] : fallback;
   const h = dims?.[2] && dims[2] > 0 ? dims[2] : fallback;
-  return { width: w, height: h };
+  return { width: Number(w), height: Number(h) };
 }
 
 function rasterToCanvas(raster: AiRaster) {
@@ -51,13 +51,21 @@ function toNchw(raster: AiRaster, width: number, height: number, imagenet: boole
   return data;
 }
 
-function resizeMap(
-  src: Float32Array,
-  srcW: number,
-  srcH: number,
-  dstW: number,
-  dstH: number
-) {
+function planeFromOutput(data: Float32Array, dims: readonly number[]) {
+  if (dims.length === 4) {
+    const h = dims[2];
+    const w = dims[3];
+    const start = (dims[1] - 1) * h * w;
+    return { map: data.subarray(start, start + h * w), width: w, height: h };
+  }
+  if (dims.length === 3) {
+    return { map: data, width: dims[2], height: dims[1] };
+  }
+  const side = Math.max(1, Math.round(Math.sqrt(data.length)));
+  return { map: data, width: side, height: side };
+}
+
+function resizeMap(src: Float32Array, srcW: number, srcH: number, dstW: number, dstH: number) {
   const out = new Float32Array(dstW * dstH);
   for (let y = 0; y < dstH; y += 1) {
     const sy = ((y + 0.5) * srcH) / dstH - 0.5;
@@ -80,7 +88,7 @@ function resizeMap(
   return out;
 }
 
-function normalizeDepth(values: Float32Array) {
+function normalizeMap(values: Float32Array) {
   let min = Infinity;
   let max = -Infinity;
   for (const value of values) {
@@ -93,21 +101,23 @@ function normalizeDepth(values: Float32Array) {
   return out;
 }
 
-async function runMap(id: "segment" | "depth", raster: AiRaster, imagenet: boolean) {
+async function runMap(id: "segment" | "depth", raster: AiRaster) {
   const session = await loadModel(id);
   if (!session) return null;
   const ort = await import("onnxruntime-web");
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
-  const size = modelSize(dims, id === "segment" ? 384 : 256);
-  const tensor = new ort.Tensor(
-    "float32",
-    toNchw(raster, size.width, size.height, imagenet),
-    [1, 3, size.height, size.width]
-  );
+  const size = modelSize(dims, id === "segment" ? 320 : 256);
+  const tensor = new ort.Tensor("float32", toNchw(raster, size.width, size.height, true), [
+    1,
+    3,
+    size.height,
+    size.width
+  ]);
   const result = await session.run({ [inputName]: tensor });
   const output = result[session.outputNames[0]];
-  return resizeMap(output.data, size.width, size.height, raster.width, raster.height);
+  const plane = planeFromOutput(output.data as Float32Array, output.dims as number[]);
+  return resizeMap(normalizeMap(plane.map), plane.width, plane.height, raster.width, raster.height);
 }
 
 export async function enhanceRaster(raster: AiRaster) {
@@ -122,12 +132,10 @@ export async function enhanceRaster(raster: AiRaster) {
     rgba: new Uint8ClampedArray(raster.rgba)
   };
 
-  const alpha = available.segment ? await runMap("segment", raster, false) : null;
+  const alpha = available.segment ? await runMap("segment", raster) : null;
   if (alpha) {
     let kept = 0;
-    for (let i = 0; i < alpha.length; i += 1) {
-      if (alpha[i] >= 0.35) kept += 1;
-    }
+    for (let i = 0; i < alpha.length; i += 1) if (alpha[i] >= 0.35) kept += 1;
     if (kept >= raster.width * raster.height * 0.01) {
       for (let i = 0; i < alpha.length; i += 1) {
         next.rgba[i * 4 + 3] = clamp(Math.round(alpha[i] * 255), 0, 255);
@@ -135,6 +143,6 @@ export async function enhanceRaster(raster: AiRaster) {
     }
   }
 
-  const rawDepth = available.depth ? await runMap("depth", raster, true) : null;
-  return { raster: next, depth: rawDepth ? normalizeDepth(rawDepth) : null };
+  const depth = available.depth ? await runMap("depth", raster) : null;
+  return { raster: next, depth };
 }
