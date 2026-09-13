@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";import Link from "next/link";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -44,6 +45,8 @@ import {
   imagesToVoxels,
   type ImageImport
 } from "@/lib/imageVoxel";
+import { CATALOG } from "@/lib/ai/catalog";
+import { aiAvailable } from "@/lib/ai/runtime";
 import {
   consumeImageApply,
   FREE_IMAGE_APPLIES,
@@ -303,6 +306,7 @@ function InstancedPreview({
     </instancedMesh>
   );
 }
+
 function VolumeFrame({ size }: { size: number }) {
   const points = useMemo(() => {
     const s = size - 1;
@@ -354,6 +358,8 @@ export default function Builder() {
   const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
   const [imageHeight, setImageHeight] = useState(8);
+  const [useLocalAi, setUseLocalAi] = useState(true);
+  const [aiStatus, setAiStatus] = useState("LOCAL AI");
   const [symmetrize, setSymmetrize] = useState(false);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
@@ -930,7 +936,8 @@ export default function Builder() {
             volumeSize: volumeRef.current.size,
             heightMax: imageHeight,
             maxVoxels: MAX_SAFE,
-            symmetrize
+            symmetrize,
+            useLocalAi
           }
         );
         setPendingImage(result);
@@ -950,7 +957,7 @@ export default function Builder() {
         setBusy(false);
       }
     },
-    [imageHeight, notify, symmetrize]
+    [imageHeight, notify, symmetrize, useLocalAi]
   );
 
   const rebuildMultiView = useCallback(async () => {
@@ -963,15 +970,25 @@ export default function Builder() {
       side: sideFile ?? undefined
     });
   }, [frontFile, notify, regenerateMultiView, sideFile]);
-useEffect(() => {
-  if (!frontFile) return;
-  void regenerateMultiView({
-    front: frontFile,
-    side: sideFile ?? undefined
-  });
-  // only rebuild when symmetry changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [symmetrize]);
+
+  useEffect(() => {
+    if (!frontFile) return;
+    void regenerateMultiView({
+      front: frontFile,
+      side: sideFile ?? undefined
+    });
+    // only rebuild when symmetry changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symmetrize]);
+
+  useEffect(() => {
+    void aiAvailable().then((status) => {
+      setAiStatus(
+        status.segment || status.depth ? "LOCAL AI MODELS ON" : "LOCAL AI FALLBACK"
+      );
+    });
+  }, []);
+
   const attachFront = useCallback(
     async (file: File) => {
       setBusy(true);
@@ -1000,14 +1017,16 @@ useEffect(() => {
                 volumeSize: volumeRef.current.size,
                 heightMax: imageHeight,
                 maxVoxels: MAX_SAFE,
-                symmetrize
+                symmetrize,
+                useLocalAi
               }
             )
           : await imageToVoxels(file, {
               volumeSize: volumeRef.current.size,
               heightMax: imageHeight,
               maxVoxels: MAX_SAFE,
-              symmetrize
+              symmetrize,
+              useLocalAi
             });
 
         if (!result.voxels.length) throw new Error("Empty image");
@@ -1020,7 +1039,7 @@ useEffect(() => {
         setBusy(false);
       }
     },
-    [imageHeight, notify, sideFile, symmetrize]
+    [imageHeight, notify, sideFile, symmetrize, useLocalAi]
   );
 
   const attachSide = useCallback(
@@ -1060,7 +1079,8 @@ useEffect(() => {
             volumeSize: volumeRef.current.size,
             heightMax: imageHeight,
             maxVoxels: MAX_SAFE,
-            symmetrize: false
+            symmetrize: false,
+            useLocalAi
           });
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
@@ -1099,7 +1119,7 @@ useEffect(() => {
         setBusy(false);
       }
     },
-    [imageHeight, notify, packVolume]
+    [imageHeight, notify, packVolume, useLocalAi]
   );
 
   useEffect(() => {
@@ -1567,29 +1587,49 @@ useEffect(() => {
 
           <p className="category">IMAGE IMPORT</p>
           <p className="foldHint">Maximum depth</p>
-<div className="viewRow">
-  {[4, 8, 12, 16].map((n) => (
-    <button
-      key={n}
-      className={imageHeight === n ? "modeOn" : ""}
-      onClick={() => {
-        setImageHeight(n);
-        if (frontFile) void rebuildMultiView();
-      }}
-      title={`Maximum extrusion depth: ${n} voxels`}
-    >
-      D{n}
-    </button>
-  ))}
-</div>
+          <div className="viewRow">
+            {[4, 8, 12, 16].map((n) => (
+              <button
+                key={n}
+                className={imageHeight === n ? "modeOn" : ""}
+                onClick={() => {
+                  setImageHeight(n);
+                  if (frontFile) void rebuildMultiView();
+                }}
+                title={`Maximum extrusion depth: ${n} voxels`}
+              >
+                D{n}
+              </button>
+            ))}
+          </div>
 
           <button
-  className={symmetrize ? "modeOn" : ""}
-  onClick={() => setSymmetrize((value) => !value)}
-  title="Mirror on X. Use for characters and armor."
->
-  SYMMETRY {symmetrize ? "ON" : "OFF"}
-</button>
+            className={symmetrize ? "modeOn" : ""}
+            onClick={() => setSymmetrize((value) => !value)}
+            title="Mirror on X. Use for characters and armor."
+          >
+            SYMMETRY {symmetrize ? "ON" : "OFF"}
+          </button>
+          <button
+            className={useLocalAi ? "modeOn" : ""}
+            onClick={() => setUseLocalAi((value) => !value)}
+          >
+            LOCAL AI {useLocalAi ? "ON" : "OFF"}
+          </button>
+          <p className="foldHint">{aiStatus}</p>
+          <p className="category">LIBRARY</p>
+          {CATALOG.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => {
+                setImageHeight(item.depth);
+                notify(`${item.name} · D${item.depth} · use matching FRONT/SIDE`);
+              }}
+              title={item.promptFront}
+            >
+              {item.name}
+            </button>
+          ))}
 
           <p className="category">MULTI VIEW · {viewCount}/2</p>
           <button
