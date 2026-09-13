@@ -1,8 +1,9 @@
 export type CatalogItem = {
   id: string;
   name: string;
-  category: "weapon" | "prop" | "pickup";
+  category: "weapon" | "prop" | "pickup" | "character";
   depth: 8 | 12;
+  symmetrize: boolean;
   promptFront: string;
   promptSide: string;
 };
@@ -13,6 +14,7 @@ export const CATALOG: CatalogItem[] = [
     name: "Short sword",
     category: "weapon",
     depth: 8,
+    symmetrize: false,
     promptFront:
       "Orthographic front view, short medieval sword, blade up, white background, flat colors, no shadow.",
     promptSide:
@@ -23,6 +25,7 @@ export const CATALOG: CatalogItem[] = [
     name: "Axe",
     category: "weapon",
     depth: 8,
+    symmetrize: false,
     promptFront:
       "Orthographic front view, stylized battle axe, head up, white background, flat colors, no shadow.",
     promptSide:
@@ -33,6 +36,7 @@ export const CATALOG: CatalogItem[] = [
     name: "Potion",
     category: "pickup",
     depth: 12,
+    symmetrize: true,
     promptFront:
       "Orthographic front view, round potion bottle, cork top, white background, flat colors, no shadow.",
     promptSide:
@@ -43,6 +47,7 @@ export const CATALOG: CatalogItem[] = [
     name: "Shield",
     category: "prop",
     depth: 8,
+    symmetrize: true,
     promptFront:
       "Orthographic front view, round wooden shield, iron rim, white background, flat colors, no shadow.",
     promptSide:
@@ -53,6 +58,7 @@ export const CATALOG: CatalogItem[] = [
     name: "Key",
     category: "pickup",
     depth: 8,
+    symmetrize: false,
     promptFront:
       "Orthographic front view, ornate gold key, white background, flat colors, no shadow.",
     promptSide:
