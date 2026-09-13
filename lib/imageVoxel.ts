@@ -509,6 +509,65 @@ function edgeColor(colors: (Rgb | null)[][], mask: boolean[][], y: number, fromL
   return nearestPaint(colors, mask, fromLeft ? 0 : Math.max(0, w - 1), y);
 }
 
+function boundaryWeight(
+  x: number,
+  y: number,
+  z: number,
+  width: number,
+  depth: number,
+  frontMask: boolean[][],
+  sideMask?: boolean[][] | null
+) {
+  let frontBoundary = 0;
+  const frontHere = Boolean(frontMask[y]?.[x]);
+  if (frontHere) {
+    let exposed = 0;
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1]
+    ]) {
+      if (!frontMask[y + dy]?.[x + dx]) exposed += 1;
+    }
+    frontBoundary = exposed / 4;
+  }
+
+  let sideBoundary = 0;
+  if (sideMask) {
+    const sideHere = Boolean(sideMask[y]?.[z]);
+    if (sideHere) {
+      let exposed = 0;
+      for (const [dz, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1]
+      ]) {
+        if (!sideMask[y + dy]?.[z + dz]) exposed += 1;
+      }
+      sideBoundary = exposed / 4;
+    }
+  }
+
+  const frontFace =
+    z === 0 || z === depth - 1
+      ? 1
+      : Math.max(frontBoundary, 0.18);
+
+  const sideFace =
+    sideMask
+      ? Math.max(sideBoundary, z === 0 || z === depth - 1 ? 0.65 : 0.08)
+      : 0;
+
+  const silhouetteBias =
+    width <= 1
+      ? 0
+      : Math.max(0, 1 - Math.abs((x / (width - 1)) * 2 - 1));
+
+  return { frontFace, sideFace, silhouetteBias };
+}
+
 function wrapColor(
   x: number,
   y: number,
@@ -521,19 +580,59 @@ function wrapColor(
   sideColors?: (Rgb | null)[][] | null
 ): Rgb {
   const front = nearestPaint(frontColors, frontMask, x, y);
-  const back = nearestPaint(frontColors, frontMask, width - 1 - x, y);
-  if (z === 0) return front;
-  if (z === depth - 1) return back;
+  const rearProjection = nearestPaint(
+    frontColors,
+    frontMask,
+    clamp(width - 1 - x, 0, width - 1),
+    y
+  );
+
+  const hasSide = Boolean(sideMask && sideColors);
+  const side = hasSide
+    ? nearestPaint(
+        sideColors!,
+        sideMask!,
+        z,
+        y
+      )
+    : rearProjection;
+
+  const { frontFace, sideFace, silhouetteBias } = boundaryWeight(
+    x,
+    y,
+    z,
+    width,
+    depth,
+    frontMask,
+    sideMask
+  );
+
   const nz = depth <= 1 ? 0.5 : z / (depth - 1);
-  const nx = width <= 1 ? 0.5 : x / (width - 1);
-  let color = mixRgb(front, back, nz);
-  if (sideColors && sideMask) color = mixRgb(color, nearestPaint(sideColors, sideMask, z, y), 0.45);
+
+  // Front material remains dominant near the observed FRONT surface.
+  let color = mixRgb(
+    front,
+    side,
+    hasSide ? clamp(0.22 + sideFace * 0.58, 0, 0.82) : 0
+  );
+
+  // Infer unobserved depth from coherent source colors instead of darkening it.
+  if (z > 0 && z < depth - 1) {
+    const inferredRear = mixRgb(front, rearProjection, 0.5 + (nz - 0.5) * 0.28);
+    color = mixRgb(color, inferredRear, 0.18 + (1 - frontFace) * 0.18);
+  }
+
   const rim = mixRgb(
     edgeColor(frontColors, frontMask, y, true),
     edgeColor(frontColors, frontMask, y, false),
-    nx
+    width <= 1 ? 0.5 : x / (width - 1)
   );
-  return mixRgb(color, rim, nx < 0.1 || nx > 0.9 ? 0.55 : 0.18);
+
+  return mixRgb(
+    color,
+    rim,
+    clamp(0.06 + silhouetteBias * 0.10 + frontFace * 0.18, 0, 0.36)
+  );
 }
 
 function distanceField(mask: boolean[][]) {
@@ -638,6 +737,7 @@ function voxelKey(v: ImageVoxel) {
 
 function keepLargest(voxels: ImageVoxel[]) {
   if (voxels.length < 2) return voxels;
+
   const map = new Map(voxels.map((v) => [voxelKey(v), v]));
   const seen = new Set<string>();
   const parts: ImageVoxel[][] = [];
@@ -649,12 +749,15 @@ function keepLargest(voxels: ImageVoxel[]) {
     [0, 0, 1],
     [0, 0, -1]
   ] as const;
+
   for (const start of voxels) {
     const startKey = voxelKey(start);
     if (seen.has(startKey)) continue;
+
     const part: ImageVoxel[] = [];
     const stack = [start];
     seen.add(startKey);
+
     while (stack.length) {
       const cur = stack.pop()!;
       part.push(cur);
@@ -667,11 +770,38 @@ function keepLargest(voxels: ImageVoxel[]) {
         stack.push(next);
       }
     }
+
     parts.push(part);
   }
+
   const largest = Math.max(...parts.map((part) => part.length));
-  const min = Math.max(10, Math.round(largest * 0.02));
+  const min = Math.max(8, Math.round(largest * 0.005));
   return parts.filter((part) => part.length >= min).flat();
+}
+
+function removeIsolatedVoxels(voxels: ImageVoxel[]) {
+  if (voxels.length < 3) return voxels;
+
+  const map = new Set(voxels.map(voxelKey));
+  const dirs = [
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1]
+  ] as const;
+
+  return voxels.filter((v) => {
+    let neighbors = 0;
+    for (const [dx, dy, dz] of dirs) {
+      if (map.has(`${v.x + dx}:${v.y + dy}:${v.z + dz}`)) {
+        neighbors += 1;
+        if (neighbors >= 1) return true;
+      }
+    }
+    return false;
+  });
 }
 
 function symmetrizeVoxels(voxels: ImageVoxel[], volumeSize: number) {
@@ -718,16 +848,38 @@ function placeOnGround(voxels: ImageVoxel[], volumeSize: number) {
   }));
 }
 
-function modelSize(bounds: Bounds, volumeSize: number, heightMax: number, maxVoxels: number) {
+function modelSize(
+  bounds: Bounds,
+  volumeSize: number,
+  heightMax: number,
+  maxVoxels: number,
+  symmetrize: boolean
+) {
   const maxAxis = Math.max(8, volumeSize - 6);
-  const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
-  let width = Math.max(4, Math.round(bounds.width * scale));
-  let height = Math.max(4, Math.round(bounds.height * scale));
-  const depth = Math.max(3, Math.min(maxAxis, Math.round(heightMax)));
-  while (width * height * depth > maxVoxels && width > 16 && height > 16) {
-    width = Math.max(16, Math.floor(width * 0.88));
-    height = Math.max(16, Math.floor(height * 0.88));
+  const safeBudget = Math.max(4096, Math.min(maxVoxels, volumeSize ** 3 * 0.90));
+
+  const aspectW = Math.max(0.05, bounds.width / Math.max(1, bounds.height));
+  let height = Math.min(maxAxis, Math.max(8, bounds.height));
+  let width = Math.min(maxAxis, Math.max(8, Math.round(height * aspectW)));
+  let depth = Math.min(maxAxis, Math.max(3, Math.round(heightMax)));
+
+  let product = width * height * depth;
+  const target = Math.max(4096, safeBudget * (symmetrize ? 0.44 : 0.92));
+
+  if (product > target) {
+    const scale = Math.cbrt(target / product);
+    width = Math.max(8, Math.floor(width * scale));
+    height = Math.max(8, Math.floor(height * scale));
+    depth = Math.max(3, Math.floor(depth * scale));
   }
+
+  while (width * height * depth > safeBudget) {
+    if (height >= width && height >= depth && height > 8) height -= 1;
+    else if (width >= depth && width > 8) width -= 1;
+    else if (depth > 3) depth -= 1;
+    else break;
+  }
+
   return { width, height, depth };
 }
 
@@ -755,7 +907,13 @@ function buildModel(
   side?: { raster: Raster; mask: boolean[][]; bounds: Bounds },
   depthMap?: Float32Array | null
 ): ImageImport {
-  const dims = modelSize(frontBounds, options.volumeSize, options.heightMax, options.maxVoxels);
+  const dims = modelSize(
+    frontBounds,
+    options.volumeSize,
+    options.heightMax,
+    options.maxVoxels,
+    options.symmetrize
+  );
   const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
   const frontColors = resampleColor(frontRaster, frontMask, frontBounds, dims.width, dims.height);
   const mappedDepth = resampleDepth(
@@ -810,11 +968,21 @@ function buildModel(
   }
 
   if (!voxels.length) throw new Error("No voxels reconstructed");
-  let cleaned = keepLargest(voxels.map((v) => ({ ...v, y: dims.height - 1 - v.y })));
+
+  let cleaned = voxels.map((v) => ({
+    ...v,
+    y: dims.height - 1 - v.y
+  }));
+
+  cleaned = removeIsolatedVoxels(cleaned);
+  cleaned = keepLargest(cleaned);
+
   if (options.symmetrize) {
     symmetrizeVoxels(cleaned, options.volumeSize);
+    cleaned = removeIsolatedVoxels(cleaned);
     cleaned = keepLargest(cleaned);
   }
+
   const grounded = placeOnGround(cleaned, options.volumeSize);
   return {
     width: frontRaster.width,
