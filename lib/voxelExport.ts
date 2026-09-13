@@ -161,11 +161,11 @@ export function exportVox(volume: VoxelVolume, palette: string[]) {
 
   const rgba = new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
-    const [r, g, b] = hexRgb(palette[i] ?? "#000000");
+    const [r, g, b] = hexRgb(palette[i] ?? "#e6e6e6");
     const o = i * 4;
-    rgba[o] = r;
-    rgba[o + 1] = g;
-    rgba[o + 2] = b;
+    rgba[o] = Math.max(r, 12);
+    rgba[o + 1] = Math.max(g, 12);
+    rgba[o + 2] = Math.max(b, 12);
     rgba[o + 3] = 255;
   }
 
@@ -198,7 +198,7 @@ export function importVox(buffer: ArrayBuffer): VoxModel {
   let sizeZ = 1;
   let voxels: Voxel[] = [];
   const palette = DEFAULT_PALETTE.slice(0, 256);
-  while (palette.length < 256) palette.push("#000000");
+  while (palette.length < 256) palette.push("#e6e6e6");
   let hasPalette = false;
 
   const walk = (offset: number, limit: number) => {
@@ -283,7 +283,7 @@ export function exportObj(
   const used = new Set(quads.map((q) => q.c));
 
   const lines = [
-    "# Brick Builder",
+    "# VOXEL",
     `# unit: ${resolved.unitMeters} meters per voxel`,
     `# pivot: ${resolved.pivot}`,
     `# up: ${resolved.upAxis}`,
@@ -292,19 +292,22 @@ export function exportObj(
   ];
 
   const mtl = [
-    "# Brick Builder materials",
+    "# VOXEL materials",
     ...[...used]
       .sort((a, b) => a - b)
       .map((i) => {
-        const [r, g, b] = hexRgb(palette[i] ?? "#ffffff");
-        const kd = `${(r / 255).toFixed(6)} ${(g / 255).toFixed(6)} ${(b / 255).toFixed(6)}`;
+        const [r, g, b] = hexRgb(palette[i] ?? "#e6e6e6");
+        const rr = Math.max(r, 18) / 255;
+        const gg = Math.max(g, 18) / 255;
+        const bb = Math.max(b, 18) / 255;
+        const kd = `${rr.toFixed(6)} ${gg.toFixed(6)} ${bb.toFixed(6)}`;
         return [
           `newmtl voxel_${i}`,
-          "Ka 0.020000 0.020000 0.020000",
+          `Ka ${kd}`,
           `Kd ${kd}`,
-          "Ks 0.040000 0.040000 0.040000",
-          "Ns 8.000000",
-          "illum 2"
+          "Ks 0.000000 0.000000 0.000000",
+          "Ns 1.000000",
+          "illum 1"
         ].join("\n");
       })
   ].join("\n\n");
@@ -338,10 +341,17 @@ export function exportObj(
         );
         lines.push(`v ${p[0].toFixed(6)} ${p[1].toFixed(6)} ${p[2].toFixed(6)}`);
       }
-      lines.push(
-        `f ${vi}//${ni} ${vi + 1}//${ni} ${vi + 2}//${ni}`,
-        `f ${vi}//${ni} ${vi + 2}//${ni} ${vi + 3}//${ni}`
-      );
+      if (face.dir === 1) {
+        lines.push(
+          `f ${vi}//${ni} ${vi + 1}//${ni} ${vi + 2}//${ni}`,
+          `f ${vi}//${ni} ${vi + 2}//${ni} ${vi + 3}//${ni}`
+        );
+      } else {
+        lines.push(
+          `f ${vi}//${ni} ${vi + 3}//${ni} ${vi + 2}//${ni}`,
+          `f ${vi}//${ni} ${vi + 2}//${ni} ${vi + 1}//${ni}`
+        );
+      }
       vi += 4;
       ni += 1;
     }
