@@ -43,6 +43,11 @@ type Bounds = {
   height: number;
 };
 
+type Span = {
+  min: number;
+  max: number;
+};
+
 const DEFAULT_PALETTE = [
   "#c91f2d",
   "#e35b19",
@@ -106,10 +111,7 @@ function loadImage(file: File): Promise<Raster> {
     const img = new Image();
     img.onload = () => {
       try {
-        const scale = Math.min(
-          1,
-          MAX_RASTER_EDGE / Math.max(img.naturalWidth, img.naturalHeight)
-        );
+        const scale = Math.min(1, MAX_RASTER_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
         const width = Math.max(1, Math.round(img.naturalWidth * scale));
         const height = Math.max(1, Math.round(img.naturalHeight * scale));
         const canvas = document.createElement("canvas");
@@ -119,11 +121,7 @@ function loadImage(file: File): Promise<Raster> {
         if (!ctx) throw new Error("Canvas unavailable");
         ctx.clearRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
-        resolve({
-          width,
-          height,
-          rgba: ctx.getImageData(0, 0, width, height).data
-        });
+        resolve({ width, height, rgba: ctx.getImageData(0, 0, width, height).data });
       } catch (error) {
         reject(error);
       } finally {
@@ -196,7 +194,6 @@ function floodSubject(raster: Raster, tol: number, useAlpha: boolean) {
         : isBackground(p.rgb, p.a, bg, tol);
     }
   }
-
   const seen = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
   const stack: [number, number][] = [];
   const seed = (x: number, y: number) => {
@@ -220,7 +217,6 @@ function floodSubject(raster: Raster, tol: number, useAlpha: boolean) {
     seed(x, y + 1);
     seed(x, y - 1);
   }
-
   return Array.from({ length: h }, (_, y) =>
     Array.from({ length: w }, (_, x) => !seen[y][x] && pixel(raster, x, y).a >= MIN_ALPHA)
   );
@@ -320,7 +316,6 @@ function fillInteriorHoles(mask: boolean[][]) {
     seed(x, y + 1);
     seed(x, y - 1);
   }
-
   const holes: [number, number][] = [];
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
@@ -328,8 +323,7 @@ function fillInteriorHoles(mask: boolean[][]) {
     }
   }
   if (!holes.length) return mask;
-  const limit = Math.max(16, Math.round(w * h * 0.01));
-  if (holes.length > limit) return mask;
+  if (holes.length > Math.max(16, Math.round(w * h * 0.01))) return mask;
   const out = mask.map((row) => row.slice());
   for (const [x, y] of holes) out[y][x] = true;
   return out;
@@ -373,26 +367,15 @@ function findBounds(mask: boolean[][]): Bounds | null {
     }
   }
   if (!Number.isFinite(minX)) return null;
-  return {
-    minX,
-    minY,
-    maxX,
-    maxY,
-    width: maxX - minX + 1,
-    height: maxY - minY + 1
-  };
+  return { minX, minY, maxX, maxY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
 function resampleMask(mask: boolean[][], bounds: Bounds, width: number, height: number) {
   const out = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
   for (let y = 0; y < height; y += 1) {
-    const srcY = Math.round(
-      bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1)
-    );
+    const srcY = Math.round(bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1));
     for (let x = 0; x < width; x += 1) {
-      const srcX = Math.round(
-        bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1)
-      );
+      const srcX = Math.round(bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1));
       out[y][x] = !!mask[srcY]?.[srcX];
     }
   }
@@ -425,6 +408,33 @@ function centerMaskX(mask: boolean[][]) {
   return out;
 }
 
+function rowSpan(row: boolean[] | undefined): Span | null {
+  if (!row) return null;
+  let min = -1;
+  let max = -1;
+  for (let i = 0; i < row.length; i += 1) {
+    if (!row[i]) continue;
+    if (min < 0) min = i;
+    max = i;
+  }
+  return min < 0 ? null : { min, max };
+}
+
+function sideProfile(mask: boolean[][]): Array<Span | null> {
+  return mask.map((row) => rowSpan(row));
+}
+
+function profileCoverage(front: boolean[][], profile: Array<Span | null>) {
+  let frontRows = 0;
+  let hitRows = 0;
+  for (let y = 0; y < front.length; y += 1) {
+    if (!front[y].some(Boolean)) continue;
+    frontRows += 1;
+    if (profile[y]) hitRows += 1;
+  }
+  return frontRows ? hitRows / frontRows : 0;
+}
+
 function resampleColor(
   raster: Raster,
   mask: boolean[][],
@@ -432,9 +442,7 @@ function resampleColor(
   width: number,
   height: number
 ) {
-  const colors: (Rgb | null)[][] = Array.from({ length: height }, () =>
-    Array(width).fill(null)
-  );
+  const colors: (Rgb | null)[][] = Array.from({ length: height }, () => Array(width).fill(null));
   for (let y = 0; y < height; y += 1) {
     const srcY = bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1);
     for (let x = 0; x < width; x += 1) {
@@ -519,9 +527,7 @@ function wrapColor(
   const nz = depth <= 1 ? 0.5 : z / (depth - 1);
   const nx = width <= 1 ? 0.5 : x / (width - 1);
   let color = mixRgb(front, back, nz);
-  if (sideColors && sideMask) {
-    color = mixRgb(color, nearestPaint(sideColors, sideMask, z, y), 0.45);
-  }
+  if (sideColors && sideMask) color = mixRgb(color, nearestPaint(sideColors, sideMask, z, y), 0.45);
   const rim = mixRgb(
     edgeColor(frontColors, frontMask, y, true),
     edgeColor(frontColors, frontMask, y, false),
@@ -712,21 +718,11 @@ function placeOnGround(voxels: ImageVoxel[], volumeSize: number) {
   }));
 }
 
-function modelSize(
-  bounds: Bounds,
-  volumeSize: number,
-  heightMax: number,
-  maxVoxels: number
-) {
+function modelSize(bounds: Bounds, volumeSize: number, heightMax: number, maxVoxels: number) {
   const maxAxis = Math.max(8, volumeSize - 6);
-  let width = Math.max(
-    4,
-    Math.round(bounds.width * Math.min(1, maxAxis / Math.max(bounds.width, bounds.height)))
-  );
-  let height = Math.max(
-    4,
-    Math.round(bounds.height * Math.min(1, maxAxis / Math.max(bounds.width, bounds.height)))
-  );
+  const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
+  let width = Math.max(4, Math.round(bounds.width * scale));
+  let height = Math.max(4, Math.round(bounds.height * scale));
   const depth = Math.max(3, Math.min(maxAxis, Math.round(heightMax)));
   while (width * height * depth > maxVoxels && width > 16 && height > 16) {
     width = Math.max(16, Math.floor(width * 0.88));
@@ -745,6 +741,11 @@ function sampleDepth(
   return clamp(depthMap[y * width + x] ?? 0, 0, 1);
 }
 
+function inSpan(z: number, span: Span | null, centerZ: number, radius: number) {
+  if (span) return z >= span.min - 1 && z <= span.max + 1;
+  return Math.abs(z - centerZ) <= radius;
+}
+
 function buildModel(
   frontRaster: Raster,
   frontMask: boolean[][],
@@ -754,20 +755,9 @@ function buildModel(
   side?: { raster: Raster; mask: boolean[][]; bounds: Bounds },
   depthMap?: Float32Array | null
 ): ImageImport {
-  const dims = modelSize(
-    frontBounds,
-    options.volumeSize,
-    options.heightMax,
-    options.maxVoxels
-  );
+  const dims = modelSize(frontBounds, options.volumeSize, options.heightMax, options.maxVoxels);
   const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
-  const frontColors = resampleColor(
-    frontRaster,
-    frontMask,
-    frontBounds,
-    dims.width,
-    dims.height
-  );
+  const frontColors = resampleColor(frontRaster, frontMask, frontBounds, dims.width, dims.height);
   const mappedDepth = resampleDepth(
     depthMap,
     frontRaster.width,
@@ -782,9 +772,12 @@ function buildModel(
 
   let sideMask: boolean[][] | null = null;
   let sideColors: (Rgb | null)[][] | null = null;
+  let profile: Array<Span | null> | null = null;
   if (side) {
     sideMask = centerMaskX(resampleMask(side.mask, side.bounds, dims.depth, dims.height));
     sideColors = resampleColor(side.raster, side.mask, side.bounds, dims.depth, dims.height);
+    const raw = sideProfile(sideMask);
+    profile = profileCoverage(front, raw) >= 0.35 ? raw : null;
   }
 
   const colors = paletteRgb(palette);
@@ -793,6 +786,7 @@ function buildModel(
   const maxRadius = Math.max(1, Math.floor((dims.depth - 1) / 2));
 
   for (let y = 0; y < dims.height; y += 1) {
+    const span = profile?.[y] ?? null;
     for (let x = 0; x < dims.width; x += 1) {
       if (!front[y][x]) continue;
       const t = dist[y][x] / maxDist;
@@ -800,24 +794,14 @@ function buildModel(
       const mixed = depthT === null ? t : 0.35 * t + 0.65 * depthT;
       const radius = Math.max(1, Math.round((0.28 + 0.72 * mixed) * maxRadius));
       for (let z = 0; z < dims.depth; z += 1) {
-        if (Math.abs(z - centerZ) > radius) continue;
-        if (sideMask && !sideMask[y]?.[z]) continue;
+        if (!inSpan(z, span, centerZ, radius)) continue;
+        if (!span && Math.abs(z - centerZ) > radius) continue;
         voxels.push({
           x,
           y,
           z,
           c: nearestColor(
-            wrapColor(
-              x,
-              y,
-              z,
-              dims.width,
-              dims.depth,
-              front,
-              frontColors,
-              sideMask,
-              sideColors
-            ),
+            wrapColor(x, y, z, dims.width, dims.depth, front, frontColors, sideMask, sideColors),
             colors
           )
         });
@@ -857,37 +841,20 @@ async function prepareRaster(raster: Raster, enabled: boolean) {
   return enhanceRaster(raster);
 }
 
-export async function imageToVoxels(
-  file: File,
-  options: ImageVoxelOptions = {}
-): Promise<ImageImport> {
+export async function imageToVoxels(file: File, options: ImageVoxelOptions = {}): Promise<ImageImport> {
   const normalized = normalizeOptions(options);
   const prepared = await prepareRaster(await loadImage(file), normalized.useLocalAi);
   const raster = prepared.raster;
   const mask = buildSubjectMask(raster);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
-  return buildModel(
-    raster,
-    mask,
-    bounds,
-    normalized,
-    createPalette([raster], [mask]),
-    undefined,
-    prepared.depth
-  );
+  return buildModel(raster, mask, bounds, normalized, createPalette([raster], [mask]), undefined, prepared.depth);
 }
 
-export async function imagesToVoxels(
-  views: ImageViews,
-  options: ImageVoxelOptions = {}
-): Promise<ImageImport> {
+export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptions = {}): Promise<ImageImport> {
   if (!views.front) throw new Error("FRONT IMAGE REQUIRED");
   const normalized = normalizeOptions(options);
-  const frontPrepared = await prepareRaster(
-    await loadImage(views.front),
-    normalized.useLocalAi
-  );
+  const frontPrepared = await prepareRaster(await loadImage(views.front), normalized.useLocalAi);
   const frontRaster = frontPrepared.raster;
   const frontMask = buildSubjectMask(frontRaster);
   const frontBounds = findBounds(frontMask);
@@ -903,10 +870,7 @@ export async function imagesToVoxels(
       frontPrepared.depth
     );
   }
-  const sidePrepared = await prepareRaster(
-    await loadImage(views.side),
-    normalized.useLocalAi
-  );
+  const sidePrepared = await prepareRaster(await loadImage(views.side), normalized.useLocalAi);
   const sideRaster = sidePrepared.raster;
   const sideMask = buildSubjectMask(sideRaster);
   const sideBounds = findBounds(sideMask);
