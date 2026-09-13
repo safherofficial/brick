@@ -243,9 +243,7 @@ function measureMask(mask: boolean[][]) {
       maxY = Math.max(maxY, y);
     }
   }
-  if (hits < 24) {
-    return { hits, fill: 0, frame: true, full: false };
-  }
+  if (hits < 24) return { hits, fill: 0, frame: true, full: false };
   const bw = maxX - minX + 1;
   const bh = maxY - minY + 1;
   const fill = hits / (bw * bh);
@@ -295,6 +293,49 @@ function dropIslands(mask: boolean[][]) {
   return out;
 }
 
+function fillInteriorHoles(mask: boolean[][]) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const outside = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
+  const stack: [number, number][] = [];
+  const seed = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    if (mask[y][x] || outside[y][x]) return;
+    outside[y][x] = true;
+    stack.push([x, y]);
+  };
+  for (let x = 0; x < w; x += 1) {
+    seed(x, 0);
+    seed(x, h - 1);
+  }
+  for (let y = 0; y < h; y += 1) {
+    seed(0, y);
+    seed(w - 1, y);
+  }
+  while (stack.length) {
+    const [x, y] = stack.pop()!;
+    seed(x + 1, y);
+    seed(x - 1, y);
+    seed(x, y + 1);
+    seed(x, y - 1);
+  }
+
+  const holes: [number, number][] = [];
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x] && !outside[y][x]) holes.push([x, y]);
+    }
+  }
+  if (!holes.length) return mask;
+
+  const limit = Math.max(16, Math.round(w * h * 0.01));
+  if (holes.length > limit) return mask;
+
+  const out = mask.map((row) => row.slice());
+  for (const [x, y] of holes) out[y][x] = true;
+  return out;
+}
+
 function buildSubjectMask(raster: Raster) {
   let alphaHits = 0;
   for (let i = 3; i < raster.rgba.length; i += 4) {
@@ -306,7 +347,7 @@ function buildSubjectMask(raster: Raster) {
   let bestScore = -1;
 
   for (const tol of [24, 32, 40, 52, 64, 80]) {
-    const raw = dropIslands(floodSubject(raster, tol, useAlpha));
+    const raw = fillInteriorHoles(dropIslands(floodSubject(raster, tol, useAlpha)));
     const stats = measureMask(raw);
     if (stats.hits < 24 || stats.frame) continue;
     if (stats.full && stats.fill > 0.94) continue;
@@ -357,6 +398,32 @@ function resampleMask(mask: boolean[][], bounds: Bounds, width: number, height: 
         bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1)
       );
       out[y][x] = !!mask[srcY]?.[srcX];
+    }
+  }
+  return out;
+}
+
+function centerMaskX(mask: boolean[][]) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  let minX = w;
+  let maxX = -1;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x]) continue;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+    }
+  }
+  if (maxX < 0) return mask;
+  const shift = Math.round((w - 1) / 2 - (minX + maxX) / 2);
+  if (!shift) return mask;
+  const out = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x]) continue;
+      const nx = x + shift;
+      if (nx >= 0 && nx < w) out[y][nx] = true;
     }
   }
   return out;
@@ -445,8 +512,7 @@ function wrapColor(
     edgeColor(frontColors, frontMask, y, false),
     nx
   );
-  const rimMix = nx < 0.1 || nx > 0.9 ? 0.55 : 0.18;
-  return mixRgb(color, rim, rimMix);
+  return mixRgb(color, rim, nx < 0.1 || nx > 0.9 ? 0.55 : 0.18);
 }
 
 function distanceField(mask: boolean[][]) {
@@ -635,14 +701,24 @@ function placeOnGround(voxels: ImageVoxel[], volumeSize: number) {
   }));
 }
 
-function modelSize(bounds: Bounds, volumeSize: number, heightMax: number) {
+function modelSize(
+  bounds: Bounds,
+  volumeSize: number,
+  heightMax: number,
+  maxVoxels: number
+) {
   const maxAxis = Math.max(8, volumeSize - 6);
-  const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
-  return {
-    width: Math.max(4, Math.round(bounds.width * scale)),
-    height: Math.max(4, Math.round(bounds.height * scale)),
-    depth: Math.max(3, Math.min(maxAxis, Math.round(heightMax)))
-  };
+  let scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
+  let width = Math.max(4, Math.round(bounds.width * scale));
+  let height = Math.max(4, Math.round(bounds.height * scale));
+  const depth = Math.max(3, Math.min(maxAxis, Math.round(heightMax)));
+
+  while (width * height * depth > maxVoxels && width > 16 && height > 16) {
+    width = Math.max(16, Math.floor(width * 0.88));
+    height = Math.max(16, Math.floor(height * 0.88));
+  }
+
+  return { width, height, depth };
 }
 
 function buildModel(
@@ -653,7 +729,12 @@ function buildModel(
   palette: string[],
   side?: { raster: Raster; mask: boolean[][]; bounds: Bounds }
 ): ImageImport {
-  const dims = modelSize(frontBounds, options.volumeSize, options.heightMax);
+  const dims = modelSize(
+    frontBounds,
+    options.volumeSize,
+    options.heightMax,
+    options.maxVoxels
+  );
   const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
   const frontColors = resampleColor(
     frontRaster,
@@ -671,8 +752,16 @@ function buildModel(
   let sideMask: boolean[][] | null = null;
   let sideColors: (Rgb | null)[][] | null = null;
   if (side) {
-    sideMask = resampleMask(side.mask, side.bounds, dims.depth, dims.height);
-    sideColors = resampleColor(side.raster, side.mask, side.bounds, dims.depth, dims.height);
+    sideMask = centerMaskX(
+      resampleMask(side.mask, side.bounds, dims.depth, dims.height)
+    );
+    sideColors = resampleColor(
+      side.raster,
+      side.mask,
+      side.bounds,
+      dims.depth,
+      dims.height
+    );
   }
 
   const colors = paletteRgb(palette);
@@ -683,10 +772,8 @@ function buildModel(
   for (let y = 0; y < dims.height; y += 1) {
     for (let x = 0; x < dims.width; x += 1) {
       if (!front[y][x]) continue;
-      const radius = Math.max(
-        1,
-        Math.round((dist[y][x] / maxDist) * maxRadius)
-      );
+      const t = dist[y][x] / maxDist;
+      const radius = Math.max(1, Math.round((0.28 + 0.72 * t) * maxRadius));
       for (let z = 0; z < dims.depth; z += 1) {
         if (Math.abs(z - centerZ) > radius) continue;
         if (sideMask && !sideMask[y]?.[z]) continue;
