@@ -69,7 +69,10 @@ export async function exportGlb(
   for (const face of quads) {
     const base = positions.length / 3;
     const n = transformNormal(...quadNormal(face), resolved.upAxis);
-    const [r, g, b] = hexRgb(palette[face.c] ?? "#ffffff");
+    const [r, g, b] = hexRgb(palette[face.c] ?? "#e6e6e6");
+    const cr = Math.max(r, 18) / 255;
+    const cg = Math.max(g, 18) / 255;
+    const cb = Math.max(b, 18) / 255;
     for (const corner of quadCorners(face)) {
       const p = transformPoint(
         corner[0],
@@ -81,7 +84,7 @@ export async function exportGlb(
       );
       positions.push(p[0], p[1], p[2]);
       normals.push(n[0], n[1], n[2]);
-      colors.push(r / 255, g / 255, b / 255);
+      colors.push(cr, cg, cb, 1);
       minPx = Math.min(minPx, p[0]);
       minPy = Math.min(minPy, p[1]);
       minPz = Math.min(minPz, p[2]);
@@ -89,7 +92,11 @@ export async function exportGlb(
       maxPy = Math.max(maxPy, p[1]);
       maxPz = Math.max(maxPz, p[2]);
     }
-    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    if (face.dir === 1) {
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    } else {
+      indices.push(base, base + 3, base + 2, base, base + 2, base + 1);
+    }
   }
 
   const pos = new Float32Array(positions);
@@ -115,7 +122,8 @@ export async function exportGlb(
   bin.set(idxPad, offsets[3]);
 
   const json = {
-    asset: { version: "2.0", generator: "Brick Builder" },
+    asset: { version: "2.0", generator: "VOXEL" },
+    extensionsUsed: ["KHR_materials_unlit"],
     scene: 0,
     scenes: [{ nodes: [0], name: resolved.name }],
     nodes: [{ mesh: 0, name: resolved.name }],
@@ -134,10 +142,12 @@ export async function exportGlb(
     materials: [
       {
         name: "voxel",
+        doubleSided: true,
+        extensions: { KHR_materials_unlit: {} },
         pbrMetallicRoughness: {
           baseColorFactor: [1, 1, 1, 1],
-          metallicFactor: 0.02,
-          roughnessFactor: 0.45
+          metallicFactor: 0,
+          roughnessFactor: 1
         }
       }
     ],
@@ -151,7 +161,7 @@ export async function exportGlb(
         max: [maxPx, maxPy, maxPz]
       },
       { bufferView: 1, componentType: 5126, count: nor.length / 3, type: "VEC3" },
-      { bufferView: 2, componentType: 5126, count: col.length / 3, type: "VEC3" },
+      { bufferView: 2, componentType: 5126, count: col.length / 4, type: "VEC4" },
       {
         bufferView: 3,
         componentType: idx instanceof Uint16Array ? 5123 : 5125,
