@@ -325,7 +325,7 @@ export default function Builder() {
   const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
-  const [imageHeight, setImageHeight] = useState(12);
+  const [imageHeight, setImageHeight] = useState(8);
   const [symmetrize, setSymmetrize] = useState(false);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
@@ -1531,18 +1531,21 @@ export default function Builder() {
 
           <p className="category">IMAGE IMPORT</p>
           <p className="foldHint">Maximum depth</p>
-          <div className="viewRow">
-            {[4, 8, 12, 16].map((n) => (
-              <button
-                key={n}
-                className={imageHeight === n ? "modeOn" : ""}
-                onClick={() => setImageHeight(n)}
-                title={`Maximum extrusion depth: ${n} voxels`}
-              >
-                D{n}
-              </button>
-            ))}
-          </div>
+<div className="viewRow">
+  {[4, 8, 12, 16].map((n) => (
+    <button
+      key={n}
+      className={imageHeight === n ? "modeOn" : ""}
+      onClick={() => {
+        setImageHeight(n);
+        if (frontFile) void rebuildMultiView();
+      }}
+      title={`Maximum extrusion depth: ${n} voxels`}
+    >
+      D{n}
+    </button>
+  ))}
+</div>
 
           <button
             className={symmetrize ? "modeOn" : ""}
