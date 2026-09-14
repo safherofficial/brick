@@ -1,5 +1,3 @@
-import { spatialCleanVoxels } from "@/lib/ai/bvh";
-
 export type ImageVoxel = {
   x: number;
   y: number;
@@ -977,7 +975,10 @@ function buildModel(
     y: dims.height - 1 - v.y
   }));
 
-  cleaned = spatialCleanVoxels(cleaned);
+  // BVH spatial cleanup is intentionally not run in the image reconstruction
+  // path. Point-cloud BVH queries are CPU-heavy on the browser main thread and
+  // can freeze the Builder when a second FRONT/SIDE image is imported.
+  // The deterministic voxel cleanup below is sufficient for reconstruction.
   cleaned = keepLargest(cleaned);
 
   if (options.symmetrize) {
