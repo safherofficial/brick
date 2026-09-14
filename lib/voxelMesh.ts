@@ -88,26 +88,49 @@ function colorAt(volume: VoxelVolume, x: number, y: number, z: number) {
 }
 
 export function greedyQuads(volume: VoxelVolume): GreedyQuad[] {
-  const bounds = boundsOf(volume);
-  if (!bounds) return [];
+  const cells = volume.voxels();
+  if (!cells.length) return [];
 
   const quads: GreedyQuad[] = [];
-  const min = [bounds.minX, bounds.minY, bounds.minZ];
-  const max = [bounds.maxX, bounds.maxY, bounds.maxZ];
 
   for (let axis = 0; axis < 3; axis++) {
     const u = (axis + 1) % 3;
     const v = (axis + 2) % 3;
-    const u0 = min[u];
-    const v0 = min[v];
-    const u1 = max[u];
-    const v1 = max[v];
-    const w0 = min[axis];
-    const w1 = max[axis];
-    const du = u1 - u0 + 1;
-    const dv = v1 - v0 + 1;
 
-    for (let slice = w0; slice <= w1; slice++) {
+    // Invece di scandire l'intero bounding box del volume ad ogni fetta,
+    // calcoliamo per ciascun valore sull'asse corrente il bounding box
+    // STRETTO dei soli voxel realmente presenti in quella fetta (costo
+    // O(voxel), fatto una volta per asse). Senza questo, un modello sparso
+    // ma con un bounding box enorme — es. due voxel messi agli angoli
+    // opposti di una griglia 256 — costringe la maschera a scandire
+    // l'intera griglia per ogni fetta anche se quasi tutto è vuoto: da lì
+    // i freeze di diversi secondi in export. Restringere il raggio di
+    // scansione è sicuro: fuori da questi limiti "here" sarebbe comunque
+    // sempre undefined per quella fetta, quindi non si perde nessuna
+    // faccia esposta.
+    const sliceBounds = new Map<number, { u0: number; u1: number; v0: number; v1: number }>();
+    for (const cell of cells) {
+      const coord = [cell.x, cell.y, cell.z];
+      const w = coord[axis];
+      const uu = coord[u];
+      const vv = coord[v];
+      const b = sliceBounds.get(w);
+      if (!b) {
+        sliceBounds.set(w, { u0: uu, u1: uu, v0: vv, v1: vv });
+      } else {
+        if (uu < b.u0) b.u0 = uu;
+        if (uu > b.u1) b.u1 = uu;
+        if (vv < b.v0) b.v0 = vv;
+        if (vv > b.v1) b.v1 = vv;
+      }
+    }
+
+    for (const [slice, sb] of sliceBounds) {
+      const u0 = sb.u0;
+      const v0 = sb.v0;
+      const du = sb.u1 - sb.u0 + 1;
+      const dv = sb.v1 - sb.v0 + 1;
+
       for (const dir of [1, -1] as const) {
         const mask = new Int16Array(du * dv);
         mask.fill(-1);
