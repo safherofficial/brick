@@ -75,6 +75,11 @@ function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/** Yield to the browser so large voxel imports never monopolize the main thread. */
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
 function hexOf(r: number, g: number, b: number) {
   return `#${[r, g, b]
     .map((v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, "0"))
@@ -338,6 +343,9 @@ async function buildSubjectMask(raster: Raster) {
   let best: boolean[][] | null = null;
   let bestScore = -1;
   for (const tol of [24, 32, 40, 52, 64, 80]) {
+    // Six full-image flood-fill passes are intentionally spread across frames.
+    // This keeps the Builder responsive while a SIDE image is being attached.
+    await yieldToBrowser();
     const raw = fillInteriorHoles(dropIslands(floodSubject(raster, tol, useAlpha)));
     const stats = measureMask(raw);
     if (stats.hits < 24 || stats.frame) continue;
@@ -702,14 +710,16 @@ function wrapColor(
   );
 }
 
-function distanceField(mask: boolean[][]) {
+async function distanceField(mask: boolean[][]) {
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
   const inf = w + h;
   const dist = Array.from({ length: h }, (_, y) =>
     Array.from({ length: w }, (_, x) => (mask[y][x] ? inf : 0))
   );
+  await yieldToBrowser();
   for (let y = 0; y < h; y += 1) {
+    if ((y & 15) === 0) await yieldToBrowser();
     for (let x = 0; x < w; x += 1) {
       if (!mask[y][x]) continue;
       let best = dist[y][x];
@@ -720,7 +730,9 @@ function distanceField(mask: boolean[][]) {
       dist[y][x] = best;
     }
   }
+  await yieldToBrowser();
   for (let y = h - 1; y >= 0; y -= 1) {
+    if ((y & 15) === 0) await yieldToBrowser();
     for (let x = w - 1; x >= 0; x -= 1) {
       if (!mask[y][x]) continue;
       let best = dist[y][x];
@@ -965,7 +977,7 @@ function inSpan(z: number, span: Span | null, centerZ: number, radius: number) {
   return Math.abs(z - centerZ) <= radius;
 }
 
-function buildModel(
+async function buildModel(
   frontRaster: Raster,
   frontMask: boolean[][],
   frontBounds: Bounds,
@@ -992,7 +1004,7 @@ function buildModel(
     dims.width,
     dims.height
   );
-  const dist = distanceField(front);
+  const dist = await distanceField(front);
   let maxDist = 1;
   for (const row of dist) for (const value of row) maxDist = Math.max(maxDist, value);
 
@@ -1014,6 +1026,9 @@ function buildModel(
   const maxRadius = Math.max(1, Math.floor((dims.depth - 1) / 2));
 
   for (let y = 0; y < dims.height; y += 1) {
+    // Chunk voxel construction across browser turns. The previous synchronous
+    // triple loop was the direct source of tab freezes on the second view.
+    if ((y & 1) === 0) await yieldToBrowser();
     const span = profile?.[y] ?? null;
     for (let x = 0; x < dims.width; x += 1) {
       if (!front[y][x]) continue;
@@ -1093,7 +1108,7 @@ export async function imageToVoxels(file: File, options: ImageVoxelOptions = {})
   const mask = await buildSubjectMask(raster);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
-  return buildModel(raster, mask, bounds, normalized, createPalette([raster], [mask]), undefined, prepared.depth);
+  return await buildModel(raster, mask, bounds, normalized, createPalette([raster], [mask]), undefined, prepared.depth);
 }
 
 export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptions = {}): Promise<ImageImport> {
@@ -1105,7 +1120,7 @@ export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptio
   const frontBounds = findBounds(frontMask);
   if (!frontBounds) throw new Error("No visible subject found in FRONT");
   if (!views.side) {
-    return buildModel(
+    return await buildModel(
       frontRaster,
       frontMask,
       frontBounds,
@@ -1122,7 +1137,7 @@ export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptio
   const sideMask = await buildSubjectMask(sideRaster);
   const sideBounds = findBounds(sideMask);
   if (!sideBounds) throw new Error("No visible subject found in SIDE");
-  return buildModel(
+  return await buildModel(
     frontRaster,
     frontMask,
     frontBounds,
