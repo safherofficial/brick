@@ -16,6 +16,7 @@ export type StyleProfile = {
   keepRatio: number;
   regionMerge: number;
   minFeature: number;
+  cover: number;
 };
 
 export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
@@ -34,7 +35,8 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     islandRatio: 0.03,
     keepRatio: 0.04,
     regionMerge: 2200,
-    minFeature: 1
+    minFeature: 1,
+    cover: 0.52
   },
   weapon: {
     id: "weapon",
@@ -51,7 +53,8 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     islandRatio: 0.012,
     keepRatio: 0.018,
     regionMerge: 1600,
-    minFeature: 1
+    minFeature: 1,
+    cover: 0.34
   },
   pickup: {
     id: "pickup",
@@ -68,7 +71,8 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     islandRatio: 0.02,
     keepRatio: 0.03,
     regionMerge: 1800,
-    minFeature: 2
+    minFeature: 2,
+    cover: 0.42
   },
   prop: {
     id: "prop",
@@ -85,7 +89,8 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     islandRatio: 0.02,
     keepRatio: 0.03,
     regionMerge: 1800,
-    minFeature: 2
+    minFeature: 2,
+    cover: 0.44
   },
   character: {
     id: "character",
@@ -102,7 +107,8 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     islandRatio: 0.015,
     keepRatio: 0.025,
     regionMerge: 1400,
-    minFeature: 2
+    minFeature: 2,
+    cover: 0.4
   }
 };
 
