@@ -325,6 +325,7 @@ export default function Builder() {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const saveTimer = useRef<number | null>(null);
+  const imageJobRef = useRef(0);
 
   const bump = useCallback(() => {
     setRev((n) => n + 1);
@@ -545,10 +546,21 @@ export default function Builder() {
   }, [bump]);
 
   const clearAll = useCallback(() => {
+    imageJobRef.current += 1;
     applyNow(volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z })), null, false);
     setSelected(new Set());
     setBoxStart(null);
-  }, [applyNow]);
+    setPendingImage(null);
+    setPendingName("");
+    setPendingHash("");
+    setFrontFile(null);
+    setSideFile(null);
+    setPaywall(false);
+    setHover(null);
+    setBusy(false);
+    strokeRef.current = null;
+    notify("CLEARED · READY FOR NEW PROJECT");
+  }, [applyNow, notify]);
 
   const resize = useCallback(
     (size: number) => {
@@ -688,6 +700,7 @@ export default function Builder() {
   }, [notify, palette, title]);
 
   const cancelImage = useCallback(() => {
+    imageJobRef.current += 1;
     setPendingImage(null);
     setPendingName("");
     setPendingHash("");
@@ -749,6 +762,7 @@ export default function Builder() {
 
   const regenerateMultiView = useCallback(
     async ({ front, side }: { front: File; side?: File }) => {
+      const job = ++imageJobRef.current;
       setBusy(true);
       try {
         const result = await imagesToVoxels({ front, side }, {
@@ -758,13 +772,16 @@ export default function Builder() {
           symmetrize,
           useLocalAi
         });
+        if (job !== imageJobRef.current) return;
         setPendingImage(result);
         const usedViews = Number(Boolean(front)) + Number(Boolean(side));
         notify(usedViews === 2 ? `Preview ready · 2 views · ${result.count} voxels` : `Preview ready · ${result.count} voxels`);
       } catch (error) {
-        notify(error instanceof Error ? error.message.toUpperCase() : "Could not rebuild from these images");
+        if (job === imageJobRef.current) {
+          notify(error instanceof Error ? error.message.toUpperCase() : "Could not rebuild from these images");
+        }
       } finally {
-        setBusy(false);
+        if (job === imageJobRef.current) setBusy(false);
       }
     },
     [imageHeight, notify, symmetrize, useLocalAi]
@@ -792,6 +809,7 @@ export default function Builder() {
 
   const attachFront = useCallback(
     async (file: File) => {
+      const job = ++imageJobRef.current;
       setBusy(true);
       try {
         notify("IMPORTING FRONT");
@@ -802,6 +820,7 @@ export default function Builder() {
         setFrontFile(file);
         setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
         setPendingHash(await hashImageFile(file));
+        if (job !== imageJobRef.current) return;
         const result = sideFile
           ? await imagesToVoxels({ front: file, side: sideFile }, {
               volumeSize: volumeRef.current.size,
@@ -817,6 +836,7 @@ export default function Builder() {
               symmetrize,
               useLocalAi
             });
+        if (job !== imageJobRef.current) return;
         if (!result.voxels.length) throw new Error("Empty image");
         setPendingImage(result);
         notify(`Preview ready · ${result.count ?? result.voxels.length} voxels`);
@@ -824,7 +844,7 @@ export default function Builder() {
       } catch (error) {
         notify(error instanceof Error ? error.message.toUpperCase() : "FRONT IMPORT FAILED");
       } finally {
-        setBusy(false);
+        if (job === imageJobRef.current) setBusy(false);
       }
     },
     [imageHeight, notify, sideFile, symmetrize, useLocalAi]
@@ -850,6 +870,7 @@ export default function Builder() {
 
   const openProject = useCallback(
     async (file: File) => {
+      const job = ++imageJobRef.current;
       setBusy(true);
       try {
         const lower = file.name.toLowerCase();
@@ -865,6 +886,7 @@ export default function Builder() {
             symmetrize: false,
             useLocalAi
           });
+          if (job !== imageJobRef.current) return;
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
           setPendingHash(await hashImageFile(file));
@@ -897,7 +919,7 @@ export default function Builder() {
       } catch (error) {
         notify(error instanceof Error ? error.message.toUpperCase() : "OPEN FAILED");
       } finally {
-        setBusy(false);
+        if (job === imageJobRef.current) setBusy(false);
       }
     },
     [imageHeight, notify, packVolume, useLocalAi]
