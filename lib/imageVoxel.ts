@@ -1,3 +1,5 @@
+import { spatialCleanVoxels } from "@/lib/ai/bvh";
+
 export type ImageVoxel = {
   x: number;
   y: number;
@@ -975,12 +977,12 @@ function buildModel(
     y: dims.height - 1 - v.y
   }));
 
-  cleaned = removeIsolatedVoxels(cleaned);
+  cleaned = spatialCleanVoxels(cleaned);
   cleaned = keepLargest(cleaned);
 
   if (options.symmetrize) {
     symmetrizeVoxels(cleaned, options.volumeSize);
-    cleaned = removeIsolatedVoxels(cleaned);
+    cleaned = spatialCleanVoxels(cleaned);
     cleaned = keepLargest(cleaned);
   }
 
