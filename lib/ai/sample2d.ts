@@ -1,3 +1,5 @@
+import { smoothSilhouette } from "@/lib/ai/silhouette";
+
 export type Bounds = {
   minX: number;
   minY: number;
@@ -59,7 +61,7 @@ export function resampleMaskCoverage(
       out[y][x] = total > 0 && hits / total >= need;
     }
   }
-  return out;
+  return smoothSilhouette(out);
 }
 
 export function resampleColorBox(
