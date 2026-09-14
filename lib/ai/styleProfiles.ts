@@ -1,4 +1,3 @@
-// lib/ai/styleProfiles.ts
 export type StyleId = "tile" | "weapon" | "pickup" | "prop" | "character";
 
 export type StyleProfile = {
@@ -15,6 +14,8 @@ export type StyleProfile = {
   useDepthHint: boolean;
   islandRatio: number;
   keepRatio: number;
+  regionMerge: number;
+  minFeature: number;
 };
 
 export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
@@ -31,7 +32,9 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     useSideHull: false,
     useDepthHint: false,
     islandRatio: 0.03,
-    keepRatio: 0.04
+    keepRatio: 0.04,
+    regionMerge: 2200,
+    minFeature: 1
   },
   weapon: {
     id: "weapon",
@@ -40,13 +43,15 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     minRadius: 1,
     edgeRadius: 0,
     sdfPower: 1.7,
-    paletteSize: 16,
+    paletteSize: 12,
     outline: true,
     fillHoleRatio: 0.04,
     useSideHull: true,
     useDepthHint: false,
     islandRatio: 0.012,
-    keepRatio: 0.018
+    keepRatio: 0.018,
+    regionMerge: 1600,
+    minFeature: 1
   },
   pickup: {
     id: "pickup",
@@ -55,13 +60,15 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     minRadius: 2,
     edgeRadius: 1,
     sdfPower: 0.85,
-    paletteSize: 16,
+    paletteSize: 12,
     outline: false,
     fillHoleRatio: 0.1,
     useSideHull: false,
     useDepthHint: false,
     islandRatio: 0.02,
-    keepRatio: 0.03
+    keepRatio: 0.03,
+    regionMerge: 1800,
+    minFeature: 2
   },
   prop: {
     id: "prop",
@@ -70,13 +77,15 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     minRadius: 1,
     edgeRadius: 1,
     sdfPower: 1.15,
-    paletteSize: 16,
+    paletteSize: 12,
     outline: false,
     fillHoleRatio: 0.08,
     useSideHull: false,
     useDepthHint: false,
     islandRatio: 0.02,
-    keepRatio: 0.03
+    keepRatio: 0.03,
+    regionMerge: 1800,
+    minFeature: 2
   },
   character: {
     id: "character",
@@ -91,7 +100,9 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     useSideHull: true,
     useDepthHint: false,
     islandRatio: 0.015,
-    keepRatio: 0.025
+    keepRatio: 0.025,
+    regionMerge: 1400,
+    minFeature: 2
   }
 };
 
