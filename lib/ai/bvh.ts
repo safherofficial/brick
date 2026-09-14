@@ -30,8 +30,10 @@ export function spatialCleanVoxels(voxels: ImageVoxel[]): ImageVoxel[] {
   const bvh = new PointsBVH(geometry);
   const queryBox = new THREE.Box3();
   const center = new THREE.Vector3();
+  const point = new THREE.Vector3();
   const min = new THREE.Vector3();
   const max = new THREE.Vector3();
+  const position = geometry.getAttribute("position") as THREE.BufferAttribute;
   const kept: ImageVoxel[] = [];
 
   try {
@@ -46,8 +48,11 @@ export function spatialCleanVoxels(voxels: ImageVoxel[]): ImageVoxel[] {
       let faceNeighbors = 0;
       bvh.shapecast({
         intersectsBounds: (box) => box.intersectsBox(queryBox),
-        intersectsPoint: (point, index) => {
-          if (index === i) return false;
+        intersectsPoint: (pointIndex) => {
+          if (pointIndex === i) return false;
+
+          point.fromBufferAttribute(position, pointIndex);
+
           if (
             Math.abs(point.x - center.x) <= SEARCH_RADIUS &&
             Math.abs(point.y - center.y) <= SEARCH_RADIUS &&
