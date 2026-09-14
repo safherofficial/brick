@@ -46,7 +46,9 @@ import {
   type ImageImport
 } from "@/lib/imageVoxel";
 import { CATALOG } from "@/lib/ai/catalog";
+import { buildImageOptions, presetFromCatalog } from "@/lib/ai/buildOptions";
 import { aiAvailable } from "@/lib/ai/runtime";
+import type { StyleId } from "@/lib/ai/styleProfiles";
 import {
   consumeImageApply,
   FREE_IMAGE_APPLIES,
@@ -311,6 +313,7 @@ export default function Builder() {
   const [imageHeight, setImageHeight] = useState(8);
   const [useLocalAi, setUseLocalAi] = useState(true);
   const [aiStatus, setAiStatus] = useState("LOCAL AI");
+  const [style, setStyle] = useState<StyleId>("prop");
   const [symmetrize, setSymmetrize] = useState(false);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
@@ -765,13 +768,14 @@ export default function Builder() {
       const job = ++imageJobRef.current;
       setBusy(true);
       try {
-        const result = await imagesToVoxels({ front, side }, {
+        const result = await imagesToVoxels({ front, side }, buildImageOptions({
           volumeSize: volumeRef.current.size,
           heightMax: imageHeight,
           maxVoxels: MAX_SAFE,
           symmetrize,
-          useLocalAi
-        });
+          useLocalAi,
+          style
+        }));
         if (job !== imageJobRef.current) return;
         setPendingImage(result);
         const usedViews = Number(Boolean(front)) + Number(Boolean(side));
@@ -784,7 +788,7 @@ export default function Builder() {
         if (job === imageJobRef.current) setBusy(false);
       }
     },
-    [imageHeight, notify, symmetrize, useLocalAi]
+    [imageHeight, notify, style, symmetrize, useLocalAi]
   );
 
   const rebuildMultiView = useCallback(async () => {
@@ -799,7 +803,7 @@ export default function Builder() {
     if (!frontFile) return;
     void regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symmetrize, useLocalAi]);
+  }, [style, symmetrize, useLocalAi]);
 
   useEffect(() => {
     void aiAvailable().then((status) => {
@@ -822,20 +826,22 @@ export default function Builder() {
         setPendingHash(await hashImageFile(file));
         if (job !== imageJobRef.current) return;
         const result = sideFile
-          ? await imagesToVoxels({ front: file, side: sideFile }, {
+          ? await imagesToVoxels({ front: file, side: sideFile }, buildImageOptions({
               volumeSize: volumeRef.current.size,
               heightMax: imageHeight,
               maxVoxels: MAX_SAFE,
               symmetrize,
-              useLocalAi
-            })
-          : await imageToVoxels(file, {
+              useLocalAi,
+              style
+            }))
+          : await imageToVoxels(file, buildImageOptions({
               volumeSize: volumeRef.current.size,
               heightMax: imageHeight,
               maxVoxels: MAX_SAFE,
               symmetrize,
-              useLocalAi
-            });
+              useLocalAi,
+              style
+            }));
         if (job !== imageJobRef.current) return;
         if (!result.voxels.length) throw new Error("Empty image");
         setPendingImage(result);
@@ -847,7 +853,7 @@ export default function Builder() {
         if (job === imageJobRef.current) setBusy(false);
       }
     },
-    [imageHeight, notify, sideFile, symmetrize, useLocalAi]
+    [imageHeight, notify, sideFile, style, symmetrize, useLocalAi]
   );
 
   const attachSide = useCallback(
@@ -879,13 +885,14 @@ export default function Builder() {
           await new Promise((resolve) => window.setTimeout(resolve, 40));
           setFrontFile(file);
           setSideFile(null);
-          const result = await imageToVoxels(file, {
+          const result = await imageToVoxels(file, buildImageOptions({
             volumeSize: volumeRef.current.size,
             heightMax: imageHeight,
             maxVoxels: MAX_SAFE,
             symmetrize: false,
-            useLocalAi
-          });
+            useLocalAi,
+            style
+          }));
           if (job !== imageJobRef.current) return;
           if (!result.voxels.length) throw new Error("Empty image");
           setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
@@ -922,7 +929,7 @@ export default function Builder() {
         if (job === imageJobRef.current) setBusy(false);
       }
     },
-    [imageHeight, notify, packVolume, useLocalAi]
+    [imageHeight, notify, packVolume, style, useLocalAi]
   );
 
   useEffect(() => {
@@ -1231,7 +1238,7 @@ export default function Builder() {
             <input type="range" min={0} max={volume.size - 1} value={clip.value} onChange={(e) => setClip((current) => ({ ...current, value: Number(e.target.value) }))} />
           )}
           <p className="category">IMAGE IMPORT</p>
-          <p className="foldHint">Maximum depth</p>
+          <p className="foldHint">Maximum depth · style {style}</p>
           <div className="viewRow">
             {[4, 8, 12, 16].map((n) => (
               <button
@@ -1258,10 +1265,14 @@ export default function Builder() {
           {CATALOG.map((item) => (
             <button
               key={item.id}
+              className={style === item.category && imageHeight === item.depth ? "modeOn" : ""}
               onClick={() => {
-                setImageHeight(item.depth);
-                setSymmetrize(item.symmetrize);
-                notify(`${item.name} · D${item.depth}`);
+                const preset = presetFromCatalog(item);
+                setStyle(preset.style);
+                setImageHeight(preset.heightMax);
+                setSymmetrize(preset.symmetrize);
+                notify(`${item.name} · ${preset.style} · D${preset.heightMax}`);
+                if (frontFile) void rebuildMultiView();
               }}
               title={item.promptFront}
             >
