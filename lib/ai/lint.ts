@@ -1,4 +1,3 @@
-// lib/ai/lint.ts
 import type { ImageVoxel } from "@/lib/imageVoxel";
 
 function key(x: number, y: number, z: number) {
