@@ -985,7 +985,7 @@ async function buildModel(
   palette: string[],
   side?: { raster: Raster; mask: boolean[][]; bounds: Bounds },
   depthMap?: Float32Array | null
-): ImageImport {
+): Promise<ImageImport> {
   const dims = modelSize(
     frontBounds,
     options.volumeSize,
