@@ -1,8 +1,11 @@
+// lib/ai/catalog.ts
+import { STYLE_PROFILES, type StyleId } from "@/lib/ai/styleProfiles";
+
 export type CatalogItem = {
   id: string;
   name: string;
-  category: "weapon" | "prop" | "pickup" | "character";
-  depth: 8 | 12;
+  category: StyleId;
+  depth: number;
   symmetrize: boolean;
   promptFront: string;
   promptSide: string;
@@ -10,11 +13,20 @@ export type CatalogItem = {
 
 export const CATALOG: CatalogItem[] = [
   {
+    id: "tile-block",
+    name: "Tile",
+    category: "tile",
+    depth: STYLE_PROFILES.tile.depth,
+    symmetrize: STYLE_PROFILES.tile.symmetrize,
+    promptFront: "Orthographic front view, game tile block, white background, flat colors, no shadow.",
+    promptSide: "Orthographic side view of the same tile, 1-2 voxels thick, white background, no shadow."
+  },
+  {
     id: "sword-short",
     name: "Short sword",
     category: "weapon",
-    depth: 8,
-    symmetrize: false,
+    depth: STYLE_PROFILES.weapon.depth,
+    symmetrize: STYLE_PROFILES.weapon.symmetrize,
     promptFront:
       "Orthographic front view, short medieval sword, blade up, white background, flat colors, no shadow.",
     promptSide:
@@ -24,8 +36,8 @@ export const CATALOG: CatalogItem[] = [
     id: "axe",
     name: "Axe",
     category: "weapon",
-    depth: 8,
-    symmetrize: false,
+    depth: STYLE_PROFILES.weapon.depth,
+    symmetrize: STYLE_PROFILES.weapon.symmetrize,
     promptFront:
       "Orthographic front view, stylized battle axe, head up, white background, flat colors, no shadow.",
     promptSide:
@@ -35,8 +47,8 @@ export const CATALOG: CatalogItem[] = [
     id: "potion",
     name: "Potion",
     category: "pickup",
-    depth: 12,
-    symmetrize: true,
+    depth: STYLE_PROFILES.pickup.depth,
+    symmetrize: STYLE_PROFILES.pickup.symmetrize,
     promptFront:
       "Orthographic front view, round potion bottle, cork top, white background, flat colors, no shadow.",
     promptSide:
@@ -46,7 +58,7 @@ export const CATALOG: CatalogItem[] = [
     id: "shield",
     name: "Shield",
     category: "prop",
-    depth: 8,
+    depth: STYLE_PROFILES.prop.depth,
     symmetrize: true,
     promptFront:
       "Orthographic front view, round wooden shield, iron rim, white background, flat colors, no shadow.",
@@ -56,8 +68,8 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "key",
     name: "Key",
-    category: "pickup",
-    depth: 8,
+    category: "weapon",
+    depth: STYLE_PROFILES.weapon.depth,
     symmetrize: false,
     promptFront:
       "Orthographic front view, ornate gold key, white background, flat colors, no shadow.",
