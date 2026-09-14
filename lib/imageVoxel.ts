@@ -329,7 +329,7 @@ function fillInteriorHoles(mask: boolean[][]) {
   return out;
 }
 
-function buildSubjectMask(raster: Raster) {
+async function buildSubjectMask(raster: Raster) {
   let alphaHits = 0;
   for (let i = 3; i < raster.rgba.length; i += 4) {
     if (raster.rgba[i] < 128) alphaHits += 1;
@@ -349,7 +349,8 @@ function buildSubjectMask(raster: Raster) {
     }
   }
   if (!best) throw new Error("No visible subject found");
-  return best;
+  const refined = await refineSubjectMask(best);
+  return fillInteriorHoles(dropIslands(refined));
 }
 
 function findBounds(mask: boolean[][]): Bounds | null {
@@ -1003,6 +1004,11 @@ function normalizeOptions(options: ImageVoxelOptions): Required<ImageVoxelOption
   };
 }
 
+async function refineSubjectMask(mask: boolean[][]) {
+  const { refineMaskWithOpenCv } = await import("@/lib/ai/opencv");
+  return refineMaskWithOpenCv(mask);
+}
+
 async function prepareRaster(raster: Raster, enabled: boolean) {
   if (!enabled) return { raster, depth: null as Float32Array | null };
   const { enhanceRaster } = await import("@/lib/ai/enhance");
@@ -1013,7 +1019,7 @@ export async function imageToVoxels(file: File, options: ImageVoxelOptions = {})
   const normalized = normalizeOptions(options);
   const prepared = await prepareRaster(await loadImage(file), normalized.useLocalAi);
   const raster = prepared.raster;
-  const mask = buildSubjectMask(raster);
+  const mask = await buildSubjectMask(raster);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
   return buildModel(raster, mask, bounds, normalized, createPalette([raster], [mask]), undefined, prepared.depth);
@@ -1024,7 +1030,7 @@ export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptio
   const normalized = normalizeOptions(options);
   const frontPrepared = await prepareRaster(await loadImage(views.front), normalized.useLocalAi);
   const frontRaster = frontPrepared.raster;
-  const frontMask = buildSubjectMask(frontRaster);
+  const frontMask = await buildSubjectMask(frontRaster);
   const frontBounds = findBounds(frontMask);
   if (!frontBounds) throw new Error("No visible subject found in FRONT");
   if (!views.side) {
@@ -1040,7 +1046,7 @@ export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptio
   }
   const sidePrepared = await prepareRaster(await loadImage(views.side), normalized.useLocalAi);
   const sideRaster = sidePrepared.raster;
-  const sideMask = buildSubjectMask(sideRaster);
+  const sideMask = await buildSubjectMask(sideRaster);
   const sideBounds = findBounds(sideMask);
   if (!sideBounds) throw new Error("No visible subject found in SIDE");
   return buildModel(
