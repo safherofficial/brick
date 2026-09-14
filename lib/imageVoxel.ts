@@ -48,6 +48,23 @@ type Span = {
   max: number;
 };
 
+type PreparedView = {
+  raster: Raster;
+  depth: Float32Array | null;
+  mask: boolean[][];
+  bounds: Bounds;
+};
+
+type PaintCache = {
+  filled: Rgb[][];
+  leftEdge: Rgb[];
+  rightEdge: Rgb[];
+};
+
+const rasterCache = new WeakMap<File, Promise<Raster>>();
+const preparedViewWithDepthCache = new WeakMap<File, Promise<PreparedView>>();
+const preparedViewNoDepthCache = new WeakMap<File, Promise<PreparedView>>();
+
 const DEFAULT_PALETTE = [
   "#c91f2d",
   "#e35b19",
@@ -73,11 +90,6 @@ const MIN_ALPHA = 12;
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
-}
-
-/** Yield to the browser so large voxel imports never monopolize the main thread. */
-function yieldToBrowser(): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
 function hexOf(r: number, g: number, b: number) {
@@ -110,7 +122,7 @@ function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
   ];
 }
 
-function loadImage(file: File): Promise<Raster> {
+function loadImageUncached(file: File): Promise<Raster> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -138,6 +150,20 @@ function loadImage(file: File): Promise<Raster> {
       reject(new Error("Unable to read image"));
     };
     img.src = url;
+  });
+}
+
+function loadImage(file: File): Promise<Raster> {
+  const cached = rasterCache.get(file);
+  if (cached) return cached;
+  const promise = loadImageUncached(file);
+  rasterCache.set(file, promise);
+  return promise;
+}
+
+function yieldToBrowser() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 0);
   });
 }
 
@@ -343,8 +369,6 @@ async function buildSubjectMask(raster: Raster) {
   let best: boolean[][] | null = null;
   let bestScore = -1;
   for (const tol of [24, 32, 40, 52, 64, 80]) {
-    // Six full-image flood-fill passes are intentionally spread across frames.
-    // This keeps the Builder responsive while a SIDE image is being attached.
     await yieldToBrowser();
     const raw = fillInteriorHoles(dropIslands(floodSubject(raster, tol, useAlpha)));
     const stats = measureMask(raw);
@@ -485,109 +509,101 @@ function resampleDepth(
   return out;
 }
 
-type ColorField = {
-  colors: (Rgb | null)[][];
-  nearest: Int32Array;
-  width: number;
-  height: number;
-  leftEdge: Rgb[];
-  rightEdge: Rgb[];
-}
-
-function buildColorField(colors: (Rgb | null)[][], mask: boolean[][]): ColorField {
-  const height = colors.length;
-  const width = colors[0]?.length ?? 0;
-  const nearest = new Int32Array(Math.max(0, width * height));
-  nearest.fill(-1);
-
-  const queueX = new Int32Array(Math.max(1, width * height));
-  const queueY = new Int32Array(Math.max(1, width * height));
+function buildPaintCache(colors: (Rgb | null)[][]): PaintCache {
+  const h = colors.length;
+  const w = colors[0]?.length ?? 0;
+  const filled = Array.from({ length: h }, () => Array<Rgb>(w).fill([214, 214, 214] as Rgb));
+  const seen = new Uint8Array(w * h);
+  const queue = new Int32Array(Math.max(1, w * h));
   let head = 0;
   let tail = 0;
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (!mask[y]?.[x] || !colors[y]?.[x]) continue;
-      const index = y * width + x;
-      nearest[index] = index;
-      queueX[tail] = x;
-      queueY[tail] = y;
-      tail += 1;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const color = colors[y]?.[x];
+      if (!color) continue;
+      const index = y * w + x;
+      seen[index] = 1;
+      filled[y][x] = color;
+      queue[tail++] = index;
     }
   }
 
-  const neighbours = [
-    [-1, -1], [0, -1], [1, -1],
-    [-1, 0],            [1, 0],
-    [-1, 1],  [0, 1],   [1, 1]
+  const dirs = [
+    [1, 0], [-1, 0], [0, 1], [0, -1]
   ] as const;
 
   while (head < tail) {
-    const x = queueX[head];
-    const y = queueY[head];
-    const sourceIndex = nearest[y * width + x];
-    head += 1;
-
-    for (const [dx, dy] of neighbours) {
+    const index = queue[head++];
+    const x = index % w;
+    const y = Math.floor(index / w);
+    const color = filled[y][x];
+    for (const [dx, dy] of dirs) {
       const nx = x + dx;
       const ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-      const target = ny * width + nx;
-      if (nearest[target] !== -1) continue;
-      nearest[target] = sourceIndex;
-      queueX[tail] = nx;
-      queueY[tail] = ny;
-      tail += 1;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const next = ny * w + nx;
+      if (seen[next]) continue;
+      seen[next] = 1;
+      filled[ny][nx] = color;
+      queue[tail++] = next;
     }
   }
 
-  const fallback: Rgb = [214, 214, 214];
-  const leftEdge: Rgb[] = Array.from({ length: height }, () => fallback);
-  const rightEdge: Rgb[] = Array.from({ length: height }, () => fallback);
-
-  for (let y = 0; y < height; y += 1) {
-    let left = -1;
-    let right = -1;
-    for (let x = 0; x < width; x += 1) {
-      if (mask[y]?.[x]) {
-        left = x;
+  const leftEdge = Array<Rgb>(h);
+  const rightEdge = Array<Rgb>(h);
+  for (let y = 0; y < h; y += 1) {
+    let left: Rgb | null = null;
+    let right: Rgb | null = null;
+    for (let x = 0; x < w; x += 1) {
+      if (colors[y]?.[x]) {
+        left = colors[y][x];
         break;
       }
     }
-    for (let x = width - 1; x >= 0; x -= 1) {
-      if (mask[y]?.[x]) {
-        right = x;
+    for (let x = w - 1; x >= 0; x -= 1) {
+      if (colors[y]?.[x]) {
+        right = colors[y][x];
         break;
       }
     }
-
-    if (left >= 0) {
-      const idx = nearest[y * width + left];
-      const source = idx >= 0 ? colors[Math.floor(idx / width)]?.[idx % width] : null;
-      if (source) leftEdge[y] = source;
-    }
-    if (right >= 0) {
-      const idx = nearest[y * width + right];
-      const source = idx >= 0 ? colors[Math.floor(idx / width)]?.[idx % width] : null;
-      if (source) rightEdge[y] = source;
-    }
+    leftEdge[y] = left ?? [214, 214, 214];
+    rightEdge[y] = right ?? leftEdge[y];
   }
 
-  return { colors, nearest, width, height, leftEdge, rightEdge };
+  return { filled, leftEdge, rightEdge };
 }
 
-function nearestPaint(field: ColorField, x: number, y: number): Rgb {
-  if (!field.width || !field.height) return [214, 214, 214];
-  const xx = clamp(Math.round(x), 0, field.width - 1);
-  const yy = clamp(Math.round(y), 0, field.height - 1);
-  const sourceIndex = field.nearest[yy * field.width + xx];
-  if (sourceIndex < 0) return [214, 214, 214];
-  return field.colors[Math.floor(sourceIndex / field.width)]?.[sourceIndex % field.width] ?? [214, 214, 214];
+function centerColorsX(colors: (Rgb | null)[][], shift: number) {
+  if (!shift) return colors;
+  const h = colors.length;
+  const w = colors[0]?.length ?? 0;
+  const out = Array.from({ length: h }, () => Array<Rgb | null>(w).fill(null));
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const color = colors[y]?.[x];
+      if (!color) continue;
+      const nx = x + shift;
+      if (nx >= 0 && nx < w) out[y][nx] = color;
+    }
+  }
+  return out;
 }
 
-function edgeColor(field: ColorField, y: number, fromLeft: boolean): Rgb {
-  if (y < 0 || y >= field.height) return [214, 214, 214];
-  return fromLeft ? field.leftEdge[y] : field.rightEdge[y];
+function centerMaskAndColorsX(mask: boolean[][], colors: (Rgb | null)[][]) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  let minX = w;
+  let maxX = -1;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x]) continue;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+    }
+  }
+  const shift = maxX < 0 ? 0 : Math.round((w - 1) / 2 - (minX + maxX) / 2);
+  return { mask: centerMaskX(mask), colors: centerColorsX(colors, shift) };
 }
 
 function boundaryWeight(
@@ -656,20 +672,17 @@ function wrapColor(
   width: number,
   depth: number,
   frontMask: boolean[][],
-  frontField: ColorField,
+  frontCache: PaintCache,
   sideMask?: boolean[][] | null,
-  sideField?: ColorField | null
+  sideCache?: PaintCache | null
 ): Rgb {
-  const front = nearestPaint(frontField, x, y);
-  const rearProjection = nearestPaint(
-    frontField,
-    clamp(width - 1 - x, 0, width - 1),
-    y
-  );
+  const front = frontCache.filled[y]?.[x] ?? [214, 214, 214];
+  const mirroredX = clamp(width - 1 - x, 0, width - 1);
+  const rearProjection = frontCache.filled[y]?.[mirroredX] ?? front;
 
-  const hasSide = Boolean(sideMask && sideField);
+  const hasSide = Boolean(sideMask && sideCache);
   const side = hasSide
-    ? nearestPaint(sideField!, z, y)
+    ? sideCache!.filled[y]?.[clamp(z, 0, depth - 1)] ?? rearProjection
     : rearProjection;
 
   const { frontFace, sideFace, silhouetteBias } = boundaryWeight(
@@ -683,25 +696,16 @@ function wrapColor(
   );
 
   const nz = depth <= 1 ? 0.5 : z / (depth - 1);
+  let color = mixRgb(front, side, hasSide ? clamp(0.22 + sideFace * 0.58, 0, 0.82) : 0);
 
-  // Front material remains dominant near the observed FRONT surface.
-  let color = mixRgb(
-    front,
-    side,
-    hasSide ? clamp(0.22 + sideFace * 0.58, 0, 0.82) : 0
-  );
-
-  // Infer unobserved depth from coherent source colors instead of darkening it.
   if (z > 0 && z < depth - 1) {
     const inferredRear = mixRgb(front, rearProjection, 0.5 + (nz - 0.5) * 0.28);
     color = mixRgb(color, inferredRear, 0.18 + (1 - frontFace) * 0.18);
   }
 
-  const rim = mixRgb(
-    edgeColor(frontField, y, true),
-    edgeColor(frontField, y, false),
-    width <= 1 ? 0.5 : x / (width - 1)
-  );
+  const left = frontCache.leftEdge[y] ?? front;
+  const right = frontCache.rightEdge[y] ?? front;
+  const rim = mixRgb(left, right, width <= 1 ? 0.5 : x / (width - 1));
 
   return mixRgb(
     color,
@@ -710,16 +714,14 @@ function wrapColor(
   );
 }
 
-async function distanceField(mask: boolean[][]) {
+function distanceField(mask: boolean[][]) {
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
   const inf = w + h;
   const dist = Array.from({ length: h }, (_, y) =>
     Array.from({ length: w }, (_, x) => (mask[y][x] ? inf : 0))
   );
-  await yieldToBrowser();
   for (let y = 0; y < h; y += 1) {
-    if ((y & 15) === 0) await yieldToBrowser();
     for (let x = 0; x < w; x += 1) {
       if (!mask[y][x]) continue;
       let best = dist[y][x];
@@ -730,9 +732,7 @@ async function distanceField(mask: boolean[][]) {
       dist[y][x] = best;
     }
   }
-  await yieldToBrowser();
   for (let y = h - 1; y >= 0; y -= 1) {
-    if ((y & 15) === 0) await yieldToBrowser();
     for (let x = w - 1; x >= 0; x -= 1) {
       if (!mask[y][x]) continue;
       let best = dist[y][x];
@@ -995,7 +995,6 @@ async function buildModel(
   );
   const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
   const frontColors = resampleColor(frontRaster, frontMask, frontBounds, dims.width, dims.height);
-  const frontField = buildColorField(frontColors, front);
   const mappedDepth = resampleDepth(
     depthMap,
     frontRaster.width,
@@ -1004,18 +1003,22 @@ async function buildModel(
     dims.width,
     dims.height
   );
-  const dist = await distanceField(front);
+  const dist = distanceField(front);
   let maxDist = 1;
   for (const row of dist) for (const value of row) maxDist = Math.max(maxDist, value);
 
   let sideMask: boolean[][] | null = null;
   let sideColors: (Rgb | null)[][] | null = null;
-  let sideField: ColorField | null = null;
   let profile: Array<Span | null> | null = null;
+  let frontPaintCache = buildPaintCache(frontColors);
+  let sidePaintCache: PaintCache | null = null;
   if (side) {
-    sideMask = centerMaskX(resampleMask(side.mask, side.bounds, dims.depth, dims.height));
-    sideColors = resampleColor(side.raster, side.mask, side.bounds, dims.depth, dims.height);
-    sideField = buildColorField(sideColors, sideMask);
+    const rawSideMask = resampleMask(side.mask, side.bounds, dims.depth, dims.height);
+    const rawSideColors = resampleColor(side.raster, side.mask, side.bounds, dims.depth, dims.height);
+    const centered = centerMaskAndColorsX(rawSideMask, rawSideColors);
+    sideMask = centered.mask;
+    sideColors = centered.colors;
+    sidePaintCache = buildPaintCache(sideColors);
     const raw = sideProfile(sideMask);
     profile = profileCoverage(front, raw) >= 0.35 ? raw : null;
   }
@@ -1025,10 +1028,9 @@ async function buildModel(
   const centerZ = (dims.depth - 1) / 2;
   const maxRadius = Math.max(1, Math.floor((dims.depth - 1) / 2));
 
+  let work = 0;
   for (let y = 0; y < dims.height; y += 1) {
-    // Chunk voxel construction across browser turns. The previous synchronous
-    // triple loop was the direct source of tab freezes on the second view.
-    if ((y & 1) === 0) await yieldToBrowser();
+    if ((y & 3) === 0) await yieldToBrowser();
     const span = profile?.[y] ?? null;
     for (let x = 0; x < dims.width; x += 1) {
       if (!front[y][x]) continue;
@@ -1044,10 +1046,22 @@ async function buildModel(
           y,
           z,
           c: nearestColor(
-            wrapColor(x, y, z, dims.width, dims.depth, front, frontField, sideMask, sideField),
+            wrapColor(
+              x,
+              y,
+              z,
+              dims.width,
+              dims.depth,
+              front,
+              frontPaintCache,
+              sideMask,
+              sidePaintCache
+            ),
             colors
           )
         });
+        work += 1;
+        if ((work & 2047) === 0) await yieldToBrowser();
       }
     }
   }
@@ -1095,55 +1109,78 @@ async function refineSubjectMask(mask: boolean[][]) {
   return refineMaskWithOpenCv(mask);
 }
 
-async function prepareRaster(raster: Raster, enabled: boolean) {
+async function prepareRaster(raster: Raster, enabled: boolean, needDepth: boolean) {
   if (!enabled) return { raster, depth: null as Float32Array | null };
   const { enhanceRaster } = await import("@/lib/ai/enhance");
-  return enhanceRaster(raster);
+  return enhanceRaster(raster, { depth: needDepth });
+}
+
+async function prepareView(file: File, enabled: boolean, needDepth: boolean) {
+  const cache = needDepth ? preparedViewWithDepthCache : preparedViewNoDepthCache;
+  const existing = cache.get(file);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const prepared = await prepareRaster(await loadImage(file), enabled, needDepth);
+    const mask = await buildSubjectMask(prepared.raster);
+    const bounds = findBounds(mask);
+    if (!bounds) throw new Error("No visible subject found");
+    return { raster: prepared.raster, depth: prepared.depth, mask, bounds };
+  })();
+
+  cache.set(file, promise);
+  try {
+    return await promise;
+  } catch (error) {
+    cache.delete(file);
+    throw error;
+  }
 }
 
 export async function imageToVoxels(file: File, options: ImageVoxelOptions = {}): Promise<ImageImport> {
   const normalized = normalizeOptions(options);
-  const prepared = await prepareRaster(await loadImage(file), normalized.useLocalAi);
-  const raster = prepared.raster;
-  const mask = await buildSubjectMask(raster);
-  const bounds = findBounds(mask);
-  if (!bounds) throw new Error("No visible subject found");
-  return await buildModel(raster, mask, bounds, normalized, createPalette([raster], [mask]), undefined, prepared.depth);
+  const view = await prepareView(file, normalized.useLocalAi, true);
+  return buildModel(
+    view.raster,
+    view.mask,
+    view.bounds,
+    normalized,
+    createPalette([view.raster], [view.mask]),
+    undefined,
+    view.depth
+  );
 }
 
 export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptions = {}): Promise<ImageImport> {
   if (!views.front) throw new Error("FRONT IMAGE REQUIRED");
   const normalized = normalizeOptions(options);
-  const frontPrepared = await prepareRaster(await loadImage(views.front), normalized.useLocalAi);
-  const frontRaster = frontPrepared.raster;
-  const frontMask = await buildSubjectMask(frontRaster);
-  const frontBounds = findBounds(frontMask);
-  if (!frontBounds) throw new Error("No visible subject found in FRONT");
+
+  // FRONT is the primary depth-aware view. SIDE only needs segmentation + color;
+  // running a second depth model here wastes the most expensive part of the import
+  // and used to freeze the browser when the second image was attached.
+  const front = await prepareView(views.front, normalized.useLocalAi, true);
   if (!views.side) {
-    return await buildModel(
-      frontRaster,
-      frontMask,
-      frontBounds,
+    return buildModel(
+      front.raster,
+      front.mask,
+      front.bounds,
       normalized,
-      createPalette([frontRaster], [frontMask]),
+      createPalette([front.raster], [front.mask]),
       undefined,
-      frontPrepared.depth
+      front.depth
     );
   }
-  // SIDE uses the deterministic/OpenCV mask pipeline. Running the local depth model
-  // a second time here blocks the browser main thread and its depth map is not used
-  // by buildModel; keep the SIDE raster raw while retaining OpenCV refinement below.
-  const sideRaster = await loadImage(views.side);
-  const sideMask = await buildSubjectMask(sideRaster);
-  const sideBounds = findBounds(sideMask);
-  if (!sideBounds) throw new Error("No visible subject found in SIDE");
-  return await buildModel(
-    frontRaster,
-    frontMask,
-    frontBounds,
+
+  await yieldToBrowser();
+  const side = await prepareView(views.side, normalized.useLocalAi, false);
+  return buildModel(
+    front.raster,
+    front.mask,
+    front.bounds,
     normalized,
-    createPalette([frontRaster, sideRaster], [frontMask, sideMask]),
-    { raster: sideRaster, mask: sideMask, bounds: sideBounds },
-    frontPrepared.depth
+    createPalette([front.raster, side.raster], [front.mask, side.mask]),
+    { raster: side.raster, mask: side.mask, bounds: side.bounds },
+    front.depth
   );
 }
+
