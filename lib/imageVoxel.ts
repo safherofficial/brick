@@ -1,5 +1,6 @@
 // lib/imageVoxel.ts
-import { spatialCleanVoxels, outlineVoxels } from "@/lib/ai/bvh";
+import { spatialCleanVoxels, outlineVoxels, thickenMinFeature } from "@/lib/ai/bvh";
+import { lintVoxels } from "@/lib/ai/lint";
 import { refineMask } from "@/lib/ai/opencv";
 import {
   inferStyle,
@@ -113,11 +114,6 @@ function luma(rgb: Rgb) {
 
 function sat(rgb: Rgb) {
   return Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
-}
-
-function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
-  const k = clamp(t, 0, 1);
-  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
 }
 
 function shade(rgb: Rgb, k: number): Rgb {
@@ -523,20 +519,52 @@ function nearestPaint(colors: (Rgb | null)[][], mask: boolean[][], x: number, y:
   return [214, 214, 214];
 }
 
-function faceColor(
-  x: number,
-  y: number,
-  z: number,
-  width: number,
-  depth: number,
-  frontMask: boolean[][],
-  frontColors: (Rgb | null)[][]
-): Rgb {
-  const front = nearestPaint(frontColors, frontMask, x, y);
-  if (depth <= 2) return front;
-  const mid = (depth - 1) / 2;
-  const t = Math.abs(z - mid) / Math.max(1, mid);
-  return shade(front, 1 - t * 0.18);
+function regionColors(mask: boolean[][], paints: (Rgb | null)[][], merge: number) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const out: (Rgb | null)[][] = Array.from({ length: h }, () => Array(w).fill(null));
+  const seen = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y][x] || seen[y][x]) continue;
+      const seed = nearestPaint(paints, mask, x, y);
+      const cells: [number, number][] = [];
+      const stack: [number, number][] = [[x, y]];
+      seen[y][x] = true;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      while (stack.length) {
+        const [cx, cy] = stack.pop()!;
+        const rgb = nearestPaint(paints, mask, cx, cy);
+        if (dist2(rgb, seed) > merge) {
+          seen[cy][cx] = false;
+          continue;
+        }
+        cells.push([cx, cy]);
+        r += rgb[0];
+        g += rgb[1];
+        b += rgb[2];
+        for (const [dx, dy] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1]
+        ]) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (!mask[ny][nx] || seen[ny][nx]) continue;
+          seen[ny][nx] = true;
+          stack.push([nx, ny]);
+        }
+      }
+      const n = Math.max(1, cells.length);
+      const mean: Rgb = [r / n, g / n, b / n];
+      for (const [cx, cy] of cells) out[cy][cx] = mean;
+    }
+  }
+  return out;
 }
 
 function distanceField(mask: boolean[][]) {
@@ -599,10 +627,10 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 16) {
           Math.round(p.rgb[1] / 16) * 16,
           Math.round(p.rgb[2] / 16) * 16
         ];
-        const key = rgb.join(":");
-        const hit = buckets.get(key);
+        const id = rgb.join(":");
+        const hit = buckets.get(id);
         if (hit) hit.n += 1;
-        else buckets.set(key, { rgb, n: 1 });
+        else buckets.set(id, { rgb, n: 1 });
       }
     }
   }
@@ -663,11 +691,11 @@ function keepLargest(voxels: ImageVoxel[], ratio: number) {
       const cur = stack.pop()!;
       part.push(cur);
       for (const [dx, dy, dz] of dirs) {
-        const key = `${cur.x + dx}:${cur.y + dy}:${cur.z + dz}`;
-        if (seen.has(key)) continue;
-        const next = map.get(key);
+        const id = `${cur.x + dx}:${cur.y + dy}:${cur.z + dz}`;
+        if (seen.has(id)) continue;
+        const next = map.get(id);
         if (!next) continue;
-        seen.add(key);
+        seen.add(id);
         stack.push(next);
       }
     }
@@ -691,9 +719,9 @@ function symmetrizeVoxels(voxels: ImageVoxel[], volumeSize: number) {
   for (const voxel of [...voxels]) {
     const mx = Math.round(center * 2 - voxel.x);
     if (mx < 0 || mx >= volumeSize) continue;
-    const key = `${mx}:${voxel.y}:${voxel.z}`;
-    if (existing.has(key)) continue;
-    existing.add(key);
+    const id = `${mx}:${voxel.y}:${voxel.z}`;
+    if (existing.has(id)) continue;
+    existing.add(id);
     voxels.push({ x: mx, y: voxel.y, z: voxel.z, c: voxel.c });
   }
 }
@@ -712,10 +740,8 @@ function placeOnGround(voxels: ImageVoxel[], volumeSize: number) {
     minZ = Math.min(minZ, v.z);
     maxZ = Math.max(maxZ, v.z);
   }
-  const width = maxX - minX + 1;
-  const depth = maxZ - minZ + 1;
-  const xOffset = Math.floor((volumeSize - width) / 2) - minX;
-  const zOffset = Math.floor((volumeSize - depth) / 2) - minZ;
+  const xOffset = Math.floor((volumeSize - (maxX - minX + 1)) / 2) - minX;
+  const zOffset = Math.floor((volumeSize - (maxZ - minZ + 1)) / 2) - minZ;
   return voxels.map((v) => ({
     x: clamp(v.x + xOffset, 0, volumeSize - 1),
     y: clamp(v.y - minY, 0, volumeSize - 1),
@@ -772,6 +798,7 @@ function buildModel(
   const dims = modelSize(frontBounds, options.volumeSize, options.heightMax, options.maxVoxels);
   const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
   const frontColors = resampleColor(frontRaster, frontMask, frontBounds, dims.width, dims.height);
+  const regions = regionColors(front, frontColors, options.profile.regionMerge);
   const mappedDepth = options.profile.useDepthHint
     ? resampleDepth(
         depthMap,
@@ -787,11 +814,11 @@ function buildModel(
   for (const row of dist) for (const value of row) maxDist = Math.max(maxDist, value);
 
   let sideMask: boolean[][] | null = null;
-  let profile: Array<Span | null> | null = null;
+  let hull: Array<Span | null> | null = null;
   if (side && options.profile.useSideHull) {
     sideMask = centerMaskX(resampleMask(side.mask, side.bounds, dims.depth, dims.height));
     const raw = sideProfile(sideMask);
-    profile = profileCoverage(front, raw) >= 0.35 ? raw : null;
+    hull = profileCoverage(front, raw) >= 0.35 ? raw : null;
   }
 
   const colors = paletteRgb(palette);
@@ -800,7 +827,7 @@ function buildModel(
   const maxRadius = Math.max(0, Math.floor((dims.depth - 1) / 2));
 
   for (let y = 0; y < dims.height; y += 1) {
-    const span = profile?.[y] ?? null;
+    const span = hull?.[y] ?? null;
     for (let x = 0; x < dims.width; x += 1) {
       if (!front[y][x]) continue;
       const radius = sdfRadius(
@@ -809,17 +836,19 @@ function buildModel(
         options.profile,
         sampleDepth(mappedDepth, x, y, dims.width)
       );
+      const base = regions[y][x] ?? nearestPaint(frontColors, front, x, y);
+      const colorIndex = nearestColor(base, colors);
       for (let z = 0; z < dims.depth; z += 1) {
-        if (span) {
-          if (z < span.min || z > span.max) continue;
-        } else if (Math.abs(z - centerZ) > radius) {
-          continue;
-        }
+        if (Math.abs(z - centerZ) > radius) continue;
+        if (span && (z < span.min || z > span.max)) continue;
+        if (sideMask && !span && !sideMask[y]?.[z]) continue;
+        const mid = Math.max(1, (dims.depth - 1) / 2);
+        const shaded = dims.depth <= 2 ? base : shade(base, 1 - (Math.abs(z - centerZ) / mid) * 0.16);
         voxels.push({
           x,
           y,
           z,
-          c: nearestColor(faceColor(x, y, z, dims.width, dims.depth, front, frontColors), colors)
+          c: dims.depth <= 2 ? colorIndex : nearestColor(shaded, colors)
         });
       }
     }
@@ -830,10 +859,13 @@ function buildModel(
     voxels.map((v) => ({ ...v, y: dims.height - 1 - v.y })),
     options.profile.keepRatio
   );
+  cleaned = thickenMinFeature(cleaned, options.profile.minFeature);
   cleaned = spatialCleanVoxels(cleaned);
+  cleaned = lintVoxels(cleaned);
   if (options.symmetrize) {
     symmetrizeVoxels(cleaned, options.volumeSize);
     cleaned = keepLargest(cleaned, options.profile.keepRatio);
+    cleaned = lintVoxels(cleaned);
   }
   if (options.outline) {
     const outlineIndex = Math.max(0, palette.findIndex((hex) => hex.toLowerCase() === OUTLINE_HEX));
