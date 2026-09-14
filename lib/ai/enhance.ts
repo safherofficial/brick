@@ -440,7 +440,8 @@ async function runMap(
 }
 
 export async function enhanceRaster(
-  raster: AiRaster
+  raster: AiRaster,
+  options: { depth?: boolean } = {}
 ) {
   const available =
     await aiAvailable();
@@ -513,7 +514,7 @@ export async function enhanceRaster(
   }
 
   const depth =
-    available.depth
+    options.depth !== false && available.depth
       ? await runMap(
           "depth",
           raster
