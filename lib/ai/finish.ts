@@ -22,10 +22,23 @@ function boundsOf(voxels: ImageVoxel[]) {
   return { minX, minY, minZ, maxX, maxY, maxZ };
 }
 
+function isInterior(occupied: Set<string>, v: ImageVoxel) {
+  return (
+    occupied.has(key(v.x - 1, v.y, v.z)) &&
+    occupied.has(key(v.x + 1, v.y, v.z)) &&
+    occupied.has(key(v.x, v.y - 1, v.z)) &&
+    occupied.has(key(v.x, v.y + 1, v.z)) &&
+    occupied.has(key(v.x, v.y, v.z - 1)) &&
+    occupied.has(key(v.x, v.y, v.z + 1))
+  );
+}
+
 export function flattenColumnColors(voxels: ImageVoxel[]): ImageVoxel[] {
   if (voxels.length < 2) return voxels;
+  const occupied = new Set(voxels.map((v) => key(v.x, v.y, v.z)));
   const columns = new Map<string, Map<number, number>>();
   for (const v of voxels) {
+    if (!isInterior(occupied, v)) continue;
     const id = `${v.x}:${v.y}`;
     const votes = columns.get(id) ?? new Map<number, number>();
     votes.set(v.c, (votes.get(v.c) ?? 0) + 1);
@@ -35,15 +48,21 @@ export function flattenColumnColors(voxels: ImageVoxel[]): ImageVoxel[] {
   for (const [id, votes] of columns) {
     let best = 0;
     let bestN = -1;
+    let total = 0;
     for (const [c, n] of votes) {
+      total += n;
       if (n > bestN) {
         best = c;
         bestN = n;
       }
     }
-    chosen.set(id, best);
+    if (bestN / Math.max(1, total) >= 0.6) chosen.set(id, best);
   }
-  return voxels.map((v) => ({ ...v, c: chosen.get(`${v.x}:${v.y}`) ?? v.c }));
+  return voxels.map((v) => {
+    if (!isInterior(occupied, v)) return v;
+    const next = chosen.get(`${v.x}:${v.y}`);
+    return next === undefined ? v : { ...v, c: next };
+  });
 }
 
 export function stabilizeBase(voxels: ImageVoxel[]): ImageVoxel[] {
