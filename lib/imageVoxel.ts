@@ -982,7 +982,6 @@ function buildModel(
 
   if (options.symmetrize) {
     symmetrizeVoxels(cleaned, options.volumeSize);
-    cleaned = spatialCleanVoxels(cleaned);
     cleaned = keepLargest(cleaned);
   }
 
