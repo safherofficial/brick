@@ -1,7 +1,8 @@
-// lib/imageVoxel.ts
 import { spatialCleanVoxels, outlineVoxels, thickenMinFeature } from "@/lib/ai/bvh";
+import { finishVoxels } from "@/lib/ai/finish";
 import { lintVoxels } from "@/lib/ai/lint";
 import { refineMask } from "@/lib/ai/opencv";
+import { resampleColorBox, resampleMaskCoverage } from "@/lib/ai/sample2d";
 import {
   inferStyle,
   profileById,
@@ -404,6 +405,21 @@ function resampleMask(mask: boolean[][], bounds: Bounds, width: number, height: 
   return out;
 }
 
+function paintGrid(raster: Raster, mask: boolean[][]) {
+  const colors: (Rgb | null)[][] = Array.from({ length: raster.height }, () =>
+    Array(raster.width).fill(null)
+  );
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      if (!mask[y]?.[x]) continue;
+      const p = pixel(raster, x, y);
+      if (p.a < MIN_ALPHA) continue;
+      colors[y][x] = p.rgb;
+    }
+  }
+  return colors;
+}
+
 function centerMaskX(mask: boolean[][]) {
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
@@ -457,25 +473,6 @@ function profileCoverage(front: boolean[][], profile: Array<Span | null>) {
     if (profile[y]) hit += 1;
   }
   return need ? hit / need : 0;
-}
-
-function resampleColor(
-  raster: Raster,
-  mask: boolean[][],
-  bounds: Bounds,
-  width: number,
-  height: number
-) {
-  const colors: (Rgb | null)[][] = Array.from({ length: height }, () => Array(width).fill(null));
-  for (let y = 0; y < height; y += 1) {
-    const srcY = bounds.minY + (y / Math.max(1, height - 1)) * (bounds.height - 1);
-    for (let x = 0; x < width; x += 1) {
-      const srcX = bounds.minX + (x / Math.max(1, width - 1)) * (bounds.width - 1);
-      if (!mask[Math.round(srcY)]?.[Math.round(srcX)]) continue;
-      colors[y][x] = pixel(raster, srcX, srcY).rgb;
-    }
-  }
-  return colors;
 }
 
 function resampleDepth(
@@ -796,8 +793,20 @@ function buildModel(
   depthMap?: Float32Array | null
 ): ImageImport {
   const dims = modelSize(frontBounds, options.volumeSize, options.heightMax, options.maxVoxels);
-  const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
-  const frontColors = resampleColor(frontRaster, frontMask, frontBounds, dims.width, dims.height);
+  const front = resampleMaskCoverage(
+    frontMask,
+    frontBounds,
+    dims.width,
+    dims.height,
+    options.profile.cover
+  );
+  const frontColors = resampleColorBox(
+    paintGrid(frontRaster, frontMask),
+    frontMask,
+    frontBounds,
+    dims.width,
+    dims.height
+  );
   const regions = regionColors(front, frontColors, options.profile.regionMerge);
   const mappedDepth = options.profile.useDepthHint
     ? resampleDepth(
@@ -816,7 +825,9 @@ function buildModel(
   let sideMask: boolean[][] | null = null;
   let hull: Array<Span | null> | null = null;
   if (side && options.profile.useSideHull) {
-    sideMask = centerMaskX(resampleMask(side.mask, side.bounds, dims.depth, dims.height));
+    sideMask = centerMaskX(
+      resampleMaskCoverage(side.mask, side.bounds, dims.depth, dims.height, options.profile.cover)
+    );
     const raw = sideProfile(sideMask);
     hull = profileCoverage(front, raw) >= 0.35 ? raw : null;
   }
@@ -842,14 +853,7 @@ function buildModel(
         if (Math.abs(z - centerZ) > radius) continue;
         if (span && (z < span.min || z > span.max)) continue;
         if (sideMask && !span && !sideMask[y]?.[z]) continue;
-        const mid = Math.max(1, (dims.depth - 1) / 2);
-        const shaded = dims.depth <= 2 ? base : shade(base, 1 - (Math.abs(z - centerZ) / mid) * 0.16);
-        voxels.push({
-          x,
-          y,
-          z,
-          c: dims.depth <= 2 ? colorIndex : nearestColor(shaded, colors)
-        });
+        voxels.push({ x, y, z, c: colorIndex });
       }
     }
   }
@@ -871,7 +875,7 @@ function buildModel(
     const outlineIndex = Math.max(0, palette.findIndex((hex) => hex.toLowerCase() === OUTLINE_HEX));
     cleaned = outlineVoxels(cleaned, outlineIndex >= 0 ? outlineIndex : 0);
   }
-  const grounded = placeOnGround(cleaned, options.volumeSize);
+  const grounded = finishVoxels(placeOnGround(cleaned, options.volumeSize), options.volumeSize);
   return {
     width: frontRaster.width,
     height: frontRaster.height,
