@@ -4,6 +4,7 @@ import type { ImageVoxel } from "@/lib/imageVoxel";
 
 const SEARCH_RADIUS = 1.05;
 const MIN_NEIGHBORS = 1;
+const MAX_BVH_POINTS = 18000;
 
 /**
  * Spatial cleanup backed by three-mesh-bvh.
@@ -14,6 +15,12 @@ const MIN_NEIGHBORS = 1;
  */
 export function spatialCleanVoxels(voxels: ImageVoxel[]): ImageVoxel[] {
   if (voxels.length < 3) return voxels;
+
+  // A BVH query for every voxel is excellent for medium point clouds, but
+  // wasteful for large dense voxel volumes. Brick already has O(1) integer
+  // adjacency semantics there, so keep the external BVH bounded to avoid
+  // blocking the main thread during a second FRONT/SIDE import.
+  if (voxels.length > MAX_BVH_POINTS) return voxels;
 
   const positions = new Float32Array(voxels.length * 3);
   for (let i = 0; i < voxels.length; i += 1) {
