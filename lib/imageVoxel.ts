@@ -477,37 +477,109 @@ function resampleDepth(
   return out;
 }
 
-function nearestPaint(colors: (Rgb | null)[][], mask: boolean[][], x: number, y: number): Rgb {
-  const h = colors.length;
-  const w = colors[0]?.length ?? 0;
-  const ox = clamp(Math.round(x), 0, Math.max(0, w - 1));
-  const oy = clamp(Math.round(y), 0, Math.max(0, h - 1));
-  const direct = colors[oy]?.[ox];
-  if (direct) return direct;
-  for (let radius = 1; radius <= 14; radius += 1) {
-    for (let dy = -radius; dy <= radius; dy += 1) {
-      for (let dx = -radius; dx <= radius; dx += 1) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
-        const hit = colors[oy + dy]?.[ox + dx];
-        if (hit && mask[oy + dy]?.[ox + dx]) return hit;
-      }
-    }
-  }
-  return [214, 214, 214];
+type ColorField = {
+  colors: (Rgb | null)[][];
+  nearest: Int32Array;
+  width: number;
+  height: number;
+  leftEdge: Rgb[];
+  rightEdge: Rgb[];
 }
 
-function edgeColor(colors: (Rgb | null)[][], mask: boolean[][], y: number, fromLeft: boolean): Rgb {
-  const w = colors[0]?.length ?? 0;
-  if (fromLeft) {
-    for (let x = 0; x < w; x += 1) {
-      if (mask[y]?.[x]) return nearestPaint(colors, mask, x, y);
-    }
-  } else {
-    for (let x = w - 1; x >= 0; x -= 1) {
-      if (mask[y]?.[x]) return nearestPaint(colors, mask, x, y);
+function buildColorField(colors: (Rgb | null)[][], mask: boolean[][]): ColorField {
+  const height = colors.length;
+  const width = colors[0]?.length ?? 0;
+  const nearest = new Int32Array(Math.max(0, width * height));
+  nearest.fill(-1);
+
+  const queueX = new Int32Array(Math.max(1, width * height));
+  const queueY = new Int32Array(Math.max(1, width * height));
+  let head = 0;
+  let tail = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y]?.[x] || !colors[y]?.[x]) continue;
+      const index = y * width + x;
+      nearest[index] = index;
+      queueX[tail] = x;
+      queueY[tail] = y;
+      tail += 1;
     }
   }
-  return nearestPaint(colors, mask, fromLeft ? 0 : Math.max(0, w - 1), y);
+
+  const neighbours = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0],            [1, 0],
+    [-1, 1],  [0, 1],   [1, 1]
+  ] as const;
+
+  while (head < tail) {
+    const x = queueX[head];
+    const y = queueY[head];
+    const sourceIndex = nearest[y * width + x];
+    head += 1;
+
+    for (const [dx, dy] of neighbours) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const target = ny * width + nx;
+      if (nearest[target] !== -1) continue;
+      nearest[target] = sourceIndex;
+      queueX[tail] = nx;
+      queueY[tail] = ny;
+      tail += 1;
+    }
+  }
+
+  const fallback: Rgb = [214, 214, 214];
+  const leftEdge: Rgb[] = Array.from({ length: height }, () => fallback);
+  const rightEdge: Rgb[] = Array.from({ length: height }, () => fallback);
+
+  for (let y = 0; y < height; y += 1) {
+    let left = -1;
+    let right = -1;
+    for (let x = 0; x < width; x += 1) {
+      if (mask[y]?.[x]) {
+        left = x;
+        break;
+      }
+    }
+    for (let x = width - 1; x >= 0; x -= 1) {
+      if (mask[y]?.[x]) {
+        right = x;
+        break;
+      }
+    }
+
+    if (left >= 0) {
+      const idx = nearest[y * width + left];
+      const source = idx >= 0 ? colors[Math.floor(idx / width)]?.[idx % width] : null;
+      if (source) leftEdge[y] = source;
+    }
+    if (right >= 0) {
+      const idx = nearest[y * width + right];
+      const source = idx >= 0 ? colors[Math.floor(idx / width)]?.[idx % width] : null;
+      if (source) rightEdge[y] = source;
+    }
+  }
+
+  return { colors, nearest, width, height, leftEdge, rightEdge };
+}
+
+function nearestPaint(field: ColorField, x: number, y: number): Rgb {
+  if (!field.width || !field.height) return [214, 214, 214];
+  const xx = clamp(Math.round(x), 0, field.width - 1);
+  const yy = clamp(Math.round(y), 0, field.height - 1);
+  const sourceIndex = field.nearest[yy * field.width + xx];
+  if (sourceIndex < 0) return [214, 214, 214];
+  return field.colors[Math.floor(sourceIndex / field.width)]?.[sourceIndex % field.width] ?? [214, 214, 214];
+}
+
+function edgeColor(field: ColorField, y: number, fromLeft: boolean): Rgb {
+  if (y < 0 || y >= field.height) return [214, 214, 214];
+  return fromLeft ? field.leftEdge[y] : field.rightEdge[y];
 }
 
 function boundaryWeight(
@@ -576,26 +648,20 @@ function wrapColor(
   width: number,
   depth: number,
   frontMask: boolean[][],
-  frontColors: (Rgb | null)[][],
+  frontField: ColorField,
   sideMask?: boolean[][] | null,
-  sideColors?: (Rgb | null)[][] | null
+  sideField?: ColorField | null
 ): Rgb {
-  const front = nearestPaint(frontColors, frontMask, x, y);
+  const front = nearestPaint(frontField, x, y);
   const rearProjection = nearestPaint(
-    frontColors,
-    frontMask,
+    frontField,
     clamp(width - 1 - x, 0, width - 1),
     y
   );
 
-  const hasSide = Boolean(sideMask && sideColors);
+  const hasSide = Boolean(sideMask && sideField);
   const side = hasSide
-    ? nearestPaint(
-        sideColors!,
-        sideMask!,
-        z,
-        y
-      )
+    ? nearestPaint(sideField!, z, y)
     : rearProjection;
 
   const { frontFace, sideFace, silhouetteBias } = boundaryWeight(
@@ -624,8 +690,8 @@ function wrapColor(
   }
 
   const rim = mixRgb(
-    edgeColor(frontColors, frontMask, y, true),
-    edgeColor(frontColors, frontMask, y, false),
+    edgeColor(frontField, y, true),
+    edgeColor(frontField, y, false),
     width <= 1 ? 0.5 : x / (width - 1)
   );
 
@@ -917,6 +983,7 @@ function buildModel(
   );
   const front = resampleMask(frontMask, frontBounds, dims.width, dims.height);
   const frontColors = resampleColor(frontRaster, frontMask, frontBounds, dims.width, dims.height);
+  const frontField = buildColorField(frontColors, front);
   const mappedDepth = resampleDepth(
     depthMap,
     frontRaster.width,
@@ -931,10 +998,12 @@ function buildModel(
 
   let sideMask: boolean[][] | null = null;
   let sideColors: (Rgb | null)[][] | null = null;
+  let sideField: ColorField | null = null;
   let profile: Array<Span | null> | null = null;
   if (side) {
     sideMask = centerMaskX(resampleMask(side.mask, side.bounds, dims.depth, dims.height));
     sideColors = resampleColor(side.raster, side.mask, side.bounds, dims.depth, dims.height);
+    sideField = buildColorField(sideColors, sideMask);
     const raw = sideProfile(sideMask);
     profile = profileCoverage(front, raw) >= 0.35 ? raw : null;
   }
@@ -960,7 +1029,7 @@ function buildModel(
           y,
           z,
           c: nearestColor(
-            wrapColor(x, y, z, dims.width, dims.depth, front, frontColors, sideMask, sideColors),
+            wrapColor(x, y, z, dims.width, dims.depth, front, frontField, sideMask, sideField),
             colors
           )
         });
@@ -1046,8 +1115,10 @@ export async function imagesToVoxels(views: ImageViews, options: ImageVoxelOptio
       frontPrepared.depth
     );
   }
-  const sidePrepared = await prepareRaster(await loadImage(views.side), normalized.useLocalAi);
-  const sideRaster = sidePrepared.raster;
+  // SIDE uses the deterministic/OpenCV mask pipeline. Running the local depth model
+  // a second time here blocks the browser main thread and its depth map is not used
+  // by buildModel; keep the SIDE raster raw while retaining OpenCV refinement below.
+  const sideRaster = await loadImage(views.side);
   const sideMask = await buildSubjectMask(sideRaster);
   const sideBounds = findBounds(sideMask);
   if (!sideBounds) throw new Error("No visible subject found in SIDE");
