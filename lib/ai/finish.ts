@@ -56,7 +56,7 @@ export function flattenColumnColors(voxels: ImageVoxel[]): ImageVoxel[] {
         bestN = n;
       }
     }
-    if (bestN / Math.max(1, total) >= 0.6) chosen.set(id, best);
+    if (bestN / Math.max(1, total) >= 0.88) chosen.set(id, best);
   }
   return voxels.map((v) => {
     if (!isInterior(occupied, v)) return v;
