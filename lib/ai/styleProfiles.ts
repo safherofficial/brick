@@ -38,23 +38,23 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     minFeature: 1,
     cover: 0.48
   },
-  sword: {
+   sword: {
     id: "sword",
     depth: 4,
     symmetrize: false,
     minRadius: 0,
     edgeRadius: 0,
-    sdfPower: 2.2,
-    paletteSize: 20,
+    sdfPower: 2.35,
+    paletteSize: 24,
     outline: true,
-    fillHoleRatio: 0.02,
+    fillHoleRatio: 0.015,
     useSideHull: true,
     useDepthHint: false,
-    islandRatio: 0.006,
-    keepRatio: 0.008,
-    regionMerge: 700,
+    islandRatio: 0.004,
+    keepRatio: 0.006,
+    regionMerge: 420,
     minFeature: 1,
-    cover: 0.34
+    cover: 0.3
   },
   weapon: {
     id: "weapon",
