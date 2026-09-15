@@ -2659,7 +2659,6 @@ export default function Builder() {
               file,
               {
                 volumeSize: volumeRef.current.size,
-                mode: imageMode,
                 heightMax: imageHeight,
                 maxVoxels: MAX_SAFE,
                 style: aiCategoryPreset(aiCategory).style,
@@ -4379,7 +4378,7 @@ export default function Builder() {
                 "flat",
                 "relief",
                 "model"
-              ] as ImageMode[]
+              ] as LocalImageMode[]
             ).map(
               (
                 mode
