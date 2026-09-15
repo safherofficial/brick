@@ -163,9 +163,9 @@ export function exportVox(volume: VoxelVolume, palette: string[]) {
   for (let i = 0; i < 256; i++) {
     const [r, g, b] = hexRgb(palette[i] ?? "#e6e6e6");
     const o = i * 4;
-    rgba[o] = Math.max(r, 12);
-    rgba[o + 1] = Math.max(g, 12);
-    rgba[o + 2] = Math.max(b, 12);
+    rgba[o] = r;
+    rgba[o + 1] = g;
+    rgba[o + 2] = b;
     rgba[o + 3] = 255;
   }
 
@@ -297,9 +297,9 @@ export function exportObj(
       .sort((a, b) => a - b)
       .map((i) => {
         const [r, g, b] = hexRgb(palette[i] ?? "#e6e6e6");
-        const rr = Math.max(r, 18) / 255;
-        const gg = Math.max(g, 18) / 255;
-        const bb = Math.max(b, 18) / 255;
+        const rr = r / 255;
+        const gg = g / 255;
+        const bb = b / 255;
         const kd = `${rr.toFixed(6)} ${gg.toFixed(6)} ${bb.toFixed(6)}`;
         return [
           `newmtl voxel_${i}`,
