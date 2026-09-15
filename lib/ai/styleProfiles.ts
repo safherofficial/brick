@@ -1,4 +1,4 @@
-export type StyleId = "tile" | "weapon" | "pickup" | "prop" | "character";
+export type StyleId = "tile" | "sword" | "weapon" | "pickup" | "prop" | "character";
 
 export type StyleProfile = {
   id: StyleId;
@@ -37,6 +37,24 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     regionMerge: 2200,
     minFeature: 1,
     cover: 0.52
+  },
+  sword: {
+    id: "sword",
+    depth: 4,
+    symmetrize: false,
+    minRadius: 0,
+    edgeRadius: 0,
+    sdfPower: 2.2,
+    paletteSize: 8,
+    outline: true,
+    fillHoleRatio: 0.02,
+    useSideHull: true,
+    useDepthHint: false,
+    islandRatio: 0.006,
+    keepRatio: 0.008,
+    regionMerge: 1100,
+    minFeature: 1,
+    cover: 0.26
   },
   weapon: {
     id: "weapon",
@@ -121,6 +139,7 @@ export function inferStyle(heightMax: number, symmetrize: boolean): StyleId {
   if (heightMax <= 2) return "tile";
   if (symmetrize && heightMax >= 10) return "character";
   if (symmetrize) return "pickup";
+  if (heightMax <= 4) return "sword";
   if (heightMax <= 6) return "weapon";
   return "prop";
 }
