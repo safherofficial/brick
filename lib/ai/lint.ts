@@ -87,6 +87,15 @@ export function fillTinyCavities(voxels: ImageVoxel[]): ImageVoxel[] {
   maxY += 1;
   maxZ += 1;
 
+  // Il flood-fill qui sotto scandisce l'intero bounding box paddato per
+  // trovare le cavità interne. Se il bounding box è enorme rispetto al
+  // numero di voxel (modello sparso su una griglia grande), il costo
+  // esplode senza che ci sia una vera cavità "chiusa" da riempire — in
+  // casi estremi va persino in crash (RangeError: Set maximum size
+  // exceeded, verificato). Meglio saltare la passata che rompere l'import.
+  const boxVolume = (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+  if (boxVolume > 400_000 || boxVolume > voxels.length * 200) return voxels;
+
   const outside = new Set<string>();
   const stack: [number, number, number][] = [[minX, minY, minZ]];
   outside.add(key(minX, minY, minZ));
