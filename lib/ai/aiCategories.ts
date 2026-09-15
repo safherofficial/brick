@@ -1,4 +1,5 @@
 import type { StyleId } from "@/lib/ai/styleProfiles";
+import { STYLE_PROFILES } from "@/lib/ai/styleProfiles";
 
 export type AiCategory = "swords" | "guns" | "rifles" | "objects";
 
@@ -11,44 +12,39 @@ export type AiCategoryPreset = {
   description: string;
 };
 
-/**
- * AI MODE presets intentionally reuse the stable reconstruction profiles.
- * The category only selects the appropriate reconstruction defaults; it does
- * not change the proven imageVoxel material bake or the multi-view pipeline.
- */
 export const AI_CATEGORY_PRESETS: readonly AiCategoryPreset[] = [
   {
     id: "swords",
     label: "SWORDS",
     style: "weapon",
-    heightMax: 8,
+    heightMax: STYLE_PROFILES.weapon.depth,
     symmetrize: false,
-    description: "Weapon reconstruction optimized for swords and blades.",
+    description: "Lame sottili, outline, profondità arma."
   },
   {
     id: "guns",
     label: "GUNS",
     style: "weapon",
-    heightMax: 8,
+    heightMax: STYLE_PROFILES.weapon.depth,
     symmetrize: false,
-    description: "Weapon reconstruction optimized for compact firearms.",
+    description: "Armi corte, silhouette stretta."
   },
   {
     id: "rifles",
     label: "RIFLES",
     style: "weapon",
-    heightMax: 12,
+    heightMax: 8,
     symmetrize: false,
-    description: "Weapon reconstruction with extra depth for long firearms.",
+    description: "Armi lunghe, stesso profilo weapon con più profondità."
   },
   {
     id: "objects",
     label: "OBJECTS",
     style: "prop",
-    heightMax: 8,
+    heightMax: STYLE_PROFILES.prop.depth,
     symmetrize: false,
-    description: "General game-ready prop reconstruction.",
-  },
+    description: "Prop generico da gioco."
+  }
 ];
 
 export function aiCategoryPreset(id: AiCategory): AiCategoryPreset {
