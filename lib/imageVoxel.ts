@@ -25,9 +25,9 @@ export type ImageVoxelOptions = {
   heightMax?: number;
   maxVoxels?: number;
   symmetrize?: boolean;
-  /** Enables the local ONNX segmentation stage used by AI MODE. */
+  /** Optional local AI flag; reconstruction remains deterministic. */
   useLocalAi?: boolean;
-  /** Explicit AI asset profile. */
+  /** Optional AI asset category. Geometry is not altered by category. */
   aiCategory?: import("@/lib/ai/aiCategories").AiCategory;
 };
 
@@ -477,8 +477,7 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
     }
   }
 
-  let largest = 0;
-  for (const size of componentSizes) largest = Math.max(largest, size);
+  const largest = Math.max(...componentSizes);
   const minComponent = Math.max(
     MODEL_MIN_COMPONENT_PIXELS,
     Math.round(largest * MODEL_MIN_COMPONENT_RATIO)
@@ -612,16 +611,6 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
   }
 
   return dominantPalette([...buckets.values()], size);
-}
-
-const BACKING_COLOR = "#2f3442";
-
-function ensureBackingPalette(palette: string[]) {
-  const next = palette.slice();
-  const existing = next.findIndex((hex) => hex.toLowerCase() === BACKING_COLOR);
-  if (existing >= 0) return { palette: next, backingIndex: existing };
-  next.push(BACKING_COLOR);
-  return { palette: next, backingIndex: next.length - 1 };
 }
 
 function ditheredColor(
@@ -969,7 +958,8 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   }
 
   if (components.length <= 1) return voxels;
-  const largest = Math.max(...components.map((c) => c.length));
+  let largest = 0;
+  for (const component of components) largest = Math.max(largest, component.length);
   const threshold = Math.max(6, Math.round(largest * 0.015));
   return components.filter((c) => c.length >= threshold).flat();
 }
@@ -984,8 +974,7 @@ function reconstructVisualHull(
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
   dimensions: Dimensions,
-  palette: string[],
-  backingIndex: number
+  palette: string[]
 ) {
   const front = resampleMaskToBounds(
     frontMask,
@@ -1021,40 +1010,28 @@ function reconstructVisualHull(
         // volumes. There is no later voxel thinning step.
         if (side && !side[y]?.[z]) continue;
 
-        // MODEL is single-sided: the FRONT artwork belongs only to the
-        // front-facing shell. The interior/rear is structural backing, never
-        // another copy of the FRONT artwork.
-        const isFrontLayer = z === dimensions.depth - 1;
+        let color: [number, number, number] = [
+          frontColor.r,
+          frontColor.g,
+          frontColor.b
+        ];
 
-        if (isFrontLayer) {
-          let color: [number, number, number] = [
-            frontColor.r,
-            frontColor.g,
-            frontColor.b
-          ];
-
-          if (sideRaster && sideBounds && side?.[y]?.[z]) {
-            const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
-            color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
-          }
-
-          voxels.push({
-            x,
-            y,
-            z,
-            c: nearestColor(
-              ditheredColor(color, x, y + z, 3),
-              paletteValues
-            )
-          });
-        } else {
-          voxels.push({
-            x,
-            y,
-            z,
-            c: backingIndex
-          });
+        if (sideRaster && sideBounds && side?.[y]?.[z]) {
+          const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
+          color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
         }
+
+        // The rear volume is inferred only from the required FRONT + SIDE
+        // silhouettes and their colors; no third view is sampled.
+        const shade = 1 - nz * 0.22;
+        color = [color[0] * shade, color[1] * shade, color[2] * shade];
+
+        voxels.push({
+          x,
+          y,
+          z,
+          c: nearestColor(ditheredColor(color, x, y + z, 3), paletteValues)
+        });
       }
     }
   }
@@ -1077,41 +1054,6 @@ function reconstructVisualHull(
   } satisfies ImageImport;
 }
 
-function depthTexturedColor(
-  raster: Raster,
-  bounds: Bounds,
-  nx: number,
-  ny: number,
-  depthFromFront: number
-): [number, number, number] {
-  const t = clamp(depthFromFront, 0, 1);
-  const front = sampleMapped(raster, bounds, nx, ny);
-
-  // A single reference image cannot reveal the real hidden texture.
-  // For SOLID/FLAT/RELIEF we therefore synthesize a continuous rearward
-  // texture from the same source instead of introducing a black/neutral slab.
-  // The farther the voxel is from the source face, the more we blend toward
-  // the mirrored source sample. This keeps weapons and props textured on
-  // every exposed surface without duplicating the exact FRONT bitmap on the
-  // entire depth.
-  const mirrored = sampleMapped(
-    raster,
-    bounds,
-    1 - nx,
-    clamp(ny + (t - 0.5) * 0.06, 0, 1)
-  );
-
-  const blend = t * 0.82;
-  const color = blendRgb(front, mirrored, blend);
-  const shade = 1 - t * 0.08;
-
-  return [
-    clamp(color[0] * shade, 0, 255),
-    clamp(color[1] * shade, 0, 255),
-    clamp(color[2] * shade, 0, 255)
-  ];
-}
-
 function buildNonModel(
   raster: Raster,
   mask: boolean[][],
@@ -1128,15 +1070,12 @@ function buildNonModel(
   const height = Math.max(1, Math.round(bounds.height * scale));
   const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
 
-  // A generated image is explicitly single-sided. Even FLAT gets a second,
-  // neutral backing layer, because a single voxel is inherently visible from
-  // both directions in a voxel renderer/exporter.
   const depthBase =
     options.mode === "flat"
-      ? 2
+      ? 1
       : options.mode === "relief"
-        ? Math.max(3, Math.round(options.heightMax * 0.30))
-        : Math.max(3, Math.round(options.heightMax * 0.62));
+        ? Math.max(2, Math.round(options.heightMax * 0.30))
+        : Math.max(2, Math.round(options.heightMax * 0.62));
 
   const voxels: ImageVoxel[] = [];
 
@@ -1145,30 +1084,22 @@ function buildNonModel(
     for (let x = 0; x < width; x += 1) {
       if (!sourceMask[y]?.[x]) continue;
       const nx = width <= 1 ? 0.5 : x / (width - 1);
+      const frontColor = sampleMapped(raster, bounds, nx, ny);
       let finalDepth = depthBase;
 
       if (sideMask && sideBounds && maskMapped(sideMask, sideBounds, 0.5, ny)) {
-        finalDepth = Math.max(2, Math.round(depthBase * 1.18));
+        finalDepth = Math.max(1, Math.round(depthBase * 1.18));
       }
 
-      const frontZ = finalDepth - 1;
       for (let z = 0; z < finalDepth; z += 1) {
-        const depthFromFront =
-          finalDepth <= 1 ? 0 : (frontZ - z) / Math.max(1, frontZ);
-        const color = depthTexturedColor(
-          raster,
-          bounds,
-          nx,
-          ny,
-          depthFromFront
-        );
+        const colorSample = frontColor;
 
         voxels.push({
           x,
           y,
           z,
           c: nearestColor(
-            ditheredColor(color, x, y + z, 3),
+            ditheredColor([colorSample.r, colorSample.g, colorSample.b], x, y + z),
             paletteValues
           )
         });
@@ -1224,41 +1155,26 @@ export async function imageToVoxels(
   file: File,
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
-  const aiCategory = options.aiCategory;
-  const categoryPreset = aiCategory
-    ? (await import("@/lib/ai/aiCategories")).aiCategoryPreset(aiCategory)
-    : null;
-  const aiEnabled = options.useLocalAi === true && Boolean(aiCategory);
   const normalized: Required<ImageVoxelOptions> = {
     volumeSize: options.volumeSize ?? 128,
-    mode: aiEnabled ? "model" : options.mode ?? "solid",
-    heightMax: options.heightMax ?? categoryPreset?.heightMax ?? 16,
+    mode: options.mode ?? "solid",
+    heightMax: options.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
-    symmetrize: options.symmetrize ?? categoryPreset?.symmetrize ?? false,
+    symmetrize: options.symmetrize ?? false,
     useLocalAi: options.useLocalAi ?? false,
-    aiCategory: aiCategory ?? "objects"
+    aiCategory: options.aiCategory ?? "objects"
   };
 
-  let raster = await loadImage(file);
-  if (normalized.useLocalAi) {
-    try {
-      const { enhanceRaster } = await import("@/lib/ai/enhance");
-      raster = await enhanceRaster(raster, { depth: false }).then((result) => result.raster);
-    } catch {
-      // Local AI is an optional enhancement layer.
-    }
-  }
-  const mask = cleanModelMask(buildMask(raster, normalized.mode), raster);
+  const raster = await loadImage(file);
+  const mask = buildMask(raster, normalized.mode);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
 
-  const rawPalette = createPalette(
+  const palette = createPalette(
     [raster],
     [mask],
     normalized.mode === "model" ? 64 : 48
   );
-  const paletteWithBacking = ensureBackingPalette(rawPalette);
-  const palette = paletteWithBacking.palette;
   const paletteValues = paletteRgb(palette);
 
   if (normalized.mode === "model") {
@@ -1283,19 +1199,14 @@ export async function imagesToVoxels(
 ): Promise<ImageImport> {
   if (!views.front) throw new Error("FRONT IMAGE REQUIRED");
 
-  const aiCategory = options.aiCategory;
-  const categoryPreset = aiCategory
-    ? (await import("@/lib/ai/aiCategories")).aiCategoryPreset(aiCategory)
-    : null;
-  const aiEnabled = options.useLocalAi === true && Boolean(aiCategory);
   const normalized: Required<ImageVoxelOptions> = {
     volumeSize: options.volumeSize ?? 128,
-    mode: aiEnabled ? "model" : options.mode ?? "solid",
-    heightMax: options.heightMax ?? categoryPreset?.heightMax ?? 16,
+    mode: options.mode ?? "solid",
+    heightMax: options.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
-    symmetrize: options.symmetrize ?? categoryPreset?.symmetrize ?? false,
+    symmetrize: options.symmetrize ?? false,
     useLocalAi: options.useLocalAi ?? false,
-    aiCategory: aiCategory ?? "objects"
+    aiCategory: options.aiCategory ?? "objects"
   };
 
   if (normalized.mode === "model" && !views.side) {
@@ -1303,29 +1214,19 @@ export async function imagesToVoxels(
   }
 
   const files = [views.front, views.side].filter(Boolean) as File[];
-  let rasters = await Promise.all(files.map((file) => loadImage(file)));
-  if (normalized.useLocalAi) {
-    try {
-      const { enhanceRaster } = await import("@/lib/ai/enhance");
-      const prepared = await Promise.all(
-        rasters.map((raster) => enhanceRaster(raster, { depth: false }))
-      );
-      rasters = prepared.map((result) => result.raster);
-    } catch {
-      // Local AI is an optional enhancement layer.
-    }
-  }
-  const masks = rasters.map((raster) =>
-    cleanModelMask(buildMask(raster, normalized.mode), raster)
-  );
+  const rasters = await Promise.all(files.map((file) => loadImage(file)));
+  const masks = rasters.map((raster) => {
+    const mask = buildMask(raster, normalized.mode);
+    return normalized.mode === "model"
+      ? cleanModelMask(mask, raster)
+      : mask;
+  });
 
-  const rawPalette = createPalette(
+  const palette = createPalette(
     rasters,
     masks,
     normalized.mode === "model" ? 64 : 48
   );
-  const paletteWithBacking = ensureBackingPalette(rawPalette);
-  const palette = paletteWithBacking.palette;
   const paletteValues = paletteRgb(palette);
 
   const frontRaster = rasters[0];
@@ -1368,8 +1269,7 @@ export async function imagesToVoxels(
       normalized,
       paletteValues,
       dimensions,
-      palette,
-      paletteWithBacking.backingIndex
+      palette
     );
   }
 
