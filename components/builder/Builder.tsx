@@ -19,12 +19,14 @@ import {
   MAX_SAFE,
   projectFromVolume,
   saveDraft,
+  selectionClipboard,
   SIZES,
   volumeCenter,
   VoxelVolume,
   type BoxMode,
   type Cell,
   type ClipboardVoxel,
+  type DraftV1,
   type Delta,
   type Mirror,
   type Tool,
@@ -37,17 +39,27 @@ import {
   exportVox,
   importVox
 } from "@/lib/voxelExport";
-import { exportGlb } from "@/lib/voxelGlb";
-import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxel";
-import { UNITY_EXPORT } from "@/lib/ai/unity";
-import { buildImageOptions } from "@/lib/ai/buildOptions";
+import { exportGlbTextured } from "@/lib/voxelGlb";
+import {
+  imageToVoxels,
+  imagesToVoxels,
+  type ImageImport
+} from "@/lib/imageVoxel";
+import { CATALOG } from "@/lib/ai/catalog";
+import { buildImageOptions, presetFromCatalog } from "@/lib/ai/buildOptions";
+import { aiAvailable } from "@/lib/ai/runtime";
+import type { StyleId } from "@/lib/ai/styleProfiles";
 import {
   consumeImageApply,
   FREE_IMAGE_APPLIES,
   hashImageFile,
   remainingApplies
 } from "@/lib/entitlement";
-import { MONTHLY_SOL, restorePlan, subscribeWithSol } from "@/lib/solanaCheckout";
+import {
+  MONTHLY_SOL,
+  restorePlan,
+  subscribeWithSol
+} from "@/lib/solanaCheckout";
 import { connectWallet } from "@/lib/wallet";
 import { publishCreation } from "@/lib/creationsApi";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
@@ -62,8 +74,6 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
   { id: "select", label: "SELECT", key: "Q" },
   { id: "box", label: "BOX", key: "U" }
 ];
-
-type LocalImageMode = "solid" | "flat" | "relief" | "model";
 
 type ContentBounds = {
   minX: number;
@@ -146,10 +156,7 @@ function Ground({
         );
       }}
       onPointerMove={(e) => {
-        onHover({
-          kind: "empty",
-          cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) }
-        });
+        onHover({ kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } });
       }}
     >
       <planeGeometry args={[size + 8, size + 8]} />
@@ -182,61 +189,22 @@ function BoxPreview({ a, b }: { a: Cell; b: Cell }) {
   );
 }
 
-function OffsetGhost({ items, origin }: { items: ClipboardVoxel[]; origin: Cell }) {
+function OffsetGhost({
+  items,
+  origin
+}: {
+  items: { dx: number; dy: number; dz: number }[];
+  origin: Cell;
+}) {
   return (
     <group raycast={() => {}}>
       {items.slice(0, 800).map((item, i) => (
         <mesh key={i} position={[origin.x + item.dx, origin.y + item.dy, origin.z + item.dz]}>
           <boxGeometry args={[1.02, 1.02, 1.02]} />
-          <meshBasicMaterial color="#9945ff" transparent opacity={0.28} depthWrite={false} />
+          <meshBasicMaterial color="#9945ff" wireframe transparent opacity={0.7} />
         </mesh>
       ))}
     </group>
-  );
-}
-
-function VolumeFrame({ size }: { size: number }) {
-  const points = useMemo(() => {
-    const s = size - 1;
-    return [
-      0, 0, 0, s, 0, 0, s, 0, s, 0, 0, s, 0, 0, 0, 0, s, 0, s, s, 0, s, 0, 0, s, 0, s,
-      s, s, s, s, s, 0, s, 0, 0, s, s, 0, 0, s, 0, 0, 0, 0, 0, 0, s, 0, s, s, 0, s, 0,
-      s, s, 0, s, s, s, 0, s, s, s, s, s, s, 0, s
-    ];
-  }, [size]);
-  return (
-    <line>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[new Float32Array(points), 3]} />
-      </bufferGeometry>
-      <lineBasicMaterial color="#9945FF" />
-    </line>
-  );
-}
-
-function InstancedPreview({
-  cells,
-  color
-}: {
-  cells: { x: number; y: number; z: number }[];
-  color: string;
-}) {
-  const mesh = useRef<THREE.InstancedMesh>(null);
-  useLayoutEffect(() => {
-    if (!mesh.current) return;
-    const dummy = new THREE.Object3D();
-    for (let i = 0; i < cells.length; i += 1) {
-      dummy.position.set(cells[i].x, cells[i].y, cells[i].z);
-      dummy.updateMatrix();
-      mesh.current.setMatrixAt(i, dummy.matrix);
-    }
-    mesh.current.instanceMatrix.needsUpdate = true;
-  }, [cells]);
-  return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, cells.length]}>
-      <boxGeometry args={[0.96, 0.96, 0.96]} />
-      <meshBasicMaterial color={color} />
-    </instancedMesh>
   );
 }
 
@@ -267,14 +235,64 @@ function PendingPreview({
   );
 }
 
+function InstancedPreview({
+  cells,
+  color
+}: {
+  cells: { x: number; y: number; z: number }[];
+  color: string;
+}) {
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  useLayoutEffect(() => {
+    if (!mesh.current) return;
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < cells.length; i += 1) {
+      dummy.position.set(cells[i].x, cells[i].y, cells[i].z);
+      dummy.updateMatrix();
+      mesh.current.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.current.instanceMatrix.needsUpdate = true;
+  }, [cells]);
+  return (
+    <instancedMesh ref={mesh} args={[undefined, undefined, cells.length]}>
+      <boxGeometry args={[0.96, 0.96, 0.96]} />
+      <meshBasicMaterial color={color} />
+    </instancedMesh>
+  );
+}
+
+function VolumeFrame({ size }: { size: number }) {
+  const points = useMemo(() => {
+    const s = size - 1;
+    return [
+      0, 0, 0, s, 0, 0, s, 0, s, 0, 0, s, 0, 0, 0, 0, s, 0, s, s, 0, s, 0, 0, s, 0, s,
+      s, s, s, s, s, 0, s, 0, 0, s, s, 0, 0, s, 0, 0, 0, 0, 0, 0, s, 0, s, s, 0, s, 0,
+      s, s, 0, s, s, s, 0, s, s, s, s, s, s, 0, s
+    ];
+  }, [size]);
+  return (
+    <line>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[new Float32Array(points), 3]} />
+      </bufferGeometry>
+      <lineBasicMaterial color="#9945FF" />
+    </line>
+  );
+}
+
+function targetCell(hit: VoxelHit, tool: Tool): Cell {
+  if (hit.kind === "empty") return hit.cell;
+  if (tool === "attach") return hit.place;
+  return hit.cell;
+}
+
 export default function Builder() {
   const volumeRef = useRef(new VoxelVolume(128));
   const historyRef = useRef(new History());
+  const strokeRef = useRef<{ seen: Set<string>; deltas: Delta[] } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const frontRef = useRef<HTMLInputElement>(null);
   const sideRef = useRef<HTMLInputElement>(null);
-  const saveTimer = useRef<number | null>(null);
-  const imageJobRef = useRef(0);
 
   const [rev, setRev] = useState(0);
   const [title, setTitle] = useState("UNTITLED");
@@ -289,11 +307,13 @@ export default function Builder() {
   const [grid, setGrid] = useState(true);
   const [hover, setHover] = useState<VoxelHit | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [clipboard] = useState<ClipboardVoxel[]>([]);
+  const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
-  const [imageMode, setImageMode] = useState<LocalImageMode>("solid");
-  const [imageHeight, setImageHeight] = useState(6);
+  const [imageHeight, setImageHeight] = useState(8);
+  const [useLocalAi, setUseLocalAi] = useState(true);
+  const [aiStatus, setAiStatus] = useState("LOCAL AI");
+  const [style, setStyle] = useState<StyleId>("prop");
   const [symmetrize, setSymmetrize] = useState(false);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
@@ -307,12 +327,8 @@ export default function Builder() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
-
-  const volume = volumeRef.current;
-  const count = volume.count;
-  const cx = (volume.size - 1) / 2;
-  const cz = (volume.size - 1) / 2;
-  const creditLabel = creditsLeft < 0 ? "PRO" : `${creditsLeft} LEFT`;
+  const saveTimer = useRef<number | null>(null);
+  const imageJobRef = useRef(0);
 
   const bump = useCallback(() => {
     setRev((n) => n + 1);
@@ -327,133 +343,375 @@ export default function Builder() {
 
   const refreshCredits = useCallback(() => setCreditsLeft(remainingApplies()), []);
 
-  const imageOptions = useCallback(
-    () =>
-      buildImageOptions({
-        volumeSize: volumeRef.current.size,
-        heightMax: imageMode === "flat" ? 2 : imageMode === "solid" ? 1 : imageHeight,
-        maxVoxels: MAX_SAFE,
-        symmetrize: imageMode === "model" ? symmetrize : false,
-        useLocalAi: true
-      }),
-    [imageHeight, imageMode, symmetrize]
-  );
+  const subscribe = useCallback(async () => {
+    setBusy(true);
+    try {
+      notify("CONNECT PHANTOM");
+      const paid = await subscribeWithSol();
+      refreshCredits();
+      setPaywall(false);
+      notify(`PRO ACTIVE · ${paid.signature.slice(0, 8)}`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message.toUpperCase() : "PAY FAILED");
+    } finally {
+      setBusy(false);
+    }
+  }, [notify, refreshCredits]);
 
-  const commit = useCallback(
-    (deltas: Delta[]) => {
-      if (!deltas.length) return;
-      historyRef.current.push(deltas);
-      bump();
-    },
-    [bump]
-  );
+  const syncPlan = useCallback(async () => {
+    try {
+      const state = await restorePlan();
+      refreshCredits();
+      notify(state.plan === "monthly" ? "PRO RESTORED" : "FREE PLAN");
+    } catch {
+      /* phantom missing or rejected */
+    }
+  }, [notify, refreshCredits]);
 
-  const persist = useCallback(() => {
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      saveDraft(projectFromVolume(title, volumeRef.current, palette));
-    }, 400);
-  }, [palette, title]);
+  const volume = volumeRef.current;
+  const count = volume.count;
+  const ghost = hover ? targetCell(hover, tool) : null;
+  const [cx, , cz] = volumeCenter(volume.size);
 
-  useEffect(() => {
-    persist();
-  }, [persist, rev]);
+  const ghostValid = !ghost
+    ? false
+    : tool === "erase" || tool === "paint" || tool === "fill" || tool === "select" || tool === "eyedrop"
+      ? volume.has(ghost.x, ghost.y, ghost.z)
+      : volume.inBounds(ghost.x, ghost.y, ghost.z) && !volume.has(ghost.x, ghost.y, ghost.z);
 
-  useEffect(() => {
-    const draft = loadDraft();
-    if (!draft) return;
-    volumeRef.current.load(draft);
-    setTitle(draft.title);
-    setPalette(clonePalette(draft.palette));
-    setFocus(volumeCenter(draft.size));
-    setClip({ axis: null, value: draft.size - 1 });
-    bump();
-  }, [bump]);
+  const viewLabel = sideFile ? "FRONT+SIDE" : frontFile ? "FRONT" : "NONE";
+  const viewCount = Number(Boolean(frontFile)) + Number(Boolean(sideFile));
 
   useEffect(() => {
     refreshCredits();
-  }, [refreshCredits]);
-
-  const regenerateMultiView = useCallback(
-    async (views: { front: File; side?: File }) => {
-      const job = ++imageJobRef.current;
-      setBusy(true);
-      try {
-        notify(views.side ? "REBUILD FRONT + SIDE" : "REBUILD FRONT");
-        const result = views.side
-          ? await imagesToVoxels(views, imageOptions())
-          : await imageToVoxels(views.front, imageOptions());
-        if (job !== imageJobRef.current) return;
-        if (!result.voxels.length) throw new Error("Empty image");
-        setPendingImage(result);
-        notify(`Preview ready · ${result.count ?? result.voxels.length} vx`);
-        setPaywall(false);
-      } catch (error) {
-        notify(error instanceof Error ? error.message.toUpperCase() : "IMAGE REBUILD FAILED");
-      } finally {
-        if (job === imageJobRef.current) setBusy(false);
-      }
-    },
-    [imageOptions, notify]
-  );
-
-  const rebuildMultiView = useCallback(async () => {
-    if (!frontFile) {
-      notify("Add a front image first");
+    void syncPlan();
+    const draft = loadDraft();
+    if (!draft) {
+      const mid = Math.floor(volumeRef.current.size / 2);
+      applyCells(volumeRef.current, [{ x: mid, y: 0, z: mid }], 6, { x: false, y: false, z: false });
+      bump();
       return;
     }
-    await regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
-  }, [frontFile, notify, regenerateMultiView, sideFile]);
+    volumeRef.current.load(draft);
+    setTitle(draft.title || "UNTITLED");
+    if (draft.palette?.length) setPalette(clonePalette(draft.palette));
+    setFocus(volumeCenter(draft.size || 128));
+    setClip({ axis: null, value: (draft.size || 128) - 1 });
+    bump();
+  }, [bump, refreshCredits, syncPlan]);
 
-  const attachFront = useCallback(
-    async (file: File) => {
-      const job = ++imageJobRef.current;
-      setBusy(true);
-      try {
-        notify("IMPORTING FRONT");
-        const lower = file.name.toLowerCase();
-        if (
-          !(
-            lower.endsWith(".png") ||
-            lower.endsWith(".jpg") ||
-            lower.endsWith(".jpeg") ||
-            lower.endsWith(".webp")
-          )
-        ) {
-          throw new Error("Unsupported image");
-        }
-        setFrontFile(file);
-        setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
-        setPendingHash(await hashImageFile(file));
-        if (job !== imageJobRef.current) return;
-        const result = sideFile
-          ? await imagesToVoxels({ front: file, side: sideFile }, imageOptions())
-          : await imageToVoxels(file, imageOptions());
-        if (job !== imageJobRef.current) return;
-        if (!result.voxels.length) throw new Error("Empty image");
-        setPendingImage(result);
-        notify(`Preview ready · ${result.count ?? result.voxels.length} vx`);
-        setPaywall(false);
-      } catch (error) {
-        notify(error instanceof Error ? error.message.toUpperCase() : "FRONT IMPORT FAILED");
-      } finally {
-        if (job === imageJobRef.current) setBusy(false);
-      }
-    },
-    [imageOptions, notify, sideFile]
-  );
+  useEffect(() => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      saveDraft(projectFromVolume(title, volumeRef.current, palette));
+    }, 250);
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    };
+  }, [title, palette, rev]);
 
-  const attachSide = useCallback(
-    async (file: File) => {
-      if (!frontFile) {
-        notify("Add a front image first");
+  const applyNow = useCallback(
+    (cells: Cell[], nextColor: number | null, recordStroke: boolean) => {
+      if (volumeRef.current.count > MAX_SAFE && nextColor !== null) {
+        notify("PERFORMANCE LIMIT");
         return;
       }
-      setSideFile(file);
-      await regenerateMultiView({ front: frontFile, side: file });
+      const deltas = applyCells(volumeRef.current, cells, nextColor, mirror);
+      if (recordStroke && strokeRef.current) strokeRef.current.deltas.push(...deltas);
+      else historyRef.current.push(deltas);
+      bump();
     },
-    [frontFile, notify, regenerateMultiView]
+    [bump, mirror, notify]
   );
+
+  const beginStroke = useCallback(() => {
+    if (!strokeRef.current) strokeRef.current = { seen: new Set(), deltas: [] };
+  }, []);
+
+  const endStroke = useCallback(() => {
+    const stroke = strokeRef.current;
+    strokeRef.current = null;
+    if (stroke?.deltas.length) historyRef.current.push(stroke.deltas);
+    bump();
+  }, [bump]);
+
+  const applyHit = useCallback(
+    (hit: VoxelHit, additive: boolean) => {
+      const cell = targetCell(hit, tool);
+      if (tool === "eyedrop") {
+        if (hit.kind === "voxel") setColor(volumeRef.current.get(hit.cell.x, hit.cell.y, hit.cell.z) ?? color);
+        return;
+      }
+      if (tool === "select") {
+        const key = cellKey(hit.kind === "voxel" ? hit.cell : cell);
+        setSelected((current) => {
+          const next = new Set(additive ? current : []);
+          if (next.has(key)) next.delete(key);
+          else if (hit.kind === "voxel") next.add(key);
+          return next;
+        });
+        return;
+      }
+      if (tool === "box") {
+        if (!boxStart) {
+          setBoxStart(cell);
+          notify("BOX START");
+          return;
+        }
+        const cells = boxCells(boxStart, cell);
+        setBoxStart(null);
+        if (boxMode === "select") {
+          setSelected(new Set(cells.filter((c) => volumeRef.current.has(c.x, c.y, c.z)).map(cellKey)));
+          return;
+        }
+        applyNow(cells, boxMode === "erase" ? null : color, false);
+        return;
+      }
+      if (tool === "fill") {
+        if (hit.kind !== "voxel") return;
+        applyNow(floodCells(volumeRef.current, hit.cell), color, false);
+        return;
+      }
+      beginStroke();
+      const patch = brush > 1 ? brushCells(cell, brush) : [cell];
+      const fresh = patch.filter((candidate) => {
+        const key = cellKey(candidate);
+        if (strokeRef.current?.seen.has(key)) return false;
+        strokeRef.current?.seen.add(key);
+        return true;
+      });
+      if (!fresh.length) return;
+      if (tool === "erase") applyNow(fresh, null, true);
+      else if (tool === "paint") {
+        if (hit.kind === "voxel") applyNow(fresh, color, true);
+      } else applyNow(fresh, color, true);
+    },
+    [applyNow, beginStroke, boxMode, boxStart, brush, color, notify, tool]
+  );
+
+  const onHit = useCallback(
+    (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => {
+      if (ev.button !== 0) return;
+      applyHit(hit, ev.shiftKey);
+    },
+    [applyHit]
+  );
+
+  const onHover = useCallback(
+    (hit: VoxelHit | null) => {
+      setHover(hit);
+      if (!hit || !strokeRef.current) return;
+      if (tool === "box" || tool === "fill" || tool === "select" || tool === "eyedrop") return;
+      applyHit(hit, false);
+    },
+    [applyHit, tool]
+  );
+
+  useEffect(() => {
+    const up = () => endStroke();
+    window.addEventListener("pointerup", up);
+    return () => window.removeEventListener("pointerup", up);
+  }, [endStroke]);
+
+  const undo = useCallback(() => {
+    historyRef.current.undo(volumeRef.current);
+    bump();
+  }, [bump]);
+
+  const redo = useCallback(() => {
+    historyRef.current.redo(volumeRef.current);
+    bump();
+  }, [bump]);
+
+  const packVolume = useCallback(() => {
+    const v = volumeRef.current;
+    const items = v.voxels();
+    const bounds = boundsOfCells(items);
+    if (!bounds) {
+      setFocus(volumeCenter(v.size));
+      return;
+    }
+    const next = fitSizeFor(bounds);
+    const sx = Math.floor((next - (bounds.maxX - bounds.minX + 1)) / 2) - bounds.minX;
+    const sy = 0 - bounds.minY;
+    const sz = Math.floor((next - (bounds.maxZ - bounds.minZ + 1)) / 2) - bounds.minZ;
+    const shifted = items.map((item) => ({ x: item.x + sx, y: item.y + sy, z: item.z + sz, c: item.c }));
+    v.resize(next);
+    v.load({ size: next, voxels: shifted });
+    const packed = boundsOfCells(shifted);
+    setClip((current) => ({ ...current, value: Math.min(current.value, next - 1) }));
+    setFocus(
+      packed
+        ? [(packed.minX + packed.maxX) / 2, Math.max(0.5, (packed.minY + packed.maxY) / 2), (packed.minZ + packed.maxZ) / 2]
+        : volumeCenter(next)
+    );
+    bump();
+  }, [bump]);
+
+  const clearAll = useCallback(() => {
+    imageJobRef.current += 1;
+    applyNow(volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z })), null, false);
+    setSelected(new Set());
+    setBoxStart(null);
+    setPendingImage(null);
+    setPendingName("");
+    setPendingHash("");
+    setFrontFile(null);
+    setSideFile(null);
+    setPaywall(false);
+    setHover(null);
+    setBusy(false);
+    strokeRef.current = null;
+    notify("CLEARED · READY FOR NEW PROJECT");
+  }, [applyNow, notify]);
+
+  const resize = useCallback(
+    (size: number) => {
+      const v = volumeRef.current;
+      if (size === v.size) return;
+      const doomed = v.voxels().filter((vx) => vx.x >= size || vx.y >= size || vx.z >= size).map((vx) => ({ x: vx.x, y: vx.y, z: vx.z }));
+      if (doomed.length) applyNow(doomed, null, false);
+      v.resize(size);
+      setClip((current) => ({ ...current, value: Math.min(current.value, size - 1) }));
+      setFocus(volumeCenter(size));
+      bump();
+    },
+    [applyNow, bump]
+  );
+
+  const selectedCells = useCallback(
+    () => [...selected].map((key) => {
+      const [x, y, z] = key.split(":").map(Number);
+      return { x, y, z };
+    }),
+    [selected]
+  );
+
+  const deleteSelected = useCallback(() => {
+    applyNow(selectedCells(), null, false);
+    setSelected(new Set());
+  }, [applyNow, selectedCells]);
+
+  const paintSelected = useCallback(() => {
+    applyNow(selectedCells(), color, false);
+  }, [applyNow, color, selectedCells]);
+
+  const copySelected = useCallback(() => {
+    const clipSel = selectionClipboard(volumeRef.current, selected);
+    setClipboard(clipSel);
+    notify(clipSel.length ? `COPIED ${clipSel.length}` : "NOTHING SELECTED");
+  }, [notify, selected]);
+
+  const pasteClipboard = useCallback(
+    (origin?: Cell) => {
+      if (!clipboard.length) return;
+      const base = origin ?? ghost ?? { x: Math.floor(volume.size / 2), y: 0, z: Math.floor(volume.size / 2) };
+      const cells = clipboard.map((v) => ({ x: base.x + v.dx, y: base.y + v.dy, z: base.z + v.dz }));
+      const deltas: Delta[] = [];
+      clipboard.forEach((v, i) => {
+        deltas.push(...applyCells(volumeRef.current, [cells[i]], v.c, mirror));
+      });
+      historyRef.current.push(deltas);
+      setSelected(new Set(cells.map(cellKey)));
+      bump();
+    },
+    [bump, clipboard, ghost, mirror, volume.size]
+  );
+
+  const duplicateSelected = useCallback(() => {
+    const clipSel = selectionClipboard(volumeRef.current, selected);
+    if (!clipSel.length) return;
+    setClipboard(clipSel);
+    const cells = selectedCells();
+    pasteClipboard({
+      x: Math.min(...cells.map((c) => c.x)) + 1,
+      y: Math.min(...cells.map((c) => c.y)),
+      z: Math.min(...cells.map((c) => c.z))
+    });
+  }, [pasteClipboard, selected, selectedCells]);
+
+  const moveSelected = useCallback(
+    (dx: number, dy: number, dz: number) => {
+      const v = volumeRef.current;
+      const items = selectedCells().map((cell) => ({ ...cell, c: v.get(cell.x, cell.y, cell.z) ?? color }));
+      historyRef.current.push([
+        ...applyCells(v, items, null, { x: false, y: false, z: false }),
+        ...items.flatMap((item) =>
+          applyCells(v, [{ x: item.x + dx, y: item.y + dy, z: item.z + dz }], item.c, { x: false, y: false, z: false })
+        )
+      ]);
+      setSelected(new Set(items.map((item) => cellKey({ x: item.x + dx, y: item.y + dy, z: item.z + dz }))));
+      bump();
+    },
+    [bump, color, selectedCells]
+  );
+
+  const exportFiles = useCallback(
+    async (kind: "vox" | "obj" | "json" | "glb") => {
+      const name = (title.trim() || "untitled").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "untitled";
+      const options = { name, unitMeters: 0.1, pivot: "bottom-center" as const, upAxis: "y" as const };
+      try {
+        if (kind === "json") {
+          downloadText(JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2), `${name}.json`, "application/json");
+          notify("PROJECT READY");
+          return;
+        }
+        if (kind === "vox") {
+          notify("EXPORTING VOX");
+          await new Promise((resolve) => window.setTimeout(resolve, 40));
+          downloadBytes(exportVox(volumeRef.current, palette), `${name}.vox`, "application/octet-stream");
+          notify("VOX READY");
+          return;
+        }
+        if (kind === "glb") {
+          notify("EXPORTING GLB");
+          await new Promise((resolve) => window.setTimeout(resolve, 40));
+          const bytes = await exportGlbTextured(volumeRef.current, palette, options);
+          downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
+          notify("GLB READY");
+          return;
+        }
+        notify("EXPORTING OBJ");
+        await new Promise((resolve) => window.setTimeout(resolve, 40));
+        downloadBytes(exportObjArchive(volumeRef.current, palette, options), `${name}-obj.zip`, "application/zip");
+        notify("OBJ READY");
+      } catch (error) {
+        notify(error instanceof Error ? error.message.toUpperCase() : "EXPORT FAILED");
+      }
+    },
+    [notify, palette, title]
+  );
+
+  const publish = useCallback(async () => {
+    const v = volumeRef.current;
+    if (v.count === 0) {
+      notify("NOTHING TO PUBLISH");
+      return;
+    }
+    setBusy(true);
+    try {
+      notify("CONNECT PHANTOM");
+      const wallet = await connectWallet();
+      notify("PUBLISHING");
+      await publishCreation({ wallet, title: title.trim() || "Untitled", size: v.size, palette, voxels: v.voxels() });
+      notify("PUBLISHED");
+    } catch (error) {
+      notify(error instanceof Error ? error.message.toUpperCase() : "PUBLISH FAILED");
+    } finally {
+      setBusy(false);
+    }
+  }, [notify, palette, title]);
+
+  const cancelImage = useCallback(() => {
+    imageJobRef.current += 1;
+    setPendingImage(null);
+    setPendingName("");
+    setPendingHash("");
+    setFrontFile(null);
+    setSideFile(null);
+    setPaywall(false);
+    notify("IMPORT CANCELED");
+  }, [notify]);
 
   const applyImage = useCallback(() => {
     if (!pendingImage) return;
@@ -466,212 +724,295 @@ export default function Builder() {
     }
     const result = pendingImage;
     const bounds = boundsOfCells(result.voxels);
-    if (!bounds) return;
-    const nextSize = fitSizeFor(bounds);
-    if (nextSize !== volumeRef.current.size) {
-      volumeRef.current.resize(nextSize);
-      setFocus(volumeCenter(nextSize));
-      setClip({ axis: null, value: nextSize - 1 });
-    }
-    if (result.palette.length) setPalette(clonePalette(result.palette));
-    volumeRef.current.clear();
-    historyRef.current.reset();
-    const deltas: Delta[] = [];
-    for (const v of result.voxels) {
-      const delta = volumeRef.current.apply(v.x, v.y, v.z, v.c);
-      if (delta) deltas.push(delta);
-    }
-    historyRef.current.push(deltas);
+    const next = bounds ? fitSizeFor(bounds) : volumeRef.current.size;
+    const sx = bounds ? Math.floor((next - (bounds.maxX - bounds.minX + 1)) / 2) - bounds.minX : 0;
+    const sy = bounds ? 0 - bounds.minY : 0;
+    const sz = bounds ? Math.floor((next - (bounds.maxZ - bounds.minZ + 1)) / 2) - bounds.minZ : 0;
+    const packed = result.voxels.map((vox) => ({ x: vox.x + sx, y: vox.y + sy, z: vox.z + sz, c: vox.c }));
+    const packedBounds = boundsOfCells(packed);
+    if (next !== volumeRef.current.size) volumeRef.current.resize(next);
     setPendingImage(null);
-    if (pendingName) setTitle(pendingName.toUpperCase());
+    setPendingHash("");
+    setFrontFile(null);
+    setSideFile(null);
+    setPaywall(false);
+    setPalette(result.palette);
+    const deltas: Delta[] = [];
+    const existing = volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z }));
+    if (existing.length) deltas.push(...applyCells(volumeRef.current, existing, null, { x: false, y: false, z: false }));
+    const byColor = new Map<number, Cell[]>();
+    for (const vox of packed) {
+      if (vox.x < 0 || vox.y < 0 || vox.z < 0 || vox.x >= volumeRef.current.size || vox.y >= volumeRef.current.size || vox.z >= volumeRef.current.size) continue;
+      const list = byColor.get(vox.c) ?? [];
+      list.push({ x: vox.x, y: vox.y, z: vox.z });
+      byColor.set(vox.c, list);
+    }
+    for (const [c, cells] of byColor) deltas.push(...applyCells(volumeRef.current, cells, c, { x: false, y: false, z: false }));
+    historyRef.current.push(deltas);
+    if (pendingName) setTitle(pendingName);
+    setPendingName("");
+    setSelected(new Set());
+    setBoxStart(null);
+    setClip((current) => ({ ...current, value: Math.min(current.value, next - 1) }));
+    setFocus(
+      packedBounds
+        ? [(packedBounds.minX + packedBounds.maxX) / 2, Math.max(0.5, (packedBounds.minY + packedBounds.maxY) / 2), (packedBounds.minZ + packedBounds.maxZ) / 2]
+        : volumeCenter(next)
+    );
     bump();
-    notify(`APPLIED · ${result.count ?? result.voxels.length} VX`);
+    notify(gate.reason === "repeat" ? `IMAGE ${result.count ?? result.voxels.length} VX · ${next}³` : `IMAGE APPLIED · ${gate.message} · ${next}³`);
   }, [bump, notify, pendingHash, pendingImage, pendingName, refreshCredits]);
 
-  const undo = useCallback(() => {
-    historyRef.current.undo(volumeRef.current);
-    bump();
-  }, [bump]);
-
-  const redo = useCallback(() => {
-    historyRef.current.redo(volumeRef.current);
-    bump();
-  }, [bump]);
-
-  const resize = useCallback(
-    (size: number) => {
-      if (size === volumeRef.current.size) return;
-      volumeRef.current.resize(size);
-      historyRef.current.reset();
-      setFocus(volumeCenter(size));
-      setClip({ axis: null, value: size - 1 });
-      bump();
+  const regenerateMultiView = useCallback(
+    async ({ front, side }: { front: File; side?: File }) => {
+      const job = ++imageJobRef.current;
+      setBusy(true);
+      try {
+        const result = await imagesToVoxels({ front, side }, buildImageOptions({
+          volumeSize: volumeRef.current.size,
+          heightMax: imageHeight,
+          maxVoxels: MAX_SAFE,
+          symmetrize,
+          useLocalAi,
+          style
+        }));
+        if (job !== imageJobRef.current) return;
+        setPendingImage(result);
+        const usedViews = Number(Boolean(front)) + Number(Boolean(side));
+        notify(usedViews === 2 ? `Preview ready · 2 views · ${result.count} voxels` : `Preview ready · ${result.count} voxels`);
+      } catch (error) {
+        if (job === imageJobRef.current) {
+          notify(error instanceof Error ? error.message.toUpperCase() : "Could not rebuild from these images");
+        }
+      } finally {
+        if (job === imageJobRef.current) setBusy(false);
+      }
     },
-    [bump]
+    [imageHeight, notify, style, symmetrize, useLocalAi]
   );
 
-  const packVolume = useCallback(() => {
-    const bounds = boundsOfCells(volumeRef.current.voxels());
-    if (!bounds) return;
-    resize(fitSizeFor(bounds));
-  }, [resize]);
+  const rebuildMultiView = useCallback(async () => {
+    if (!frontFile) {
+      notify("Add a front image first");
+      return;
+    }
+    await regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
+  }, [frontFile, notify, regenerateMultiView, sideFile]);
 
-  const clearAll = useCallback(() => {
-    const deltas = applyCells(volumeRef.current, volumeRef.current.voxels(), null, {
-      x: false,
-      y: false,
-      z: false
+  useEffect(() => {
+    if (!frontFile) return;
+    void regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [style, symmetrize, useLocalAi]);
+
+  useEffect(() => {
+    void aiAvailable().then((status) => {
+      setAiStatus(status.segment || status.depth ? "LOCAL AI MODELS ON" : "LOCAL AI FALLBACK");
     });
-    commit(deltas);
-  }, [commit]);
+  }, []);
 
-  const onHit = useCallback(
-    (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => {
-      ev.stopPropagation();
-      const target = tool === "attach" && hit.kind === "voxel" ? hit.place : hit.cell;
-      if (tool === "eyedrop") {
-        const picked = volumeRef.current.get(hit.cell.x, hit.cell.y, hit.cell.z);
-        if (picked !== undefined) setColor(picked);
-        return;
-      }
-      if (tool === "select") {
-        const id = cellKey(target);
-        setSelected((current) => {
-          const next = new Set(current);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return next;
-        });
-        return;
-      }
-      if (tool === "box") {
-        if (!boxStart) {
-          setBoxStart(target);
-          return;
+  const attachFront = useCallback(
+    async (file: File) => {
+      const job = ++imageJobRef.current;
+      setBusy(true);
+      try {
+        notify("IMPORTING FRONT");
+        const lower = file.name.toLowerCase();
+        if (!(lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp"))) {
+          throw new Error("Unsupported image");
         }
-        const cells = boxCells(boxStart, target);
-        if (boxMode === "select") {
-          setSelected(new Set(cells.map(cellKey)));
-        } else {
-          commit(
-            applyCells(volumeRef.current, cells, boxMode === "erase" ? null : color, mirror)
-          );
-        }
-        setBoxStart(null);
-        return;
+        setFrontFile(file);
+        setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
+        setPendingHash(await hashImageFile(file));
+        if (job !== imageJobRef.current) return;
+        const result = sideFile
+          ? await imagesToVoxels({ front: file, side: sideFile }, buildImageOptions({
+              volumeSize: volumeRef.current.size,
+              heightMax: imageHeight,
+              maxVoxels: MAX_SAFE,
+              symmetrize,
+              useLocalAi,
+              style
+            }))
+          : await imageToVoxels(file, buildImageOptions({
+              volumeSize: volumeRef.current.size,
+              heightMax: imageHeight,
+              maxVoxels: MAX_SAFE,
+              symmetrize,
+              useLocalAi,
+              style
+            }));
+        if (job !== imageJobRef.current) return;
+        if (!result.voxels.length) throw new Error("Empty image");
+        setPendingImage(result);
+        notify(`Preview ready · ${result.count ?? result.voxels.length} voxels`);
+        setPaywall(false);
+      } catch (error) {
+        notify(error instanceof Error ? error.message.toUpperCase() : "FRONT IMPORT FAILED");
+      } finally {
+        if (job === imageJobRef.current) setBusy(false);
       }
-      if (tool === "fill" && hit.kind === "voxel") {
-        commit(applyCells(volumeRef.current, floodCells(volumeRef.current, hit.cell), color, mirror));
-        return;
-      }
-      commit(
-        applyCells(
-          volumeRef.current,
-          brushCells(target, brush),
-          tool === "erase" ? null : color,
-          mirror
-        )
-      );
     },
-    [boxMode, boxStart, brush, color, commit, mirror, tool]
+    [imageHeight, notify, sideFile, style, symmetrize, useLocalAi]
   );
 
-  const onHover = useCallback((hit: VoxelHit | null) => setHover(hit), []);
-  const ghost = hover?.kind === "voxel" && tool === "attach" ? hover.place : hover?.cell ?? null;
-  const ghostValid = Boolean(ghost && !volumeRef.current.has(ghost.x, ghost.y, ghost.z));
+  const attachSide = useCallback(
+    async (file: File) => {
+      setSideFile(file);
+      if (!frontFile) {
+        notify("Side image loaded. Add a front image to rebuild.");
+        return;
+      }
+      await regenerateMultiView({ front: frontFile, side: file });
+    },
+    [frontFile, notify, regenerateMultiView]
+  );
+
+  const removeSide = useCallback(() => {
+    setSideFile(null);
+    if (frontFile) void regenerateMultiView({ front: frontFile, side: undefined });
+    else notify("SIDE REMOVED");
+  }, [frontFile, notify, regenerateMultiView]);
 
   const openProject = useCallback(
     async (file: File) => {
-      const name = file.name.toLowerCase();
-      if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp")) {
-        await attachFront(file);
-        return;
-      }
-      const buffer = await file.arrayBuffer();
-      if (name.endsWith(".vox")) {
-        const model = importVox(buffer);
-        volumeRef.current.load({ size: model.size, voxels: model.voxels });
-        if (model.palette.length) setPalette(clonePalette(model.palette));
-        setFocus(volumeCenter(volumeRef.current.size));
+      const job = ++imageJobRef.current;
+      setBusy(true);
+      try {
+        const lower = file.name.toLowerCase();
+        if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
+          notify("IMPORTING IMAGE");
+          await new Promise((resolve) => window.setTimeout(resolve, 40));
+          setFrontFile(file);
+          setSideFile(null);
+          const result = await imageToVoxels(file, buildImageOptions({
+            volumeSize: volumeRef.current.size,
+            heightMax: imageHeight,
+            maxVoxels: MAX_SAFE,
+            symmetrize: false,
+            useLocalAi,
+            style
+          }));
+          if (job !== imageJobRef.current) return;
+          if (!result.voxels.length) throw new Error("Empty image");
+          setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
+          setPendingHash(await hashImageFile(file));
+          setPendingImage(result);
+          setPaywall(false);
+          notify(`Preview ready · ${result.count ?? result.voxels.length} voxels`);
+          return;
+        }
+        if (lower.endsWith(".vox")) {
+          const model = importVox(await file.arrayBuffer());
+          volumeRef.current.load({ size: model.size, voxels: model.voxels });
+          setPalette(clonePalette(model.palette));
+          setTitle(file.name.replace(/\.vox$/i, ""));
+        } else {
+          const parsed = JSON.parse(await file.text()) as DraftV1;
+          if (!Array.isArray(parsed.voxels)) throw new Error("Invalid project");
+          volumeRef.current.load(parsed);
+          setTitle(parsed.title || file.name.replace(/\.json$/i, ""));
+          if (parsed.palette?.length) setPalette(clonePalette(parsed.palette));
+        }
         historyRef.current.reset();
-        bump();
-        notify("VOX LOADED");
-        return;
+        setSelected(new Set());
+        setBoxStart(null);
+        setPendingImage(null);
+        setPendingHash("");
+        setFrontFile(null);
+        setSideFile(null);
+        packVolume();
+        notify("PROJECT LOADED");
+      } catch (error) {
+        notify(error instanceof Error ? error.message.toUpperCase() : "OPEN FAILED");
+      } finally {
+        if (job === imageJobRef.current) setBusy(false);
       }
-      const draft = JSON.parse(new TextDecoder().decode(buffer)) as {
-        title?: string;
-        size?: number;
-        palette?: string[];
-        voxels?: { x: number; y: number; z: number; c: number }[];
-      };
-      volumeRef.current.load({
-        size: draft.size ?? 128,
-        voxels: draft.voxels ?? []
-      });
-      setTitle(draft.title ?? file.name);
-      if (draft.palette) setPalette(clonePalette(draft.palette));
-      setFocus(volumeCenter(volumeRef.current.size));
-      historyRef.current.reset();
-      bump();
-      notify("PROJECT LOADED");
     },
-    [attachFront, bump, notify]
+    [imageHeight, notify, packVolume, style, useLocalAi]
   );
 
-  const exportFiles = useCallback(
-    async (kind: "json" | "vox" | "glb" | "obj") => {
-      const name = title.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "brick";
-      if (kind === "json") {
-        downloadText(
-          JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2),
-          `${name}.json`,
-          "application/json"
-        );
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.tagName === "INPUT" || el?.tagName === "TEXTAREA") return;
+      const key = e.key.toLowerCase();
+      const mod = e.ctrlKey || e.metaKey;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setBoxStart(null);
+        setSelected(new Set());
+        setPendingImage(null);
+        setPendingName("");
+        setPendingHash("");
+        setFrontFile(null);
+        setSideFile(null);
+        setPaywall(false);
+        strokeRef.current = null;
         return;
       }
-      if (kind === "vox") {
-        downloadBytes(exportVox(volumeRef.current, palette), `${name}.vox`, "application/octet-stream");
+      if (e.key === "Enter" && pendingImage) {
+        e.preventDefault();
+        applyImage();
         return;
       }
-      if (kind === "glb") {
-        const bytes = await exportGlb(volumeRef.current, palette, UNITY_EXPORT);
-        downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
+      if (key === "f" && !mod) {
+        e.preventDefault();
+        packVolume();
+        notify("FIT");
         return;
       }
-      const archive = await exportObjArchive(volumeRef.current, palette, UNITY_EXPORT);
-      downloadBytes(archive, `${name}-obj.zip`, "application/zip");
-    },
-    [palette, title]
-  );
+      if (clip.axis && key === ",") setClip((current) => ({ ...current, value: Math.max(0, current.value - 1) }));
+      if (clip.axis && key === ".") setClip((current) => ({ ...current, value: Math.min(volume.size - 1, current.value + 1) }));
+      if (mod && key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (mod && key === "y") {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (mod && key === "c") {
+        e.preventDefault();
+        copySelected();
+        return;
+      }
+      if (mod && key === "v") {
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if (mod && key === "d") {
+        e.preventDefault();
+        duplicateSelected();
+        return;
+      }
+      if (key === "b") setTool("attach");
+      if (key === "e") setTool("erase");
+      if (key === "p") setTool("paint");
+      if (key === "g") setTool("fill");
+      if (key === "i") setTool("eyedrop");
+      if (key === "q") setTool("select");
+      if (key === "u") setTool("box");
+      if (key === "x") setMirror((m) => ({ ...m, x: !m.x }));
+      if (key === "y" && !mod) setMirror((m) => ({ ...m, y: !m.y }));
+      if (key === "z" && !mod) setMirror((m) => ({ ...m, z: !m.z }));
+      if (key === "[") setBrush((n) => Math.max(1, n - 1));
+      if (key === "]") setBrush((n) => Math.min(5, n + 1));
+      if (key === "delete" || key === "backspace") deleteSelected();
+      if (e.key === "ArrowLeft") moveSelected(-1, 0, 0);
+      if (e.key === "ArrowRight") moveSelected(1, 0, 0);
+      if (e.key === "ArrowUp") moveSelected(0, e.shiftKey ? 1 : 0, e.shiftKey ? 0 : -1);
+      if (e.key === "ArrowDown") moveSelected(0, e.shiftKey ? -1 : 0, e.shiftKey ? 0 : 1);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [applyImage, clip.axis, copySelected, deleteSelected, duplicateSelected, moveSelected, notify, packVolume, pasteClipboard, pendingImage, redo, undo, volume.size]);
 
-  const publish = useCallback(async () => {
-    setBusy(true);
-    try {
-      const wallet = await connectWallet();
-      await publishCreation({
-        wallet,
-        title,
-        size: volumeRef.current.size,
-        palette,
-        voxels: volumeRef.current.voxels()
-      });
-      notify("PUBLISHED");
-    } catch (error) {
-      notify(error instanceof Error ? error.message.toUpperCase() : "PUBLISH FAILED");
-    } finally {
-      setBusy(false);
-    }
-  }, [notify, palette, title]);
-
-  const syncPlan = useCallback(async () => {
-    try {
-      await restorePlan();
-      refreshCredits();
-      notify("WALLET SYNCED");
-    } catch (error) {
-      notify(error instanceof Error ? error.message.toUpperCase() : "WALLET FAILED");
-    }
-  }, [notify, refreshCredits]);
+  const creditLabel = creditsLeft === Number.POSITIVE_INFINITY ? "PRO" : `${creditsLeft}/${FREE_IMAGE_APPLIES}`;
 
   return (
     <main className="builderShell">
@@ -696,9 +1037,7 @@ export default function Builder() {
           ) : (
             <>
               <span>{title}</span>
-              <button className="titleEditBtn" onClick={() => setEditingTitle(true)}>
-                EDIT
-              </button>
+              <button className="titleEditBtn" onClick={() => setEditingTitle(true)}>EDIT</button>
             </>
           )}
         </div>
@@ -733,17 +1072,6 @@ export default function Builder() {
               e.target.value = "";
             }}
           />
-          <input
-            ref={sideRef}
-            type="file"
-            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-            hidden
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void attachSide(file);
-              e.target.value = "";
-            }}
-          />
         </div>
       </header>
 
@@ -752,11 +1080,7 @@ export default function Builder() {
           <p className="panelLabel">TOOLS</p>
           <div className="toolStack">
             {TOOLS.map((item) => (
-              <button
-                key={item.id}
-                className={tool === item.id ? "modeOn" : ""}
-                onClick={() => setTool(item.id)}
-              >
+              <button key={item.id} className={tool === item.id ? "modeOn" : ""} onClick={() => setTool(item.id)}>
                 {item.label}
                 <small>{item.key}</small>
               </button>
@@ -765,11 +1089,7 @@ export default function Builder() {
           {tool === "box" && (
             <div className="viewRow">
               {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  className={boxMode === mode ? "modeOn" : ""}
-                  onClick={() => setBoxMode(mode)}
-                >
+                <button key={mode} className={boxMode === mode ? "modeOn" : ""} onClick={() => setBoxMode(mode)}>
                   {mode.toUpperCase()}
                 </button>
               ))}
@@ -779,7 +1099,7 @@ export default function Builder() {
             <summary>STATUS · {creditLabel}</summary>
             <div className="foldBody">
               <p className="foldHint">
-                {tool.toUpperCase()} · {count} VX · {volume.size}³
+                {tool.toUpperCase()} · MODEL · {count} VX · {volume.size}³
                 {pendingImage ? " · PREVIEW" : ""}
                 {sideFile ? " · SIDE" : ""}
                 {busy ? " · BUSY" : ""}
@@ -790,19 +1110,13 @@ export default function Builder() {
           <p className="category">BRUSH {brush}</p>
           <div className="viewRow">
             {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>
-                {n}
-              </button>
+              <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>{n}</button>
             ))}
           </div>
           <p className="category">MIRROR</p>
           <div className="viewRow">
             {(["x", "y", "z"] as const).map((axis) => (
-              <button
-                key={axis}
-                className={mirror[axis] ? "modeOn" : ""}
-                onClick={() => setMirror((m) => ({ ...m, [axis]: !m[axis] }))}
-              >
+              <button key={axis} className={mirror[axis] ? "modeOn" : ""} onClick={() => setMirror((m) => ({ ...m, [axis]: !m[axis] }))}>
                 {axis.toUpperCase()}
               </button>
             ))}
@@ -810,141 +1124,27 @@ export default function Builder() {
           <p className="category">VOLUME</p>
           <div className="viewRow">
             {SIZES.map((size) => (
-              <button
-                key={size}
-                className={volume.size === size ? "modeOn" : ""}
-                onClick={() => resize(size)}
-              >
-                {size}
-              </button>
+              <button key={size} className={volume.size === size ? "modeOn" : ""} onClick={() => resize(size)}>{size}</button>
             ))}
           </div>
           <button onClick={packVolume} disabled={!count}>FIT</button>
-          <button
-            onClick={() =>
-              commit(applyCells(volumeRef.current, hollowCells(volumeRef.current), null, mirror))
-            }
-          >
-            HOLLOW
-          </button>
+          <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>HOLLOW</button>
           <button onClick={clearAll}>CLEAR</button>
-          <p className="category">VIEW</p>
-          <div className="viewRow">
-            {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
-              <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
-                {mode.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>
-            GRID {grid ? "ON" : "OFF"}
-          </button>
-          <p className="category">CLIP</p>
-          <div className="viewRow">
-            {([null, "x", "y", "z"] as const).map((axis) => (
-              <button
-                key={String(axis)}
-                className={clip.axis === axis ? "modeOn" : ""}
-                onClick={() =>
-                  setClip({
-                    axis,
-                    value: axis ? Math.floor(volume.size / 2) : volume.size - 1
-                  })
-                }
-              >
-                {axis ? axis.toUpperCase() : "OFF"}
-              </button>
-            ))}
-          </div>
-          {clip.axis && (
-            <input
-              type="range"
-              min={0}
-              max={volume.size - 1}
-              value={clip.value}
-              onChange={(e) =>
-                setClip((current) => ({ ...current, value: Number(e.target.value) }))
-              }
-            />
-          )}
-          <p className="category">IMAGE IMPORT</p>
-          <p className="foldHint">
-            {frontFile ? "Front image ready" : "Front image required"}
-            <br />
-            {sideFile ? "Side image ready" : "Side image optional"}
-          </p>
-          <div className="viewRow">
-            {(["solid", "flat", "relief", "model"] as LocalImageMode[]).map((mode) => (
-              <button
-                key={mode}
-                className={imageMode === mode ? "modeOn" : ""}
-                onClick={() => {
-                  setImageMode(mode);
-                  setSymmetrize(mode === "model" ? symmetrize : false);
-                  if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-                }}
-              >
-                {mode.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          {(imageMode === "relief" || imageMode === "model") && (
-            <>
-              <p className="foldHint">Maximum depth</p>
-              <div className="viewRow">
-                {[4, 8, 12, 16].map((n) => (
-                  <button
-                    key={n}
-                    className={imageHeight === n ? "modeOn" : ""}
-                    onClick={() => {
-                      setImageHeight(n);
-                      if (frontFile) void rebuildMultiView();
-                    }}
-                  >
-                    D{n}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          <button
-            className={symmetrize ? "modeOn" : ""}
-            onClick={() => {
-              setSymmetrize((value) => !value);
-              if (frontFile && imageMode === "model") {
-                window.setTimeout(() => void rebuildMultiView(), 0);
-              }
-            }}
-            disabled={imageMode !== "model"}
-          >
-            SYMMETRY {symmetrize ? "ON" : "OFF"}
-          </button>
-          <button onClick={() => frontRef.current?.click()} disabled={busy}>
-            FRONT PNG
-          </button>
-          <button onClick={() => sideRef.current?.click()} disabled={busy || !frontFile}>
-            SIDE PNG
-          </button>
-          <p className="category">PALETTE</p>
-          <div className="viewRow">
-            {palette.slice(0, 16).map((hex, i) => (
-              <button
-                key={`${hex}-${i}`}
-                className={color === i ? "modeOn" : ""}
-                style={{ background: hex, minWidth: 18, minHeight: 18 }}
-                onClick={() => setColor(i)}
-              />
-            ))}
-          </div>
         </aside>
 
         <section className="viewport">
-          <Canvas shadows dpr={[1, 1.75]} camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}>
+          <Canvas
+            shadows
+            dpr={[1, 1.75]}
+            camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}
+            gl={{ toneMappingExposure: 1.4 }}
+          >
             <color attach="background" args={["#222737"]} />
-            <ambientLight intensity={1.45} />
-            <hemisphereLight intensity={0.9} groundColor="#1b2130" color="#68758f" />
-            <directionalLight position={[18, 32, 14]} intensity={3.8} castShadow />
-            <directionalLight position={[-18, 20, 10]} intensity={1.7} />
+            <ambientLight intensity={2.1} />
+            <hemisphereLight intensity={1.3} groundColor="#1b2130" color="#8b97b5" />
+            <directionalLight position={[18, 32, 14]} intensity={4.6} castShadow />
+            <directionalLight position={[-18, 20, 10]} intensity={2.4} />
+            <directionalLight position={[0, 12, -20]} intensity={1.2} />
             {grid && (
               <Grid
                 args={[volume.size, volume.size]}
@@ -960,25 +1160,13 @@ export default function Builder() {
             )}
             <Ground size={volume.size} onHit={onHit} onHover={onHover} />
             <VolumeFrame size={volume.size} />
-            <VoxelCloud
-              volume={volume}
-              palette={palette}
-              revision={rev}
-              selected={selected}
-              clip={clip}
-              onHit={onHit}
-              onHover={onHover}
-            />
-            {pendingImage && (
-              <PendingPreview voxels={pendingImage.voxels} palette={pendingImage.palette} />
-            )}
+            <VoxelCloud volume={volume} palette={palette} revision={rev} selected={selected} clip={clip} onHit={onHit} onHover={onHover} />
+            {pendingImage && <PendingPreview voxels={pendingImage.voxels} palette={pendingImage.palette} />}
             {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
               <Ghost cell={ghost} color={palette[color]} valid={ghostValid || tool !== "attach"} />
             )}
             {tool === "box" && boxStart && ghost && <BoxPreview a={boxStart} b={ghost} />}
-            {tool !== "box" && clipboard.length > 0 && ghost && (
-              <OffsetGhost items={clipboard} origin={ghost} />
-            )}
+            {tool !== "box" && clipboard.length > 0 && ghost && <OffsetGhost items={clipboard} origin={ghost} />}
             <CameraRig view={view} size={volume.size} focus={focus} />
             <OrbitControls
               makeDefault
@@ -995,22 +1183,163 @@ export default function Builder() {
           {pendingImage && !paywall && (
             <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
               <div style={{ marginBottom: 8 }}>
-                APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX
+                APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX · {pendingImage.width}×{pendingImage.height} · MODEL · {viewLabel}
               </div>
-              <button className="primaryButton" onClick={applyImage} disabled={busy}>
-                APPLY
-              </button>
+              <div className="viewRow">
+                <button onClick={applyImage} disabled={busy}>APPLY</button>
+                <button onClick={cancelImage} disabled={busy}>CANCEL</button>
+              </div>
             </div>
           )}
           {paywall && (
             <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
-              <div style={{ marginBottom: 8 }}>PRO · {MONTHLY_SOL} SOL / month</div>
-              <button className="primaryButton" onClick={() => void subscribeWithSol()} disabled={busy}>
-                SUBSCRIBE
-              </button>
+              <div style={{ marginBottom: 8 }}>FREE LIMIT REACHED · {MONTHLY_SOL} SOL / month · Phantom</div>
+              <div className="viewRow">
+                <button onClick={() => void subscribe()} disabled={busy}>PAY {MONTHLY_SOL} SOL</button>
+                <button onClick={cancelImage} disabled={busy}>CANCEL</button>
+              </div>
             </div>
           )}
         </section>
+
+        <aside className="inspector">
+          <p className="panelLabel">INSPECTOR</p>
+          <details className="fold">
+            <summary>GUIDE</summary>
+            <div className="foldBody">
+              <p className="foldHint">
+                Front PNG is required. Side PNG is optional and improves depth.
+                <br />
+                Depth follows the silhouette: thin parts stay thin.
+                <br />
+                Symmetry is for characters and armor, not props.
+                <br />
+                Enter applies the preview. Esc cancels. F fits the volume.
+                <br />
+                Export GLB, VOX or OBJ ZIP when you are happy with the mesh.
+              </p>
+            </div>
+          </details>
+          <div className="viewRow">
+            {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
+              <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
+                {mode.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>GRID {grid ? "ON" : "OFF"}</button>
+          <p className="category">CLIP</p>
+          <div className="viewRow">
+            {([null, "x", "y", "z"] as const).map((axis) => (
+              <button
+                key={String(axis)}
+                className={clip.axis === axis ? "modeOn" : ""}
+                onClick={() => setClip({ axis, value: axis ? Math.floor(volume.size / 2) : volume.size - 1 })}
+              >
+                {axis ? axis.toUpperCase() : "OFF"}
+              </button>
+            ))}
+          </div>
+          {clip.axis && (
+            <input type="range" min={0} max={volume.size - 1} value={clip.value} onChange={(e) => setClip((current) => ({ ...current, value: Number(e.target.value) }))} />
+          )}
+          <p className="category">IMAGE IMPORT</p>
+          <p className="foldHint">Maximum depth · style {style}</p>
+          <div className="viewRow">
+            {[4, 8, 12, 16].map((n) => (
+              <button
+                key={n}
+                className={imageHeight === n ? "modeOn" : ""}
+                onClick={() => {
+                  setImageHeight(n);
+                  if (frontFile) void rebuildMultiView();
+                }}
+                title={`Maximum extrusion depth: ${n} voxels`}
+              >
+                D{n}
+              </button>
+            ))}
+          </div>
+          <button className={symmetrize ? "modeOn" : ""} onClick={() => setSymmetrize((value) => !value)} title="Mirror on X. Use for characters and armor.">
+            SYMMETRY {symmetrize ? "ON" : "OFF"}
+          </button>
+          <button className={useLocalAi ? "modeOn" : ""} onClick={() => setUseLocalAi((value) => !value)}>
+            LOCAL AI {useLocalAi ? "ON" : "OFF"}
+          </button>
+          <p className="foldHint">{aiStatus}</p>
+          <p className="category">LIBRARY</p>
+          {CATALOG.map((item) => (
+            <button
+              key={item.id}
+              className={style === item.category && imageHeight === item.depth ? "modeOn" : ""}
+              onClick={() => {
+                const preset = presetFromCatalog(item);
+                setStyle(preset.style);
+                setImageHeight(preset.heightMax);
+                setSymmetrize(preset.symmetrize);
+                notify(`${item.name} · ${preset.style} · D${preset.heightMax}`);
+                if (frontFile) void rebuildMultiView();
+              }}
+              title={item.promptFront}
+            >
+              {item.name}
+            </button>
+          ))}
+          <p className="category">MULTI VIEW · {viewCount}/2</p>
+          <button onClick={() => frontRef.current?.click()} disabled={busy} className={frontFile ? "modeOn" : ""}>
+            {frontFile ? "Front image on" : "Add front PNG"}
+          </button>
+          <button onClick={() => sideRef.current?.click()} disabled={busy} className={sideFile ? "modeOn" : ""}>
+            {sideFile ? "Side image on" : "Add side PNG"}
+          </button>
+          <button onClick={() => void rebuildMultiView()} disabled={busy || !frontFile}>Rebuild preview</button>
+          <div className="viewRow">
+            <button onClick={removeSide} disabled={busy || !sideFile}>Remove side</button>
+          </div>
+          <input
+            ref={sideRef}
+            type="file"
+            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void attachSide(file);
+              e.target.value = "";
+            }}
+          />
+          <p className="foldHint">
+            {frontFile ? "Front image ready" : "Front image required"}
+            <br />
+            {sideFile ? "Side image ready" : "Side image optional"}
+            <br />
+            {viewCount === 2 ? "Preview uses both views" : viewCount === 1 ? "Preview uses the front image only" : "Add a front image to generate a preview"}
+          </p>
+          <p className="category">PALETTE</p>
+          <div className="colorRow dense">
+            {palette.slice(0, 64).map((hex, i) => (
+              <button key={`${hex}-${i}`} className={`swatch ${color === i ? "swatchOn" : ""}`} style={{ background: hex }} onClick={() => setColor(i)} />
+            ))}
+          </div>
+          <input
+            type="color"
+            value={palette[color]}
+            onChange={(e) => {
+              const next = palette.slice();
+              next[color] = e.target.value;
+              setPalette(next);
+            }}
+          />
+          <p className="hint">{selected.size ? `${selected.size} SELECTED` : ghost ? `${ghost.x},${ghost.y},${ghost.z}` : "NO HIT"}</p>
+          {selected.size > 0 && (
+            <>
+              <button onClick={copySelected}>COPY</button>
+              <button onClick={duplicateSelected}>DUPLICATE</button>
+              <button onClick={paintSelected}>PAINT SEL</button>
+              <button onClick={deleteSelected}>DELETE SEL</button>
+            </>
+          )}
+          {clipboard.length > 0 && <button onClick={() => pasteClipboard()}>PASTE {clipboard.length}</button>}
+        </aside>
       </div>
     </main>
   );
