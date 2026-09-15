@@ -840,7 +840,8 @@ function adaptiveModelDimensions(
   volumeSize: number,
   maxVoxels: number,
   heightMax: number,
-  symmetrize = false
+  symmetrize = false,
+  aiCategory?: NonNullable<ImageVoxelOptions["aiCategory"]>
 ): Dimensions {
   const maxAxis = Math.max(MODEL_MIN_AXIS, volumeSize - 8);
   const safeBudget = Math.max(
@@ -856,9 +857,10 @@ function adaptiveModelDimensions(
 
   let depth: number;
   if (sideBounds) {
+    const categoryScale = aiCategory === "swords" ? 0.82 : aiCategory === "rifles" ? 1.06 : 1;
     depth = Math.max(
       MODEL_MIN_AXIS,
-      Math.round(height * (sideBounds.width / Math.max(1, sideBounds.height)))
+      Math.round(height * (sideBounds.width / Math.max(1, sideBounds.height)) * categoryScale)
     );
   } else {
     depth = Math.max(MODEL_MIN_AXIS, Math.round(heightMax * 1.05));
@@ -964,6 +966,44 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   return components.filter((c) => c.length >= threshold).flat();
 }
 
+function categoryThicknessFactor(
+  category: NonNullable<ImageVoxelOptions["aiCategory"]>,
+  normalizedX: number,
+  normalizedY: number
+) {
+  switch (category) {
+    case "swords": {
+      const guardBand = Math.exp(-Math.pow((normalizedY - 0.48) / 0.11, 2));
+      const hiltBand = Math.exp(-Math.pow((normalizedY - 0.78) / 0.16, 2));
+      return 0.68 + guardBand * 0.20 + hiltBand * 0.12;
+    }
+    case "guns": {
+      const receiver = Math.exp(-Math.pow((normalizedX - 0.48) / 0.30, 2));
+      const grip = Math.exp(-Math.pow((normalizedY - 0.68) / 0.19, 2));
+      return 0.92 + receiver * 0.08 + grip * 0.03;
+    }
+    case "rifles": {
+      const body = Math.exp(-Math.pow((normalizedX - 0.48) / 0.34, 2));
+      const stock = Math.exp(-Math.pow((normalizedX - 0.20) / 0.22, 2));
+      const barrel = Math.exp(-Math.pow((normalizedX - 0.84) / 0.20, 2));
+      return 0.96 + body * 0.06 + stock * 0.03 + barrel * 0.01;
+    }
+    case "objects":
+    default:
+      return 1;
+  }
+}
+
+function categorySpan(rowMin: number, rowMax: number, factor: number) {
+  const sourceSpan = Math.max(1, rowMax - rowMin + 1);
+  const targetSpan = Math.max(1, Math.round(sourceSpan * factor));
+  const center = (rowMin + rowMax) * 0.5;
+  return {
+    min: Math.max(rowMin, Math.ceil(center - targetSpan * 0.5)),
+    max: Math.min(rowMax, Math.floor(center + targetSpan * 0.5 - 0.001))
+  };
+}
+
 function reconstructVisualHull(
   frontRaster: Raster,
   frontMask: boolean[][],
@@ -990,6 +1030,18 @@ function reconstructVisualHull(
     dimensions.height
   );
 
+  const sideRowBounds: { min: number; max: number }[] = [];
+  for (let y = 0; y < dimensions.height; y += 1) {
+    let min = dimensions.depth;
+    let max = -1;
+    for (let z = 0; z < dimensions.depth; z += 1) {
+      if (!side[y]?.[z]) continue;
+      min = Math.min(min, z);
+      max = Math.max(max, z);
+    }
+    sideRowBounds.push({ min, max });
+  }
+
   const voxels: ImageVoxel[] = [];
 
   for (let y = 0; y < dimensions.height; y += 1) {
@@ -1000,15 +1052,24 @@ function reconstructVisualHull(
 
       const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
       const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
+      const profileCategory = options.aiCategory;
 
-      for (let z = 0; z < dimensions.depth; z += 1) {
+      const row = sideRowBounds[y];
+      const rowMin = row?.min ?? 0;
+      const rowMax = row?.max ?? dimensions.depth - 1;
+      if (rowMax < rowMin) continue;
+
+      const profileFactor = profileCategory
+        ? categoryThicknessFactor(profileCategory, nx, ny)
+        : 1;
+      const profileRange = categorySpan(rowMin, rowMax, profileFactor);
+
+      for (let z = rowMin; z <= rowMax; z += 1) {
         const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
-        // TRUE VISUAL HULL:
-        // FRONT gives the X/Y silhouette and SIDE gives the Z/Y silhouette.
-        // A voxel exists only in the intersection of the two silhouette
-        // volumes. There is no later voxel thinning step.
+        // TRUE VISUAL HULL: FRONT gives X/Y and SIDE gives Z/Y.
         if (side && !side[y]?.[z]) continue;
+        if (profileCategory && (z < profileRange.min || z > profileRange.max)) continue;
 
         let color: [number, number, number] = [
           frontColor.r,
@@ -1172,8 +1233,12 @@ export async function imageToVoxels(
 
   let raster = await loadImage(file);
   if (normalized.useLocalAi) {
-    const { enhanceRaster } = await import("@/lib/ai/enhance");
-    raster = await enhanceRaster(raster, { depth: false }).then((result) => result.raster);
+    try {
+      const { enhanceRaster } = await import("@/lib/ai/enhance");
+      raster = await enhanceRaster(raster, { depth: false }).then((result) => result.raster);
+    } catch {
+      // AI is an enhancement layer; reconstruction falls back to the stable deterministic raster path.
+    }
   }
   const mask = buildMask(raster, normalized.mode);
   const bounds = findBounds(mask);
@@ -1230,11 +1295,15 @@ export async function imagesToVoxels(
   const files = [views.front, views.side].filter(Boolean) as File[];
   let rasters = await Promise.all(files.map((file) => loadImage(file)));
   if (normalized.useLocalAi) {
-    const { enhanceRaster } = await import("@/lib/ai/enhance");
-    const prepared = await Promise.all(
-      rasters.map((raster) => enhanceRaster(raster, { depth: false }))
-    );
-    rasters = prepared.map((result) => result.raster);
+    try {
+      const { enhanceRaster } = await import("@/lib/ai/enhance");
+      const prepared = await Promise.all(
+        rasters.map((raster) => enhanceRaster(raster, { depth: false }))
+      );
+      rasters = prepared.map((result) => result.raster);
+    } catch {
+      // Preserve the stable deterministic reconstruction when local AI is unavailable.
+    }
   }
   const masks = rasters.map((raster) => {
     const mask = buildMask(raster, normalized.mode);
@@ -1273,7 +1342,8 @@ export async function imagesToVoxels(
       normalized.volumeSize,
       budget,
       normalized.heightMax,
-      normalized.symmetrize
+      normalized.symmetrize,
+      normalized.aiCategory
     );
 
     if (!sideRaster || !sideMask || !sideBounds) {
