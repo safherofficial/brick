@@ -39,7 +39,7 @@ import {
   exportVox,
   importVox
 } from "@/lib/voxelExport";
-import { exportGlb } from "@/lib/voxelGlb";
+import { exportGlbTextured } from "@/lib/voxelGlb";
 import {
   imageToVoxels,
   imagesToVoxels,
@@ -666,7 +666,7 @@ export default function Builder() {
         if (kind === "glb") {
           notify("EXPORTING GLB");
           await new Promise((resolve) => window.setTimeout(resolve, 40));
-          const bytes = await exportGlb(volumeRef.current, palette, options);
+          const bytes = await exportGlbTextured(volumeRef.current, palette, options);
           downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
           notify("GLB READY");
           return;
