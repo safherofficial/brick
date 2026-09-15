@@ -1,8 +1,11 @@
-// lib/ai/bvh.ts
 import type { ImageVoxel } from "@/lib/imageVoxel";
 
 function key(x: number, y: number, z: number) {
   return `${x},${y},${z}`;
+}
+
+function xy(x: number, y: number) {
+  return `${x}:${y}`;
 }
 
 export function spatialCleanVoxels(voxels: ImageVoxel[]): ImageVoxel[] {
@@ -51,16 +54,34 @@ export function thickenMinFeature(voxels: ImageVoxel[], minFeature: number): Ima
 
 export function outlineVoxels(voxels: ImageVoxel[], colorIndex: number): ImageVoxel[] {
   if (!voxels.length) return voxels;
-  const occupied = new Set(voxels.map((v) => key(v.x, v.y, v.z)));
-  const map = new Map(voxels.map((v) => [key(v.x, v.y, v.z), { ...v }]));
-  for (const v of voxels) {
-    const edge =
-      !occupied.has(key(v.x - 1, v.y, v.z)) ||
-      !occupied.has(key(v.x + 1, v.y, v.z)) ||
-      !occupied.has(key(v.x, v.y - 1, v.z)) ||
-      !occupied.has(key(v.x, v.y + 1, v.z));
-    if (!edge) continue;
-    map.set(key(v.x, v.y, v.z), { x: v.x, y: v.y, z: v.z, c: colorIndex });
-  }
-  return [...map.values()];
+  const cols = new Set(voxels.map((v) => xy(v.x, v.y)));
+  const silhouette = (x: number, y: number) =>
+    !cols.has(xy(x - 1, y)) ||
+    !cols.has(xy(x + 1, y)) ||
+    !cols.has(xy(x, y - 1)) ||
+    !cols.has(xy(x, y + 1));
+
+  const supported = (x: number, y: number) => {
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1]
+    ]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (!cols.has(xy(nx, ny))) continue;
+      if (!silhouette(nx, ny)) return true;
+    }
+    return false;
+  };
+
+  return voxels.map((v) => {
+    if (!silhouette(v.x, v.y) || !supported(v.x, v.y)) return v;
+    return { ...v, c: colorIndex };
+  });
 }
