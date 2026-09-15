@@ -589,7 +589,7 @@ export default function Builder() {
       }
       const buffer = await file.arrayBuffer();
       if (name.endsWith(".vox")) {
-        const model = importVox(new Uint8Array(buffer));
+        const model = importVox(buffer);
         volumeRef.current.load({ size: model.size, voxels: model.voxels });
         if (model.palette.length) setPalette(clonePalette(model.palette));
         setFocus(volumeCenter(volumeRef.current.size));
@@ -635,7 +635,7 @@ export default function Builder() {
       }
       if (kind === "glb") {
         const bytes = await exportGlb(volumeRef.current, palette, UNITY_EXPORT);
-        downloadBytes(bytes, `${name}.glb`, "model/gltf-binary");
+        downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
         return;
       }
       const archive = await exportObjArchive(volumeRef.current, palette, UNITY_EXPORT);
