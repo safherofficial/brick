@@ -19,6 +19,24 @@ export type StyleProfile = {
   cover: number;
 };
 
+const WEAPON: Omit<StyleProfile, "id"> = {
+  depth: 5,
+  symmetrize: false,
+  minRadius: 1,
+  edgeRadius: 0,
+  sdfPower: 1.7,
+  paletteSize: 20,
+  outline: true,
+  fillHoleRatio: 0.04,
+  useSideHull: true,
+  useDepthHint: false,
+  islandRatio: 0.012,
+  keepRatio: 0.018,
+  regionMerge: 800,
+  minFeature: 1,
+  cover: 0.34
+};
+
 export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
   tile: {
     id: "tile",
@@ -38,42 +56,8 @@ export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
     minFeature: 1,
     cover: 0.48
   },
-   sword: {
-    id: "sword",
-    depth: 4,
-    symmetrize: false,
-    minRadius: 0,
-    edgeRadius: 0,
-    sdfPower: 2.35,
-    paletteSize: 24,
-    outline: true,
-    fillHoleRatio: 0.015,
-    useSideHull: true,
-    useDepthHint: false,
-    islandRatio: 0.004,
-    keepRatio: 0.006,
-    regionMerge: 420,
-    minFeature: 1,
-    cover: 0.3
-  },
-  weapon: {
-    id: "weapon",
-    depth: 5,
-    symmetrize: false,
-    minRadius: 1,
-    edgeRadius: 0,
-    sdfPower: 1.7,
-    paletteSize: 20,
-    outline: true,
-    fillHoleRatio: 0.04,
-    useSideHull: true,
-    useDepthHint: false,
-    islandRatio: 0.012,
-    keepRatio: 0.018,
-    regionMerge: 800,
-    minFeature: 1,
-    cover: 0.34
-  },
+  sword: { id: "sword", ...WEAPON },
+  weapon: { id: "weapon", ...WEAPON },
   pickup: {
     id: "pickup",
     depth: 8,
@@ -139,7 +123,6 @@ export function inferStyle(heightMax: number, symmetrize: boolean): StyleId {
   if (heightMax <= 2) return "tile";
   if (symmetrize && heightMax >= 10) return "character";
   if (symmetrize) return "pickup";
-  if (heightMax <= 4) return "sword";
   if (heightMax <= 6) return "weapon";
   return "prop";
 }
