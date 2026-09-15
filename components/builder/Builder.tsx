@@ -43,8 +43,7 @@ import { exportGlb } from "@/lib/voxelGlb";
 import {
   imageToVoxels,
   imagesToVoxels,
-  type ImageImport,
-  type ImageMode
+  type ImageImport
 } from "@/lib/imageVoxel";
 import {
   consumeImageApply,
@@ -76,6 +75,8 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
   { id: "select", label: "SELECT", key: "Q" },
   { id: "box", label: "BOX", key: "U" }
 ];
+
+type LocalImageMode = "solid" | "flat" | "relief" | "model";
 
 type ContentBounds = {
   minX: number;
@@ -663,7 +664,7 @@ export default function Builder() {
     );
 
   const [imageMode, setImageMode] =
-    useState<ImageMode>(
+    useState<LocalImageMode>(
       "solid"
     );
 
@@ -2512,8 +2513,6 @@ export default function Builder() {
               {
                 volumeSize:
                   volumeRef.current.size,
-                mode:
-                  imageMode,
                 heightMax:
                   imageHeight,
                 maxVoxels:
@@ -2809,11 +2808,8 @@ export default function Builder() {
                 {
                   volumeSize:
                     volumeRef.current.size,
-                  mode:
-                    imageMode,
                   heightMax:
-                    aiCategory,
-        imageHeight,
+                    imageHeight,
                   maxVoxels:
                     MAX_SAFE,
                   style:
