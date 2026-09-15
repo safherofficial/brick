@@ -43,7 +43,8 @@ import { exportGlb } from "@/lib/voxelGlb";
 import {
   imageToVoxels,
   imagesToVoxels,
-  type ImageImport
+  type ImageImport,
+  type ImageMode
 } from "@/lib/imageVoxel";
 import {
   consumeImageApply,
@@ -659,6 +660,9 @@ export default function Builder() {
 
   const [imageHeight, setImageHeight] =
     useState(16);
+
+  const [imageMode, setImageMode] =
+    useState<ImageMode>("solid");
 
   const [aiCategory, setAiCategory] =
     useState<AiCategory | null>(null);
