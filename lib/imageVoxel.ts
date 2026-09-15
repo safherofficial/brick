@@ -908,7 +908,11 @@ async function buildModel(
     const outlineIndex = Math.max(0, palette.findIndex((hex) => hex.toLowerCase() === OUTLINE_HEX));
     cleaned = outlineVoxels(cleaned, outlineIndex >= 0 ? outlineIndex : 0);
   }
-  const grounded = finishVoxels(placeOnGround(cleaned, options.volumeSize), options.volumeSize);
+    const grounded = finishVoxels(
+    placeOnGround(cleaned, options.volumeSize),
+    options.volumeSize,
+    options.profile.id !== "sword"
+  );
   return {
     width: frontRaster.width,
     height: frontRaster.height,
