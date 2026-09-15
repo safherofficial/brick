@@ -2517,8 +2517,6 @@ export default function Builder() {
                   imageHeight,
                 maxVoxels:
                   MAX_SAFE,
-                style:
-                  aiCategoryPreset(aiCategory).style,
                 symmetrize:
                   imageMode ===
                   "model"
@@ -2661,7 +2659,6 @@ export default function Builder() {
                 volumeSize: volumeRef.current.size,
                 heightMax: imageHeight,
                 maxVoxels: MAX_SAFE,
-                style: aiCategoryPreset(aiCategory).style,
                 symmetrize: false
               }
             );
@@ -2811,8 +2808,6 @@ export default function Builder() {
                     imageHeight,
                   maxVoxels:
                     MAX_SAFE,
-                  style:
-                    aiCategoryPreset(aiCategory).style,
                   symmetrize:
                     false
                 }
