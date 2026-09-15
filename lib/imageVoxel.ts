@@ -25,6 +25,10 @@ export type ImageVoxelOptions = {
   heightMax?: number;
   maxVoxels?: number;
   symmetrize?: boolean;
+  /** Enables the local ONNX segmentation stage used by AI MODE. */
+  useLocalAi?: boolean;
+  /** Explicit AI asset profile. The profile is never inferred away when set. */
+  aiCategory?: import("@/lib/ai/aiCategories").AiCategory;
 };
 
 export type ImageViews = {
@@ -474,9 +478,7 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
   }
 
   let largest = 0;
-  for (const size of componentSizes) {
-    if (size > largest) largest = size;
-  }
+  for (const size of componentSizes) largest = Math.max(largest, size);
   const minComponent = Math.max(
     MODEL_MIN_COMPONENT_PIXELS,
     Math.round(largest * MODEL_MIN_COMPONENT_RATIO)
@@ -788,9 +790,7 @@ function symmetrizeVoxels(
     });
   }
 
-  for (const addition of additions) {
-    voxels.push(addition);
-  }
+  for (const voxel of additions) voxels.push(voxel);
 }
 
 function normalizeToVolume(voxels: ImageVoxel[], volumeSize: number) {
@@ -959,18 +959,9 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   }
 
   if (components.length <= 1) return voxels;
-  let largest = 0;
-  for (const component of components) {
-    if (component.length > largest) largest = component.length;
-  }
-
+  const largest = Math.max(...components.map((c) => c.length));
   const threshold = Math.max(6, Math.round(largest * 0.015));
-  const kept: ImageVoxel[] = [];
-  for (const component of components) {
-    if (component.length < threshold) continue;
-    for (const voxel of component) kept.push(voxel);
-  }
-  return kept;
+  return components.filter((c) => c.length >= threshold).flat();
 }
 
 function reconstructVisualHull(
@@ -1164,15 +1155,26 @@ export async function imageToVoxels(
   file: File,
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
+  const aiCategory = options.aiCategory;
+  const categoryPreset = aiCategory
+    ? (await import("@/lib/ai/aiCategories")).aiCategoryPreset(aiCategory)
+    : null;
+  const aiEnabled = options.useLocalAi === true && Boolean(aiCategory);
   const normalized: Required<ImageVoxelOptions> = {
     volumeSize: options.volumeSize ?? 128,
-    mode: options.mode ?? "solid",
-    heightMax: options.heightMax ?? 16,
+    mode: aiEnabled ? "model" : options.mode ?? "solid",
+    heightMax: options.heightMax ?? categoryPreset?.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
-    symmetrize: options.symmetrize ?? false
+    symmetrize: options.symmetrize ?? categoryPreset?.symmetrize ?? false,
+    useLocalAi: options.useLocalAi ?? false,
+    aiCategory: aiCategory ?? "objects"
   };
 
-  const raster = await loadImage(file);
+  let raster = await loadImage(file);
+  if (normalized.useLocalAi) {
+    const { enhanceRaster } = await import("@/lib/ai/enhance");
+    raster = await enhanceRaster(raster, { depth: false }).then((result) => result.raster);
+  }
   const mask = buildMask(raster, normalized.mode);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
@@ -1206,12 +1208,19 @@ export async function imagesToVoxels(
 ): Promise<ImageImport> {
   if (!views.front) throw new Error("FRONT IMAGE REQUIRED");
 
+  const aiCategory = options.aiCategory;
+  const categoryPreset = aiCategory
+    ? (await import("@/lib/ai/aiCategories")).aiCategoryPreset(aiCategory)
+    : null;
+  const aiEnabled = options.useLocalAi === true && Boolean(aiCategory);
   const normalized: Required<ImageVoxelOptions> = {
     volumeSize: options.volumeSize ?? 128,
-    mode: options.mode ?? "solid",
-    heightMax: options.heightMax ?? 16,
+    mode: aiEnabled ? "model" : options.mode ?? "solid",
+    heightMax: options.heightMax ?? categoryPreset?.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
-    symmetrize: options.symmetrize ?? false
+    symmetrize: options.symmetrize ?? categoryPreset?.symmetrize ?? false,
+    useLocalAi: options.useLocalAi ?? false,
+    aiCategory: aiCategory ?? "objects"
   };
 
   if (normalized.mode === "model" && !views.side) {
@@ -1219,7 +1228,14 @@ export async function imagesToVoxels(
   }
 
   const files = [views.front, views.side].filter(Boolean) as File[];
-  const rasters = await Promise.all(files.map((file) => loadImage(file)));
+  let rasters = await Promise.all(files.map((file) => loadImage(file)));
+  if (normalized.useLocalAi) {
+    const { enhanceRaster } = await import("@/lib/ai/enhance");
+    const prepared = await Promise.all(
+      rasters.map((raster) => enhanceRaster(raster, { depth: false }))
+    );
+    rasters = prepared.map((result) => result.raster);
+  }
   const masks = rasters.map((raster) => {
     const mask = buildMask(raster, normalized.mode);
     return normalized.mode === "model"
