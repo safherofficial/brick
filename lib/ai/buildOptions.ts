@@ -24,7 +24,6 @@ export function buildImageOptions(input: {
     heightMax: input.heightMax,
     maxVoxels: input.maxVoxels,
     symmetrize: input.symmetrize,
-    useLocalAi: input.useLocalAi ?? true,
     style,
     outline: input.outline ?? profile.outline
   };
