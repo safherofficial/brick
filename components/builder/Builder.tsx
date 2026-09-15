@@ -1133,12 +1133,18 @@ export default function Builder() {
         </aside>
 
         <section className="viewport">
-          <Canvas shadows dpr={[1, 1.75]} camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}>
+          <Canvas
+            shadows
+            dpr={[1, 1.75]}
+            camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}
+            gl={{ toneMappingExposure: 1.4 }}
+          >
             <color attach="background" args={["#222737"]} />
-            <ambientLight intensity={1.45} />
-            <hemisphereLight intensity={0.9} groundColor="#1b2130" color="#68758f" />
-            <directionalLight position={[18, 32, 14]} intensity={3.8} castShadow />
-            <directionalLight position={[-18, 20, 10]} intensity={1.7} />
+            <ambientLight intensity={2.1} />
+            <hemisphereLight intensity={1.3} groundColor="#1b2130" color="#8b97b5" />
+            <directionalLight position={[18, 32, 14]} intensity={4.6} castShadow />
+            <directionalLight position={[-18, 20, 10]} intensity={2.4} />
+            <directionalLight position={[0, 12, -20]} intensity={1.2} />
             {grid && (
               <Grid
                 args={[volume.size, volume.size]}
