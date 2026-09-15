@@ -99,6 +99,11 @@ export function evenPack(voxels: ImageVoxel[], volumeSize: number): ImageVoxel[]
   }));
 }
 
-export function finishVoxels(voxels: ImageVoxel[], volumeSize: number): ImageVoxel[] {
-  return evenPack(stabilizeBase(flattenColumnColors(voxels)), volumeSize);
+export function finishVoxels(
+  voxels: ImageVoxel[],
+  volumeSize: number,
+  flatten = true
+): ImageVoxel[] {
+  const prepared = flatten ? flattenColumnColors(voxels) : voxels;
+  return evenPack(stabilizeBase(prepared), volumeSize);
 }
