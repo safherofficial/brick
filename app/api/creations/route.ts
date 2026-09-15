@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
+import { MAX_VOXELS } from "@/lib/limits";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +12,6 @@ type PublishBody = {
   palette?: string[];
   voxels?: { x: number; y: number; z: number; c: number }[];
 };
-
-const MAX_VOXELS = 150_000;
 
 export async function GET(req: Request) {
   const url = process.env.POSTGRES_URL;
