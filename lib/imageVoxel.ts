@@ -353,7 +353,11 @@ function buildMask(raster: Raster, mode: ImageMode): boolean[][] {
   return mask;
 }
 
-function cleanModelMask(mask: boolean[][], raster: Raster) {
+function cleanModelMask(
+  mask: boolean[][],
+  raster: Raster,
+  aiCategory?: ImageVoxelOptions["aiCategory"]
+) {
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
   if (!w || !h) return mask;
@@ -477,10 +481,13 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
     }
   }
 
-  const largest = Math.max(...componentSizes);
+  let largest = 0;
+  for (const size of componentSizes) largest = Math.max(largest, size);
+  const preserveSmallAiFeatures =
+    aiCategory === "swords" || aiCategory === "guns" || aiCategory === "rifles" || aiCategory === "objects";
   const minComponent = Math.max(
-    MODEL_MIN_COMPONENT_PIXELS,
-    Math.round(largest * MODEL_MIN_COMPONENT_RATIO)
+    preserveSmallAiFeatures ? 10 : MODEL_MIN_COMPONENT_PIXELS,
+    Math.round(largest * (preserveSmallAiFeatures ? 0.0015 : MODEL_MIN_COMPONENT_RATIO))
   );
 
   for (let i = 0; i < components.length; i += 1) {
@@ -505,13 +512,97 @@ function cleanModelMask(mask: boolean[][], raster: Raster) {
         }
       }
 
-      if (neighbours8 <= 1 || (neighbours8 === 2 && local5x5 <= 6)) {
+      const preserveThinFeature =
+        aiCategory === "swords" || aiCategory === "rifles" || aiCategory === "guns";
+      if (
+        neighbours8 === 0 ||
+        (!preserveThinFeature && (neighbours8 === 1 || (neighbours8 === 2 && local5x5 <= 6)))
+      ) {
         output[y][x] = false;
       }
     }
   }
 
   return repairSilhouette(output);
+}
+
+function aiKeepThreshold(category?: ImageVoxelOptions["aiCategory"]) {
+  switch (category) {
+    case "swords":
+      return 0.10;
+    case "rifles":
+      return 0.12;
+    case "guns":
+      return 0.14;
+    case "objects":
+    default:
+      return 0.18;
+  }
+}
+
+function aiFillThreshold(category?: ImageVoxelOptions["aiCategory"]) {
+  switch (category) {
+    case "swords":
+      return 0.74;
+    case "rifles":
+      return 0.76;
+    case "guns":
+      return 0.78;
+    case "objects":
+    default:
+      return 0.82;
+  }
+}
+
+function mergeAiSegmentationMask(
+  baseMask: boolean[][],
+  aiRaster: Raster,
+  category?: ImageVoxelOptions["aiCategory"]
+) {
+  const h = baseMask.length;
+  const w = baseMask[0]?.length ?? 0;
+  if (!w || !h) return baseMask;
+
+  const out = baseMask.map((row) => row.slice());
+  const keepThreshold = aiKeepThreshold(category);
+  const fillThreshold = aiFillThreshold(category);
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const alpha = sampleAt(aiRaster, x, y).a / 255;
+
+      let n4 = 0;
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1]
+      ]) {
+        if (baseMask[y + dy]?.[x + dx]) n4 += 1;
+      }
+
+      // AI may seal tiny segmentation gaps only when the deterministic mask
+      // already indicates a foreground neighborhood. This avoids inventing
+      // geometry from an uncertain ONNX prediction.
+      if (!out[y][x] && alpha >= fillThreshold && n4 >= 2) {
+        out[y][x] = true;
+        continue;
+      }
+
+      // AI may remove obvious matte leaks, but only when the pixel is weakly
+      // supported by the deterministic silhouette. Thin weapon features keep
+      // their original mask even with uncertain AI confidence.
+      if (
+        out[y][x] &&
+        alpha < keepThreshold &&
+        n4 === 0
+      ) {
+        out[y][x] = false;
+      }
+    }
+  }
+
+  return out;
 }
 
 function findBounds(mask: boolean[][]): Bounds | null {
@@ -1165,13 +1256,39 @@ export async function imageToVoxels(
     aiCategory: options.aiCategory ?? "objects"
   };
 
-  const raster = await loadImage(file);
-  const mask = buildMask(raster, normalized.mode);
+  const sourceRaster = await loadImage(file);
+  let raster = sourceRaster;
+  if (normalized.useLocalAi) {
+    try {
+      const { enhanceRaster } = await import("@/lib/ai/enhance");
+      const enhanced = await enhanceRaster(sourceRaster, { depth: false });
+      raster = enhanced.raster;
+    } catch {
+      raster = sourceRaster;
+    }
+  }
+
+  const baseMask =
+    normalized.mode === "model" || normalized.useLocalAi
+      ? cleanModelMask(
+          buildMask(sourceRaster, normalized.mode),
+          sourceRaster,
+          normalized.aiCategory
+        )
+      : buildMask(sourceRaster, normalized.mode);
+  const mask = normalized.useLocalAi
+    ? cleanModelMask(
+        mergeAiSegmentationMask(baseMask, raster, normalized.aiCategory),
+        sourceRaster,
+        normalized.aiCategory
+      )
+    : baseMask;
+
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
 
   const palette = createPalette(
-    [raster],
+    [sourceRaster],
     [mask],
     normalized.mode === "model" ? 64 : 48
   );
@@ -1182,7 +1299,7 @@ export async function imageToVoxels(
   }
 
   return buildNonModel(
-    raster,
+    sourceRaster,
     mask,
     bounds,
     undefined,
@@ -1214,30 +1331,54 @@ export async function imagesToVoxels(
   }
 
   const files = [views.front, views.side].filter(Boolean) as File[];
-  const rasters = await Promise.all(files.map((file) => loadImage(file)));
-  const masks = rasters.map((raster) => {
-    const mask = buildMask(raster, normalized.mode);
-    return normalized.mode === "model"
-      ? cleanModelMask(mask, raster)
-      : mask;
+  const sourceRasters = await Promise.all(files.map((file) => loadImage(file)));
+  const rasters = normalized.useLocalAi
+    ? await Promise.all(
+        sourceRasters.map(async (sourceRaster) => {
+          try {
+            const { enhanceRaster } = await import("@/lib/ai/enhance");
+            const enhanced = await enhanceRaster(sourceRaster, { depth: false });
+            return enhanced.raster;
+          } catch {
+            return sourceRaster;
+          }
+        })
+      )
+    : sourceRasters;
+
+  const masks = sourceRasters.map((sourceRaster, index) => {
+    const baseMask =
+      normalized.mode === "model" || normalized.useLocalAi
+        ? cleanModelMask(
+            buildMask(sourceRaster, normalized.mode),
+            sourceRaster,
+            normalized.aiCategory
+          )
+        : buildMask(sourceRaster, normalized.mode);
+    return normalized.useLocalAi
+      ? cleanModelMask(
+          mergeAiSegmentationMask(baseMask, rasters[index], normalized.aiCategory),
+          sourceRaster,
+          normalized.aiCategory
+        )
+      : baseMask;
   });
 
   const palette = createPalette(
-    rasters,
+    sourceRasters,
     masks,
     normalized.mode === "model" ? 64 : 48
   );
   const paletteValues = paletteRgb(palette);
 
-  const frontRaster = rasters[0];
+  const frontRaster = sourceRasters[0];
   const frontMask = masks[0];
   const frontBounds = findBounds(frontMask);
   if (!frontBounds) throw new Error("No visible subject found in FRONT");
 
-  const sideRaster = views.side ? rasters[1] : undefined;
+  const sideRaster = views.side ? sourceRasters[1] : undefined;
   const sideMask = views.side ? masks[1] : undefined;
   const sideBounds = sideMask ? findBounds(sideMask) : null;
-
 
   if (normalized.mode === "model") {
     const budget = effectiveBudget(
