@@ -1,6 +1,5 @@
 import { aiCategoryPreset, type AiCategory } from "@/lib/ai/aiCategories";
 import type { CatalogItem } from "@/lib/ai/catalog";
-import { inferStyle, profileById, type StyleId } from "@/lib/ai/styleProfiles";
 import type { ImageVoxelOptions } from "@/lib/imageVoxel";
 
 export function buildImageOptions(input: {
@@ -9,29 +8,25 @@ export function buildImageOptions(input: {
   maxVoxels: number;
   symmetrize: boolean;
   useLocalAi?: boolean;
-  style?: StyleId;
-  outline?: boolean;
   category?: AiCategory;
 }): ImageVoxelOptions {
-  const fromCategory = input.category ? aiCategoryPreset(input.category) : null;
-  const style =
-    input.style ??
-    fromCategory?.style ??
-    inferStyle(input.heightMax, input.symmetrize);
-  const profile = profileById(style);
+  const preset = input.category ? aiCategoryPreset(input.category) : null;
+  const aiEnabled = Boolean(input.category) && (input.useLocalAi ?? true);
+
   return {
     volumeSize: input.volumeSize,
-    heightMax: input.heightMax,
+    mode: aiEnabled ? "model" : "solid",
+    heightMax: input.category ? preset!.heightMax : input.heightMax,
     maxVoxels: input.maxVoxels,
-    symmetrize: input.symmetrize,
+    symmetrize: input.category ? preset!.symmetrize : input.symmetrize,
+    useLocalAi: aiEnabled,
+    aiCategory: input.category
   };
 }
 
 export function presetFromCatalog(item: CatalogItem) {
   return {
-    style: item.category,
     heightMax: item.depth,
-    symmetrize: item.symmetrize,
-    outline: profileById(item.category).outline
+    symmetrize: item.symmetrize
   };
 }
