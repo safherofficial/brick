@@ -1,145 +1,59 @@
-export type StyleId = "tile" | "sword" | "weapon" | "pickup" | "prop" | "character";
+import type { StyleId } from "@/lib/ai/styleProfiles";
+import { STYLE_PROFILES } from "@/lib/ai/styleProfiles";
 
-export type StyleProfile = {
-  id: StyleId;
-  depth: number;
+export type AiCategory = "swords" | "guns" | "rifles" | "objects";
+
+export type AiCategoryPreset = {
+  id: AiCategory;
+  label: string;
+  style: StyleId;
+  heightMax: number;
   symmetrize: boolean;
-  minRadius: number;
-  edgeRadius: number;
-  sdfPower: number;
-  paletteSize: number;
-  outline: boolean;
-  fillHoleRatio: number;
-  useSideHull: boolean;
-  useDepthHint: boolean;
-  islandRatio: number;
-  keepRatio: number;
-  regionMerge: number;
-  minFeature: number;
-  cover: number;
+  description: string;
 };
 
-export const STYLE_PROFILES: Record<StyleId, StyleProfile> = {
-  tile: {
-    id: "tile",
-    depth: 2,
+export const AI_CATEGORY_PRESETS: readonly AiCategoryPreset[] = [
+  {
+    id: "swords",
+    label: "SWORDS",
+    style: "sword",
+    heightMax: STYLE_PROFILES.sword.depth,
     symmetrize: false,
-    minRadius: 0,
-    edgeRadius: 0,
-    sdfPower: 1,
-    paletteSize: 8,
-    outline: true,
-    fillHoleRatio: 0.12,
-    useSideHull: false,
-    useDepthHint: false,
-    islandRatio: 0.03,
-    keepRatio: 0.04,
-    regionMerge: 2200,
-    minFeature: 1,
-    cover: 0.52
+    description: "Lama sottile, outline, poche isole, profondità 4."
   },
-  sword: {
-    id: "sword",
-    depth: 4,
+  {
+    id: "guns",
+    label: "GUNS",
+    style: "weapon",
+    heightMax: STYLE_PROFILES.weapon.depth,
     symmetrize: false,
-    minRadius: 0,
-    edgeRadius: 0,
-    sdfPower: 2.2,
-    paletteSize: 8,
-    outline: true,
-    fillHoleRatio: 0.02,
-    useSideHull: true,
-    useDepthHint: false,
-    islandRatio: 0.006,
-    keepRatio: 0.008,
-    regionMerge: 1100,
-    minFeature: 1,
-    cover: 0.26
+    description: "Armi corte, corpo più pieno."
   },
-  weapon: {
-    id: "weapon",
-    depth: 5,
+  {
+    id: "rifles",
+    label: "RIFLES",
+    style: "weapon",
+    heightMax: 8,
     symmetrize: false,
-    minRadius: 1,
-    edgeRadius: 0,
-    sdfPower: 1.7,
-    paletteSize: 12,
-    outline: true,
-    fillHoleRatio: 0.04,
-    useSideHull: true,
-    useDepthHint: false,
-    islandRatio: 0.012,
-    keepRatio: 0.018,
-    regionMerge: 1600,
-    minFeature: 1,
-    cover: 0.34
+    description: "Armi lunghe, profilo weapon con più profondità."
   },
-  pickup: {
-    id: "pickup",
-    depth: 8,
-    symmetrize: true,
-    minRadius: 2,
-    edgeRadius: 1,
-    sdfPower: 0.85,
-    paletteSize: 12,
-    outline: false,
-    fillHoleRatio: 0.1,
-    useSideHull: false,
-    useDepthHint: false,
-    islandRatio: 0.02,
-    keepRatio: 0.03,
-    regionMerge: 1800,
-    minFeature: 2,
-    cover: 0.42
-  },
-  prop: {
-    id: "prop",
-    depth: 6,
+  {
+    id: "objects",
+    label: "OBJECTS",
+    style: "prop",
+    heightMax: STYLE_PROFILES.prop.depth,
     symmetrize: false,
-    minRadius: 1,
-    edgeRadius: 1,
-    sdfPower: 1.15,
-    paletteSize: 12,
-    outline: false,
-    fillHoleRatio: 0.08,
-    useSideHull: false,
-    useDepthHint: false,
-    islandRatio: 0.02,
-    keepRatio: 0.03,
-    regionMerge: 1800,
-    minFeature: 2,
-    cover: 0.44
-  },
-  character: {
-    id: "character",
-    depth: 10,
-    symmetrize: true,
-    minRadius: 2,
-    edgeRadius: 1,
-    sdfPower: 1.05,
-    paletteSize: 16,
-    outline: false,
-    fillHoleRatio: 0.06,
-    useSideHull: true,
-    useDepthHint: false,
-    islandRatio: 0.015,
-    keepRatio: 0.025,
-    regionMerge: 1400,
-    minFeature: 2,
-    cover: 0.4
+    description: "Prop generico da gioco."
   }
-};
+];
 
-export function profileById(id?: string | null): StyleProfile {
-  if (id && id in STYLE_PROFILES) return STYLE_PROFILES[id as StyleId];
-  return STYLE_PROFILES.prop;
+export function aiCategoryPreset(id: AiCategory): AiCategoryPreset {
+  return AI_CATEGORY_PRESETS.find((preset) => preset.id === id) ?? AI_CATEGORY_PRESETS[3];
 }
 
-export function inferStyle(heightMax: number, symmetrize: boolean): StyleId {
-  if (heightMax <= 2) return "tile";
-  if (symmetrize && heightMax >= 10) return "character";
-  if (symmetrize) return "pickup";
-  if (heightMax <= 4) return "sword";
-  if (heightMax <= 6) return "weapon";
-  return "prop";
+export function aiCategoryForStyle(style: StyleId): AiCategory {
+  if (style === "sword") return "swords";
+  if (style === "weapon") return "guns";
+  if (style === "prop") return "objects";
+  return "objects";
 }
