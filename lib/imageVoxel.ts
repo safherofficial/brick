@@ -7,10 +7,12 @@ import {
 import { finishVoxels } from "@/lib/ai/finish";
 import { lintVoxels } from "@/lib/ai/lint";
 import { refineMask } from "@/lib/ai/opencv";
+import { recognizeFromMask } from "@/lib/ai/recognize";
 import { resampleColorBox, resampleMaskCoverage } from "@/lib/ai/sample2d";
 import {
   inferStyle,
   profileById,
+  STYLE_PROFILES,
   type StyleId,
   type StyleProfile
 } from "@/lib/ai/styleProfiles";
@@ -378,11 +380,9 @@ async function buildSubjectMask(raster: Raster, profile: StyleProfile) {
       fillInteriorHoles(dropIslands(raw, profile.islandRatio), profile.fillHoleRatio)
     );
   }
-
   let best: boolean[][] | null = null;
   let bestScore = -1;
-  const tolerances = [24, 40, 56, 72];
-  for (const tol of tolerances) {
+  for (const tol of [24, 40, 56, 72]) {
     await yieldToBrowser();
     const raw = fillInteriorHoles(
       dropIslands(floodSubject(raster, tol, false), profile.islandRatio),
@@ -601,7 +601,7 @@ function regionColors(mask: boolean[][], paints: (Rgb | null)[][], merge: number
         ]) {
           const nx = cx + dx;
           const ny = cy + dy;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (nx < 0 || ny >= h || ny < 0 || nx >= w) continue;
           const ni = ny * w + nx;
           if (!mask[ny][nx] || seen[ni]) continue;
           seen[ni] = 1;
@@ -811,6 +811,19 @@ function sdfRadius(
   return Math.max(profile.minRadius, Math.round(profile.edgeRadius + mixed * span));
 }
 
+function applyGuess(options: ImageVoxelOptions, mask: boolean[][]): NormalizedOptions {
+  const base = normalizeOptions(options);
+  const guess = recognizeFromMask(mask);
+  const profile = profileById(guess.style);
+  return {
+    ...base,
+    style: guess.style,
+    profile,
+    outline: options.outline ?? profile.outline,
+    symmetrize: options.symmetrize ?? profile.symmetrize
+  };
+}
+
 async function buildModel(
   frontRaster: Raster,
   frontMask: boolean[][],
@@ -908,11 +921,7 @@ async function buildModel(
     const outlineIndex = Math.max(0, palette.findIndex((hex) => hex.toLowerCase() === OUTLINE_HEX));
     cleaned = outlineVoxels(cleaned, outlineIndex >= 0 ? outlineIndex : 0);
   }
-    const grounded = finishVoxels(
-    placeOnGround(cleaned, options.volumeSize),
-    options.volumeSize,
-    options.profile.id !== "sword"
-  );
+  const grounded = finishVoxels(placeOnGround(cleaned, options.volumeSize), options.volumeSize);
   return {
     width: frontRaster.width,
     height: frontRaster.height,
@@ -950,16 +959,12 @@ function withOutlineColor(palette: string[]) {
   return [OUTLINE_HEX, ...palette].slice(0, 32);
 }
 
-async function prepareView(
-  file: File,
-  enabled: boolean,
-  profile: StyleProfile
-): Promise<PreparedView> {
+async function prepareView(file: File, enabled: boolean): Promise<PreparedView> {
   const cached = preparedViewCache.get(file);
   if (cached) return cached;
   const promise = (async () => {
     const prepared = await prepareRaster(await loadImage(file), enabled);
-    const mask = await buildSubjectMask(prepared.raster, profile);
+    const mask = await buildSubjectMask(prepared.raster, STYLE_PROFILES.prop);
     const bounds = findBounds(mask);
     if (!bounds) throw new Error("No visible subject found");
     return { raster: prepared.raster, mask, bounds, depth: prepared.depth };
@@ -977,8 +982,9 @@ export async function imageToVoxels(
   file: File,
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
-  const normalized = normalizeOptions(options);
-  const view = await prepareView(file, normalized.useLocalAi, normalized.profile);
+  const enabled = options.useLocalAi ?? true;
+  const view = await prepareView(file, enabled);
+  const normalized = applyGuess(options, view.mask);
   const palette = withOutlineColor(
     createPalette([view.raster], [view.mask], normalized.profile.paletteSize)
   );
@@ -998,8 +1004,9 @@ export async function imagesToVoxels(
   options: ImageVoxelOptions = {}
 ): Promise<ImageImport> {
   if (!views.front) throw new Error("FRONT IMAGE REQUIRED");
-  const normalized = normalizeOptions(options);
-  const front = await prepareView(views.front, normalized.useLocalAi, normalized.profile);
+  const enabled = options.useLocalAi ?? true;
+  const front = await prepareView(views.front, enabled);
+  const normalized = applyGuess(options, front.mask);
   if (!views.side) {
     const palette = withOutlineColor(
       createPalette([front.raster], [front.mask], normalized.profile.paletteSize)
@@ -1014,7 +1021,7 @@ export async function imagesToVoxels(
       front.depth
     );
   }
-  const side = await prepareView(views.side, normalized.useLocalAi, normalized.profile);
+  const side = await prepareView(views.side, enabled);
   const palette = withOutlineColor(
     createPalette(
       [front.raster, side.raster],
