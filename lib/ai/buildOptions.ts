@@ -1,6 +1,6 @@
+import { aiCategoryPreset, type AiCategory } from "@/lib/ai/aiCategories";
 import type { CatalogItem } from "@/lib/ai/catalog";
-import type { StyleId } from "@/lib/ai/styleProfiles";
-import { inferStyle, profileById } from "@/lib/ai/styleProfiles";
+import { inferStyle, profileById, type StyleId } from "@/lib/ai/styleProfiles";
 import type { ImageVoxelOptions } from "@/lib/imageVoxel";
 
 export function buildImageOptions(input: {
@@ -8,18 +8,23 @@ export function buildImageOptions(input: {
   heightMax: number;
   maxVoxels: number;
   symmetrize: boolean;
-  useLocalAi: boolean;
+  useLocalAi?: boolean;
   style?: StyleId;
   outline?: boolean;
+  category?: AiCategory;
 }): ImageVoxelOptions {
-  const style = input.style ?? inferStyle(input.heightMax, input.symmetrize);
+  const fromCategory = input.category ? aiCategoryPreset(input.category) : null;
+  const style =
+    input.style ??
+    fromCategory?.style ??
+    inferStyle(input.heightMax, input.symmetrize);
   const profile = profileById(style);
   return {
     volumeSize: input.volumeSize,
     heightMax: input.heightMax,
     maxVoxels: input.maxVoxels,
     symmetrize: input.symmetrize,
-    useLocalAi: input.useLocalAi,
+    useLocalAi: input.useLocalAi ?? true,
     style,
     outline: input.outline ?? profile.outline
   };
