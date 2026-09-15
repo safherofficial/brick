@@ -27,7 +27,7 @@ export type ImageVoxelOptions = {
   symmetrize?: boolean;
   /** Enables the local ONNX segmentation stage used by AI MODE. */
   useLocalAi?: boolean;
-  /** Explicit AI asset profile. The profile is never inferred away when set. */
+  /** Explicit AI asset profile. */
   aiCategory?: import("@/lib/ai/aiCategories").AiCategory;
 };
 
@@ -614,6 +614,16 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
   return dominantPalette([...buckets.values()], size);
 }
 
+const BACKING_COLOR = "#2f3442";
+
+function ensureBackingPalette(palette: string[]) {
+  const next = palette.slice();
+  const existing = next.findIndex((hex) => hex.toLowerCase() === BACKING_COLOR);
+  if (existing >= 0) return { palette: next, backingIndex: existing };
+  next.push(BACKING_COLOR);
+  return { palette: next, backingIndex: next.length - 1 };
+}
+
 function ditheredColor(
   rgb: [number, number, number],
   px: number,
@@ -840,8 +850,7 @@ function adaptiveModelDimensions(
   volumeSize: number,
   maxVoxels: number,
   heightMax: number,
-  symmetrize = false,
-  aiCategory?: NonNullable<ImageVoxelOptions["aiCategory"]>
+  symmetrize = false
 ): Dimensions {
   const maxAxis = Math.max(MODEL_MIN_AXIS, volumeSize - 8);
   const safeBudget = Math.max(
@@ -857,10 +866,9 @@ function adaptiveModelDimensions(
 
   let depth: number;
   if (sideBounds) {
-    const categoryScale = aiCategory === "swords" ? 0.82 : aiCategory === "rifles" ? 1.06 : 1;
     depth = Math.max(
       MODEL_MIN_AXIS,
-      Math.round(height * (sideBounds.width / Math.max(1, sideBounds.height)) * categoryScale)
+      Math.round(height * (sideBounds.width / Math.max(1, sideBounds.height)))
     );
   } else {
     depth = Math.max(MODEL_MIN_AXIS, Math.round(heightMax * 1.05));
@@ -966,44 +974,6 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   return components.filter((c) => c.length >= threshold).flat();
 }
 
-function categoryThicknessFactor(
-  category: NonNullable<ImageVoxelOptions["aiCategory"]>,
-  normalizedX: number,
-  normalizedY: number
-) {
-  switch (category) {
-    case "swords": {
-      const guardBand = Math.exp(-Math.pow((normalizedY - 0.48) / 0.11, 2));
-      const hiltBand = Math.exp(-Math.pow((normalizedY - 0.78) / 0.16, 2));
-      return 0.68 + guardBand * 0.20 + hiltBand * 0.12;
-    }
-    case "guns": {
-      const receiver = Math.exp(-Math.pow((normalizedX - 0.48) / 0.30, 2));
-      const grip = Math.exp(-Math.pow((normalizedY - 0.68) / 0.19, 2));
-      return 0.92 + receiver * 0.08 + grip * 0.03;
-    }
-    case "rifles": {
-      const body = Math.exp(-Math.pow((normalizedX - 0.48) / 0.34, 2));
-      const stock = Math.exp(-Math.pow((normalizedX - 0.20) / 0.22, 2));
-      const barrel = Math.exp(-Math.pow((normalizedX - 0.84) / 0.20, 2));
-      return 0.96 + body * 0.06 + stock * 0.03 + barrel * 0.01;
-    }
-    case "objects":
-    default:
-      return 1;
-  }
-}
-
-function categorySpan(rowMin: number, rowMax: number, factor: number) {
-  const sourceSpan = Math.max(1, rowMax - rowMin + 1);
-  const targetSpan = Math.max(1, Math.round(sourceSpan * factor));
-  const center = (rowMin + rowMax) * 0.5;
-  return {
-    min: Math.max(rowMin, Math.ceil(center - targetSpan * 0.5)),
-    max: Math.min(rowMax, Math.floor(center + targetSpan * 0.5 - 0.001))
-  };
-}
-
 function reconstructVisualHull(
   frontRaster: Raster,
   frontMask: boolean[][],
@@ -1014,7 +984,8 @@ function reconstructVisualHull(
   options: Required<ImageVoxelOptions>,
   paletteValues: [number, number, number][],
   dimensions: Dimensions,
-  palette: string[]
+  palette: string[],
+  backingIndex: number
 ) {
   const front = resampleMaskToBounds(
     frontMask,
@@ -1030,18 +1001,6 @@ function reconstructVisualHull(
     dimensions.height
   );
 
-  const sideRowBounds: { min: number; max: number }[] = [];
-  for (let y = 0; y < dimensions.height; y += 1) {
-    let min = dimensions.depth;
-    let max = -1;
-    for (let z = 0; z < dimensions.depth; z += 1) {
-      if (!side[y]?.[z]) continue;
-      min = Math.min(min, z);
-      max = Math.max(max, z);
-    }
-    sideRowBounds.push({ min, max });
-  }
-
   const voxels: ImageVoxel[] = [];
 
   for (let y = 0; y < dimensions.height; y += 1) {
@@ -1052,47 +1011,50 @@ function reconstructVisualHull(
 
       const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
       const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
-      const profileCategory = options.aiCategory;
 
-      const row = sideRowBounds[y];
-      const rowMin = row?.min ?? 0;
-      const rowMax = row?.max ?? dimensions.depth - 1;
-      if (rowMax < rowMin) continue;
-
-      const profileFactor = profileCategory
-        ? categoryThicknessFactor(profileCategory, nx, ny)
-        : 1;
-      const profileRange = categorySpan(rowMin, rowMax, profileFactor);
-
-      for (let z = rowMin; z <= rowMax; z += 1) {
+      for (let z = 0; z < dimensions.depth; z += 1) {
         const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
-        // TRUE VISUAL HULL: FRONT gives X/Y and SIDE gives Z/Y.
+        // TRUE VISUAL HULL:
+        // FRONT gives the X/Y silhouette and SIDE gives the Z/Y silhouette.
+        // A voxel exists only in the intersection of the two silhouette
+        // volumes. There is no later voxel thinning step.
         if (side && !side[y]?.[z]) continue;
-        if (profileCategory && (z < profileRange.min || z > profileRange.max)) continue;
 
-        let color: [number, number, number] = [
-          frontColor.r,
-          frontColor.g,
-          frontColor.b
-        ];
+        // MODEL is single-sided: the FRONT artwork belongs only to the
+        // front-facing shell. The interior/rear is structural backing, never
+        // another copy of the FRONT artwork.
+        const isFrontLayer = z === dimensions.depth - 1;
 
-        if (sideRaster && sideBounds && side?.[y]?.[z]) {
-          const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
-          color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
+        if (isFrontLayer) {
+          let color: [number, number, number] = [
+            frontColor.r,
+            frontColor.g,
+            frontColor.b
+          ];
+
+          if (sideRaster && sideBounds && side?.[y]?.[z]) {
+            const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
+            color = blendRgb(frontColor, sideColor, 0.16 + nz * 0.34);
+          }
+
+          voxels.push({
+            x,
+            y,
+            z,
+            c: nearestColor(
+              ditheredColor(color, x, y + z, 3),
+              paletteValues
+            )
+          });
+        } else {
+          voxels.push({
+            x,
+            y,
+            z,
+            c: backingIndex
+          });
         }
-
-        // The rear volume is inferred only from the required FRONT + SIDE
-        // silhouettes and their colors; no third view is sampled.
-        const shade = 1 - nz * 0.22;
-        color = [color[0] * shade, color[1] * shade, color[2] * shade];
-
-        voxels.push({
-          x,
-          y,
-          z,
-          c: nearestColor(ditheredColor(color, x, y + z, 3), paletteValues)
-        });
       }
     }
   }
@@ -1115,6 +1077,41 @@ function reconstructVisualHull(
   } satisfies ImageImport;
 }
 
+function depthTexturedColor(
+  raster: Raster,
+  bounds: Bounds,
+  nx: number,
+  ny: number,
+  depthFromFront: number
+): [number, number, number] {
+  const t = clamp(depthFromFront, 0, 1);
+  const front = sampleMapped(raster, bounds, nx, ny);
+
+  // A single reference image cannot reveal the real hidden texture.
+  // For SOLID/FLAT/RELIEF we therefore synthesize a continuous rearward
+  // texture from the same source instead of introducing a black/neutral slab.
+  // The farther the voxel is from the source face, the more we blend toward
+  // the mirrored source sample. This keeps weapons and props textured on
+  // every exposed surface without duplicating the exact FRONT bitmap on the
+  // entire depth.
+  const mirrored = sampleMapped(
+    raster,
+    bounds,
+    1 - nx,
+    clamp(ny + (t - 0.5) * 0.06, 0, 1)
+  );
+
+  const blend = t * 0.82;
+  const color = blendRgb(front, mirrored, blend);
+  const shade = 1 - t * 0.08;
+
+  return [
+    clamp(color[0] * shade, 0, 255),
+    clamp(color[1] * shade, 0, 255),
+    clamp(color[2] * shade, 0, 255)
+  ];
+}
+
 function buildNonModel(
   raster: Raster,
   mask: boolean[][],
@@ -1131,12 +1128,15 @@ function buildNonModel(
   const height = Math.max(1, Math.round(bounds.height * scale));
   const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
 
+  // A generated image is explicitly single-sided. Even FLAT gets a second,
+  // neutral backing layer, because a single voxel is inherently visible from
+  // both directions in a voxel renderer/exporter.
   const depthBase =
     options.mode === "flat"
-      ? 1
+      ? 2
       : options.mode === "relief"
-        ? Math.max(2, Math.round(options.heightMax * 0.30))
-        : Math.max(2, Math.round(options.heightMax * 0.62));
+        ? Math.max(3, Math.round(options.heightMax * 0.30))
+        : Math.max(3, Math.round(options.heightMax * 0.62));
 
   const voxels: ImageVoxel[] = [];
 
@@ -1145,22 +1145,30 @@ function buildNonModel(
     for (let x = 0; x < width; x += 1) {
       if (!sourceMask[y]?.[x]) continue;
       const nx = width <= 1 ? 0.5 : x / (width - 1);
-      const frontColor = sampleMapped(raster, bounds, nx, ny);
       let finalDepth = depthBase;
 
       if (sideMask && sideBounds && maskMapped(sideMask, sideBounds, 0.5, ny)) {
-        finalDepth = Math.max(1, Math.round(depthBase * 1.18));
+        finalDepth = Math.max(2, Math.round(depthBase * 1.18));
       }
 
+      const frontZ = finalDepth - 1;
       for (let z = 0; z < finalDepth; z += 1) {
-        const colorSample = frontColor;
+        const depthFromFront =
+          finalDepth <= 1 ? 0 : (frontZ - z) / Math.max(1, frontZ);
+        const color = depthTexturedColor(
+          raster,
+          bounds,
+          nx,
+          ny,
+          depthFromFront
+        );
 
         voxels.push({
           x,
           y,
           z,
           c: nearestColor(
-            ditheredColor([colorSample.r, colorSample.g, colorSample.b], x, y + z),
+            ditheredColor(color, x, y + z, 3),
             paletteValues
           )
         });
@@ -1237,18 +1245,20 @@ export async function imageToVoxels(
       const { enhanceRaster } = await import("@/lib/ai/enhance");
       raster = await enhanceRaster(raster, { depth: false }).then((result) => result.raster);
     } catch {
-      // AI is an enhancement layer; reconstruction falls back to the stable deterministic raster path.
+      // Local AI is an optional enhancement layer.
     }
   }
-  const mask = buildMask(raster, normalized.mode);
+  const mask = cleanModelMask(buildMask(raster, normalized.mode), raster);
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
 
-  const palette = createPalette(
+  const rawPalette = createPalette(
     [raster],
     [mask],
     normalized.mode === "model" ? 64 : 48
   );
+  const paletteWithBacking = ensureBackingPalette(rawPalette);
+  const palette = paletteWithBacking.palette;
   const paletteValues = paletteRgb(palette);
 
   if (normalized.mode === "model") {
@@ -1302,21 +1312,20 @@ export async function imagesToVoxels(
       );
       rasters = prepared.map((result) => result.raster);
     } catch {
-      // Preserve the stable deterministic reconstruction when local AI is unavailable.
+      // Local AI is an optional enhancement layer.
     }
   }
-  const masks = rasters.map((raster) => {
-    const mask = buildMask(raster, normalized.mode);
-    return normalized.mode === "model"
-      ? cleanModelMask(mask, raster)
-      : mask;
-  });
+  const masks = rasters.map((raster) =>
+    cleanModelMask(buildMask(raster, normalized.mode), raster)
+  );
 
-  const palette = createPalette(
+  const rawPalette = createPalette(
     rasters,
     masks,
     normalized.mode === "model" ? 64 : 48
   );
+  const paletteWithBacking = ensureBackingPalette(rawPalette);
+  const palette = paletteWithBacking.palette;
   const paletteValues = paletteRgb(palette);
 
   const frontRaster = rasters[0];
@@ -1342,8 +1351,7 @@ export async function imagesToVoxels(
       normalized.volumeSize,
       budget,
       normalized.heightMax,
-      normalized.symmetrize,
-      normalized.aiCategory
+      normalized.symmetrize
     );
 
     if (!sideRaster || !sideMask || !sideBounds) {
@@ -1360,7 +1368,8 @@ export async function imagesToVoxels(
       normalized,
       paletteValues,
       dimensions,
-      palette
+      palette,
+      paletteWithBacking.backingIndex
     );
   }
 
