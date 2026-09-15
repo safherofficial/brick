@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
@@ -39,16 +39,12 @@ import {
   exportVox,
   importVox
 } from "@/lib/voxelExport";
-import { exportGlbTextured } from "@/lib/voxelGlb";
+import { exportGlb } from "@/lib/voxelGlb";
 import {
   imageToVoxels,
   imagesToVoxels,
   type ImageImport
 } from "@/lib/imageVoxel";
-import { CATALOG } from "@/lib/ai/catalog";
-import { buildImageOptions, presetFromCatalog } from "@/lib/ai/buildOptions";
-import { aiAvailable } from "@/lib/ai/runtime";
-import type { StyleId } from "@/lib/ai/styleProfiles";
 import {
   consumeImageApply,
   FREE_IMAGE_APPLIES,
@@ -62,6 +58,7 @@ import {
 } from "@/lib/solanaCheckout";
 import { connectWallet } from "@/lib/wallet";
 import { publishCreation } from "@/lib/creationsApi";
+import { AI_CATEGORY_PRESETS, aiCategoryPreset, type AiCategory } from "@/lib/ai/aiCategories";
 import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
 import "./builder.css";
 
@@ -84,23 +81,37 @@ type ContentBounds = {
   maxZ: number;
 };
 
-function boundsOfCells(list: { x: number; y: number; z: number }[]): ContentBounds | null {
+function boundsOfCells(
+  list: { x: number; y: number; z: number }[]
+): ContentBounds | null {
   if (!list.length) return null;
+
   let minX = Infinity;
   let minY = Infinity;
   let minZ = Infinity;
+
   let maxX = -Infinity;
   let maxY = -Infinity;
   let maxZ = -Infinity;
+
   for (const v of list) {
     minX = Math.min(minX, v.x);
     minY = Math.min(minY, v.y);
     minZ = Math.min(minZ, v.z);
+
     maxX = Math.max(maxX, v.x);
     maxY = Math.max(maxY, v.y);
     maxZ = Math.max(maxZ, v.z);
   }
-  return { minX, minY, minZ, maxX, maxY, maxZ };
+
+  return {
+    minX,
+    minY,
+    minZ,
+    maxX,
+    maxY,
+    maxZ
+  };
 }
 
 function fitSizeFor(bounds: ContentBounds) {
@@ -109,6 +120,7 @@ function fitSizeFor(bounds: ContentBounds) {
     bounds.maxY - bounds.minY + 1,
     bounds.maxZ - bounds.minZ + 1
   );
+
   return (SIZES.find((n) => n >= span + 2) ?? 256) as number;
 }
 
@@ -122,16 +134,51 @@ function CameraRig({
   focus: [number, number, number];
 }) {
   const { camera } = useThree();
+
   useEffect(() => {
     const dist = Math.max(8, size * 0.9);
     const [cx, cy, cz] = focus;
-    if (view === "top") camera.position.set(cx, dist, cz + 0.01);
-    else if (view === "front") camera.position.set(cx, cy + size * 0.2, cz + dist);
-    else if (view === "side") camera.position.set(cx + dist, cy + size * 0.2, cz);
-    else camera.position.set(cx + dist * 0.75, cy + dist * 0.5, cz + dist * 0.75);
-    camera.lookAt(cx, cy, cz);
+
+    if (view === "top") {
+      camera.position.set(
+        cx,
+        dist,
+        cz + 0.01
+      );
+    } else if (view === "front") {
+      camera.position.set(
+        cx,
+        cy + size * 0.2,
+        cz + dist
+      );
+    } else if (view === "side") {
+      camera.position.set(
+        cx + dist,
+        cy + size * 0.2,
+        cz
+      );
+    } else {
+      camera.position.set(
+        cx + dist * 0.75,
+        cy + dist * 0.5,
+        cz + dist * 0.75
+      );
+    }
+
+    camera.lookAt(
+      cx,
+      cy,
+      cz
+    );
+
     camera.updateProjectionMatrix();
-  }, [camera, focus, size, view]);
+  }, [
+    camera,
+    focus,
+    size,
+    view
+  ]);
+
   return null;
 }
 
@@ -141,50 +188,169 @@ function Ground({
   onHover
 }: {
   size: number;
-  onHit: (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => void;
-  onHover: (hit: VoxelHit | null) => void;
+  onHit: (
+    hit: VoxelHit,
+    ev: ThreeEvent<PointerEvent>
+  ) => void;
+  onHover: (
+    hit: VoxelHit | null
+  ) => void;
 }) {
   return (
     <mesh
-      rotation={[-Math.PI / 2, 0, 0]}
-      position={[(size - 1) / 2, -0.5, (size - 1) / 2]}
+      rotation={[
+        -Math.PI / 2,
+        0,
+        0
+      ]}
+      position={[
+        (size - 1) / 2,
+        -0.5,
+        (size - 1) / 2
+      ]}
       onPointerDown={(e) => {
         e.stopPropagation();
+
         onHit(
-          { kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } },
+          {
+            kind: "empty",
+            cell: {
+              x: Math.round(
+                e.point.x
+              ),
+              y: 0,
+              z: Math.round(
+                e.point.z
+              )
+            }
+          },
           e
         );
       }}
       onPointerMove={(e) => {
-        onHover({ kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } });
+        onHover({
+          kind: "empty",
+          cell: {
+            x: Math.round(
+              e.point.x
+            ),
+            y: 0,
+            z: Math.round(
+              e.point.z
+            )
+          }
+        });
       }}
     >
-      <planeGeometry args={[size + 8, size + 8]} />
+      <planeGeometry
+        args={[
+          size + 8,
+          size + 8
+        ]}
+      />
       <shadowMaterial opacity={0.22} />
     </mesh>
   );
 }
 
-function Ghost({ cell, color, valid }: { cell: Cell; color: string; valid: boolean }) {
+function Ghost({
+  cell,
+  color,
+  valid
+}: {
+  cell: Cell;
+  color: string;
+  valid: boolean;
+}) {
   return (
-    <mesh position={[cell.x, cell.y, cell.z]} raycast={() => {}}>
-      <boxGeometry args={[0.98, 0.98, 0.98]} />
-      <meshBasicMaterial color={valid ? color : "#ff3347"} transparent opacity={0.38} depthWrite={false} />
+    <mesh
+      position={[
+        cell.x,
+        cell.y,
+        cell.z
+      ]}
+      raycast={() => {}}
+    >
+      <boxGeometry
+        args={[
+          0.98,
+          0.98,
+          0.98
+        ]}
+      />
+      <meshBasicMaterial
+        color={
+          valid
+            ? color
+            : "#ff3347"
+        }
+        transparent
+        opacity={0.38}
+        depthWrite={false}
+      />
     </mesh>
   );
 }
 
-function BoxPreview({ a, b }: { a: Cell; b: Cell }) {
-  const x0 = Math.min(a.x, b.x);
-  const y0 = Math.min(a.y, b.y);
-  const z0 = Math.min(a.z, b.z);
-  const sx = Math.abs(a.x - b.x) + 1;
-  const sy = Math.abs(a.y - b.y) + 1;
-  const sz = Math.abs(a.z - b.z) + 1;
+function BoxPreview({
+  a,
+  b
+}: {
+  a: Cell;
+  b: Cell;
+}) {
+  const x0 = Math.min(
+    a.x,
+    b.x
+  );
+
+  const y0 = Math.min(
+    a.y,
+    b.y
+  );
+
+  const z0 = Math.min(
+    a.z,
+    b.z
+  );
+
+  const sx =
+    Math.abs(
+      a.x - b.x
+    ) + 1;
+
+  const sy =
+    Math.abs(
+      a.y - b.y
+    ) + 1;
+
+  const sz =
+    Math.abs(
+      a.z - b.z
+    ) + 1;
+
   return (
-    <mesh position={[x0 + (sx - 1) / 2, y0 + (sy - 1) / 2, z0 + (sz - 1) / 2]} raycast={() => {}}>
-      <boxGeometry args={[sx, sy, sz]} />
-      <meshBasicMaterial color="#14f195" wireframe transparent opacity={0.85} />
+    <mesh
+      position={[
+        x0 + (sx - 1) / 2,
+        y0 + (sy - 1) / 2,
+        z0 + (sz - 1) / 2
+      ]}
+      raycast={() => {}}
+    >
+      <boxGeometry
+        args={[
+          sx,
+          sy,
+          sz
+        ]}
+      />
+      <meshBasicMaterial
+        color="#14f195"
+        wireframe
+        transparent
+        opacity={0.85}
+      />
     </mesh>
   );
 }
@@ -193,17 +359,51 @@ function OffsetGhost({
   items,
   origin
 }: {
-  items: { dx: number; dy: number; dz: number }[];
+  items: {
+    dx: number;
+    dy: number;
+    dz: number;
+  }[];
   origin: Cell;
 }) {
   return (
-    <group raycast={() => {}}>
-      {items.slice(0, 800).map((item, i) => (
-        <mesh key={i} position={[origin.x + item.dx, origin.y + item.dy, origin.z + item.dz]}>
-          <boxGeometry args={[1.02, 1.02, 1.02]} />
-          <meshBasicMaterial color="#9945ff" wireframe transparent opacity={0.7} />
-        </mesh>
-      ))}
+    <group
+      raycast={() => {}}
+    >
+      {items
+        .slice(0, 800)
+        .map(
+          (
+            item,
+            i
+          ) => (
+            <mesh
+              key={i}
+              position={[
+                origin.x +
+                  item.dx,
+                origin.y +
+                  item.dy,
+                origin.z +
+                  item.dz
+              ]}
+            >
+              <boxGeometry
+                args={[
+                  1.02,
+                  1.02,
+                  1.02
+                ]}
+              />
+              <meshBasicMaterial
+                color="#9945ff"
+                wireframe
+                transparent
+                opacity={0.7}
+              />
+            </mesh>
+          )
+        )}
     </group>
   );
 }
@@ -212,864 +412,3151 @@ function PendingPreview({
   voxels,
   palette
 }: {
-  voxels: { x: number; y: number; z: number; c: number }[];
+  voxels: {
+    x: number;
+    y: number;
+    z: number;
+    c: number;
+  }[];
   palette: string[];
 }) {
-  const groups = useMemo(() => {
-    const map = new Map<number, { x: number; y: number; z: number }[]>();
-    const step = voxels.length > 16000 ? 2 : 1;
-    for (let i = 0; i < voxels.length; i += step) {
-      const v = voxels[i];
-      const list = map.get(v.c) ?? [];
-      list.push(v);
-      map.set(v.c, list);
-    }
-    return [...map.entries()];
-  }, [voxels]);
+  const shown =
+    voxels.length > 2500
+      ? voxels.filter(
+          (_, i) => i % 3 === 0
+        )
+      : voxels;
+
   return (
-    <group raycast={() => {}}>
-      {groups.map(([c, cells]) => (
-        <InstancedPreview key={c} cells={cells} color={palette[c] ?? "#e6e6e6"} />
-      ))}
+    <group
+      raycast={() => {}}
+    >
+      {shown
+        .slice(0, 4000)
+        .map(
+          (
+            v,
+            i
+          ) => (
+            <mesh
+              key={i}
+              position={[
+                v.x,
+                v.y,
+                v.z
+              ]}
+            >
+              <boxGeometry
+                args={[
+                  0.96,
+                  0.96,
+                  0.96
+                ]}
+              />
+              <meshBasicMaterial
+                color={
+                  palette[v.c] ??
+                  "#ffffff"
+                }
+                transparent
+                opacity={0.55}
+                depthWrite={false}
+              />
+            </mesh>
+          )
+        )}
     </group>
   );
 }
 
-function InstancedPreview({
-  cells,
-  color
+function VolumeFrame({
+  size
 }: {
-  cells: { x: number; y: number; z: number }[];
-  color: string;
+  size: number;
 }) {
-  const mesh = useRef<THREE.InstancedMesh>(null);
-  useLayoutEffect(() => {
-    if (!mesh.current) return;
-    const dummy = new THREE.Object3D();
-    for (let i = 0; i < cells.length; i += 1) {
-      dummy.position.set(cells[i].x, cells[i].y, cells[i].z);
-      dummy.updateMatrix();
-      mesh.current.setMatrixAt(i, dummy.matrix);
-    }
-    mesh.current.instanceMatrix.needsUpdate = true;
-  }, [cells]);
-  return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, cells.length]}>
-      <boxGeometry args={[0.96, 0.96, 0.96]} />
-      <meshBasicMaterial color={color} />
-    </instancedMesh>
-  );
-}
+  const points = useMemo(
+    () => {
+      const s =
+        size - 1;
 
-function VolumeFrame({ size }: { size: number }) {
-  const points = useMemo(() => {
-    const s = size - 1;
-    return [
-      0, 0, 0, s, 0, 0, s, 0, s, 0, 0, s, 0, 0, 0, 0, s, 0, s, s, 0, s, 0, 0, s, 0, s,
-      s, s, s, s, s, 0, s, 0, 0, s, s, 0, 0, s, 0, 0, 0, 0, 0, 0, s, 0, s, s, 0, s, 0,
-      s, s, 0, s, s, s, 0, s, s, s, s, s, s, 0, s
-    ];
-  }, [size]);
+      return [
+        0, 0, 0,
+        s, 0, 0,
+        s, 0, s,
+        0, 0, s,
+        0, 0, 0,
+        0, s, 0,
+        s, s, 0,
+        s, 0, 0,
+        s, 0, s,
+        s, s, s,
+        s, s, 0,
+        s, 0, 0,
+        s, s, 0,
+        0, s, 0,
+        0, 0, 0,
+        0, 0, s,
+        0, s, s,
+        0, s, 0,
+        s, s, 0,
+        s, s, s,
+        0, s, s,
+        s, s, s,
+        s, 0, s
+      ];
+    },
+    [size]
+  );
+
   return (
     <line>
       <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[new Float32Array(points), 3]} />
+        <bufferAttribute
+          attach="attributes-position"
+          args={[
+            new Float32Array(
+              points
+            ),
+            3
+          ]}
+        />
       </bufferGeometry>
-      <lineBasicMaterial color="#9945FF" />
+
+      <lineBasicMaterial
+        color="#9945FF"
+      />
     </line>
   );
 }
 
-function targetCell(hit: VoxelHit, tool: Tool): Cell {
-  if (hit.kind === "empty") return hit.cell;
-  if (tool === "attach") return hit.place;
+function targetCell(
+  hit: VoxelHit,
+  tool: Tool
+): Cell {
+  if (
+    hit.kind ===
+    "empty"
+  ) {
+    return hit.cell;
+  }
+
+  if (
+    tool ===
+    "attach"
+  ) {
+    return hit.place;
+  }
+
   return hit.cell;
 }
 
 export default function Builder() {
-  const volumeRef = useRef(new VoxelVolume(128));
-  const historyRef = useRef(new History());
-  const strokeRef = useRef<{ seen: Set<string>; deltas: Delta[] } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const frontRef = useRef<HTMLInputElement>(null);
-  const sideRef = useRef<HTMLInputElement>(null);
+  const volumeRef =
+    useRef(
+      new VoxelVolume(128)
+    );
 
-  const [rev, setRev] = useState(0);
-  const [title, setTitle] = useState("UNTITLED");
-  const [tool, setTool] = useState<Tool>("attach");
-  const [boxMode, setBoxMode] = useState<BoxMode>("fill");
-  const [boxStart, setBoxStart] = useState<Cell | null>(null);
-  const [brush, setBrush] = useState(1);
-  const [color, setColor] = useState(6);
-  const [palette, setPalette] = useState(() => clonePalette());
-  const [mirror, setMirror] = useState<Mirror>({ x: false, y: false, z: false });
-  const [view, setView] = useState<ViewMode>("iso");
-  const [grid, setGrid] = useState(true);
-  const [hover, setHover] = useState<VoxelHit | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [clipboard, setClipboard] = useState<ClipboardVoxel[]>([]);
-  const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
-  const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
-  const [imageHeight, setImageHeight] = useState(8);
-  const [useLocalAi, setUseLocalAi] = useState(true);
-  const [aiStatus, setAiStatus] = useState("LOCAL AI");
-  const [style, setStyle] = useState<StyleId>("prop");
-  const [symmetrize, setSymmetrize] = useState(false);
-  const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
-  const [pendingName, setPendingName] = useState("");
-  const [pendingHash, setPendingHash] = useState("");
-  const [frontFile, setFrontFile] = useState<File | null>(null);
-  const [sideFile, setSideFile] = useState<File | null>(null);
-  const [creditsLeft, setCreditsLeft] = useState(FREE_IMAGE_APPLIES);
-  const [paywall, setPaywall] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState("");
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [canUndo, setCanUndo] = useState(false);
-  const [canRedo, setCanRedo] = useState(false);
-  const saveTimer = useRef<number | null>(null);
-  const imageJobRef = useRef(0);
+  const historyRef =
+    useRef(
+      new History()
+    );
 
-  const bump = useCallback(() => {
-    setRev((n) => n + 1);
-    setCanUndo(historyRef.current.canUndo);
-    setCanRedo(historyRef.current.canRedo);
-  }, []);
+  const strokeRef =
+    useRef<{
+      seen: Set<string>;
+      deltas: Delta[];
+    } | null>(null);
 
-  const notify = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(""), 1800);
-  }, []);
+  const fileRef =
+    useRef<HTMLInputElement>(
+      null
+    );
 
-  const refreshCredits = useCallback(() => setCreditsLeft(remainingApplies()), []);
+  const frontRef =
+    useRef<HTMLInputElement>(
+      null
+    );
 
-  const subscribe = useCallback(async () => {
-    setBusy(true);
-    try {
-      notify("CONNECT PHANTOM");
-      const paid = await subscribeWithSol();
-      refreshCredits();
-      setPaywall(false);
-      notify(`PRO ACTIVE · ${paid.signature.slice(0, 8)}`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message.toUpperCase() : "PAY FAILED");
-    } finally {
-      setBusy(false);
-    }
-  }, [notify, refreshCredits]);
+  const sideRef =
+    useRef<HTMLInputElement>(
+      null
+    );
 
-  const syncPlan = useCallback(async () => {
-    try {
-      const state = await restorePlan();
-      refreshCredits();
-      notify(state.plan === "monthly" ? "PRO RESTORED" : "FREE PLAN");
-    } catch {
-      /* phantom missing or rejected */
-    }
-  }, [notify, refreshCredits]);
+  const [rev, setRev] =
+    useState(0);
 
-  const volume = volumeRef.current;
-  const count = volume.count;
-  const ghost = hover ? targetCell(hover, tool) : null;
-  const [cx, , cz] = volumeCenter(volume.size);
+  const [title, setTitle] =
+    useState("UNTITLED");
 
-  const ghostValid = !ghost
-    ? false
-    : tool === "erase" || tool === "paint" || tool === "fill" || tool === "select" || tool === "eyedrop"
-      ? volume.has(ghost.x, ghost.y, ghost.z)
-      : volume.inBounds(ghost.x, ghost.y, ghost.z) && !volume.has(ghost.x, ghost.y, ghost.z);
+  const [tool, setTool] =
+    useState<Tool>(
+      "attach"
+    );
 
-  const viewLabel = sideFile ? "FRONT+SIDE" : frontFile ? "FRONT" : "NONE";
-  const viewCount = Number(Boolean(frontFile)) + Number(Boolean(sideFile));
+  const [boxMode, setBoxMode] =
+    useState<BoxMode>(
+      "fill"
+    );
+
+  const [boxStart, setBoxStart] =
+    useState<Cell | null>(
+      null
+    );
+
+  const [brush, setBrush] =
+    useState(1);
+
+  const [color, setColor] =
+    useState(6);
+
+  const [palette, setPalette] =
+    useState(() =>
+      clonePalette()
+    );
+
+  const [mirror, setMirror] =
+    useState<Mirror>({
+      x: false,
+      y: false,
+      z: false
+    });
+
+  const [view, setView] =
+    useState<ViewMode>(
+      "iso"
+    );
+
+  const [grid, setGrid] =
+    useState(true);
+
+  const [hover, setHover] =
+    useState<VoxelHit | null>(
+      null
+    );
+
+  const [selected, setSelected] =
+    useState<Set<string>>(
+      new Set()
+    );
+
+  const [clipboard, setClipboard] =
+    useState<ClipboardVoxel[]>(
+      []
+    );
+
+  const [clip, setClip] =
+    useState<Clip>({
+    axis: null,
+    value: 127
+  });
+
+  const [focus, setFocus] =
+    useState<
+      [number, number, number]
+    >(() =>
+      volumeCenter(128)
+    );
+
+  const [imageHeight, setImageHeight] =
+    useState(16);
+
+  const [aiCategory, setAiCategory] =
+    useState<AiCategory | null>(null);
+
+  const [symmetrize, setSymmetrize] =
+    useState(false);
+
+  const [pendingImage, setPendingImage] =
+    useState<ImageImport | null>(
+      null
+    );
+
+  const [pendingName, setPendingName] =
+    useState("");
+
+  const [pendingHash, setPendingHash] =
+    useState("");
+
+  const [frontFile, setFrontFile] =
+    useState<File | null>(
+      null
+    );
+
+  const [sideFile, setSideFile] =
+    useState<File | null>(
+      null
+    );
+
+  const [creditsLeft, setCreditsLeft] =
+    useState(
+      FREE_IMAGE_APPLIES
+    );
+
+  const [paywall, setPaywall] =
+    useState(false);
+
+  const [busy, setBusy] =
+    useState(false);
+
+  const [toast, setToast] =
+    useState("");
+
+  const [editingTitle, setEditingTitle] =
+    useState(false);
+
+  const [canUndo, setCanUndo] =
+    useState(false);
+
+  const [canRedo, setCanRedo] =
+    useState(false);
+
+  const saveTimer =
+    useRef<number | null>(
+      null
+    );
+
+  const bump =
+    useCallback(() => {
+      setRev(
+        (n) => n + 1
+      );
+
+      setCanUndo(
+        historyRef.current.canUndo
+      );
+
+      setCanRedo(
+        historyRef.current.canRedo
+      );
+    }, []);
+
+  const notify =
+    useCallback(
+      (msg: string) => {
+        setToast(msg);
+
+        window.setTimeout(
+          () => setToast(""),
+          1800
+        );
+      },
+      []
+    );
+
+  const activateAiCategory =
+    useCallback(
+      (category: AiCategory) => {
+        const preset = aiCategoryPreset(category);
+        setAiCategory(category);
+        setImageMode("model");
+        setImageHeight(preset.heightMax);
+        setSymmetrize(preset.symmetrize);
+        notify(`${preset.label} AI · FRONT + SIDE`);
+      },
+      [notify]
+    );
+
+  const disableAiMode =
+    useCallback(
+      () => {
+        setAiCategory(null);
+        setImageMode("solid");
+        setSymmetrize(false);
+        notify("STANDARD IMAGE MODE");
+      },
+      [notify]
+    );
+
+  const refreshCredits =
+    useCallback(
+      () =>
+        setCreditsLeft(
+          remainingApplies()
+        ),
+      []
+    );
+
+  const subscribe =
+    useCallback(
+      async () => {
+        setBusy(true);
+
+        try {
+          notify(
+            "CONNECT PHANTOM"
+          );
+
+          const paid =
+            await subscribeWithSol();
+
+          refreshCredits();
+          setPaywall(false);
+
+          notify(
+            `PRO ACTIVE · ${paid.signature.slice(
+              0,
+              8
+            )}`
+          );
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message.toUpperCase()
+              : "PAY FAILED"
+          );
+        } finally {
+          setBusy(false);
+        }
+      },
+      [
+        notify,
+        refreshCredits
+      ]
+    );
+
+  const syncPlan =
+    useCallback(
+      async () => {
+        try {
+          const state =
+            await restorePlan();
+
+          refreshCredits();
+
+          notify(
+            state.plan ===
+              "monthly"
+              ? "PRO RESTORED"
+              : "FREE PLAN"
+          );
+        } catch {
+          /* phantom missing or rejected */
+        }
+      },
+      [
+        notify,
+        refreshCredits
+      ]
+    );
+
+  const volume =
+    volumeRef.current;
+
+  const count =
+    volume.count;
+
+  const ghost =
+    hover
+      ? targetCell(
+          hover,
+          tool
+        )
+      : null;
+
+  const [
+    cx,
+    ,
+    cz
+  ] =
+    volumeCenter(
+      volume.size
+    );
+
+  const ghostValid =
+    !ghost
+      ? false
+      : tool === "erase" ||
+          tool === "paint" ||
+          tool === "fill" ||
+          tool === "select" ||
+          tool === "eyedrop"
+        ? volume.has(
+            ghost.x,
+            ghost.y,
+            ghost.z
+          )
+        : volume.inBounds(
+              ghost.x,
+              ghost.y,
+              ghost.z
+            ) &&
+            !volume.has(
+              ghost.x,
+              ghost.y,
+              ghost.z
+            );
+
+  const viewLabel =
+    sideFile
+      ? "FRONT+SIDE"
+      : frontFile
+        ? "FRONT"
+        : "NONE";
+
+  const viewCount =
+    Number(Boolean(frontFile)) +
+    Number(Boolean(sideFile));
 
   useEffect(() => {
     refreshCredits();
     void syncPlan();
-    const draft = loadDraft();
+
+    const draft =
+      loadDraft();
+
     if (!draft) {
-      const mid = Math.floor(volumeRef.current.size / 2);
-      applyCells(volumeRef.current, [{ x: mid, y: 0, z: mid }], 6, { x: false, y: false, z: false });
+      const mid =
+        Math.floor(
+          volumeRef.current.size /
+            2
+        );
+
+      applyCells(
+        volumeRef.current,
+        [
+          {
+            x: mid,
+            y: 0,
+            z: mid
+          }
+        ],
+        6,
+        {
+          x: false,
+          y: false,
+          z: false
+        }
+      );
+
       bump();
       return;
     }
-    volumeRef.current.load(draft);
-    setTitle(draft.title || "UNTITLED");
-    if (draft.palette?.length) setPalette(clonePalette(draft.palette));
-    setFocus(volumeCenter(draft.size || 128));
-    setClip({ axis: null, value: (draft.size || 128) - 1 });
-    bump();
-  }, [bump, refreshCredits, syncPlan]);
 
-  useEffect(() => {
-    if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      saveDraft(projectFromVolume(title, volumeRef.current, palette));
-    }, 250);
-    return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current);
-    };
-  }, [title, palette, rev]);
-
-  const applyNow = useCallback(
-    (cells: Cell[], nextColor: number | null, recordStroke: boolean) => {
-      if (volumeRef.current.count > MAX_SAFE && nextColor !== null) {
-        notify("PERFORMANCE LIMIT");
-        return;
-      }
-      const deltas = applyCells(volumeRef.current, cells, nextColor, mirror);
-      if (recordStroke && strokeRef.current) strokeRef.current.deltas.push(...deltas);
-      else historyRef.current.push(deltas);
-      bump();
-    },
-    [bump, mirror, notify]
-  );
-
-  const beginStroke = useCallback(() => {
-    if (!strokeRef.current) strokeRef.current = { seen: new Set(), deltas: [] };
-  }, []);
-
-  const endStroke = useCallback(() => {
-    const stroke = strokeRef.current;
-    strokeRef.current = null;
-    if (stroke?.deltas.length) historyRef.current.push(stroke.deltas);
-    bump();
-  }, [bump]);
-
-  const applyHit = useCallback(
-    (hit: VoxelHit, additive: boolean) => {
-      const cell = targetCell(hit, tool);
-      if (tool === "eyedrop") {
-        if (hit.kind === "voxel") setColor(volumeRef.current.get(hit.cell.x, hit.cell.y, hit.cell.z) ?? color);
-        return;
-      }
-      if (tool === "select") {
-        const key = cellKey(hit.kind === "voxel" ? hit.cell : cell);
-        setSelected((current) => {
-          const next = new Set(additive ? current : []);
-          if (next.has(key)) next.delete(key);
-          else if (hit.kind === "voxel") next.add(key);
-          return next;
-        });
-        return;
-      }
-      if (tool === "box") {
-        if (!boxStart) {
-          setBoxStart(cell);
-          notify("BOX START");
-          return;
-        }
-        const cells = boxCells(boxStart, cell);
-        setBoxStart(null);
-        if (boxMode === "select") {
-          setSelected(new Set(cells.filter((c) => volumeRef.current.has(c.x, c.y, c.z)).map(cellKey)));
-          return;
-        }
-        applyNow(cells, boxMode === "erase" ? null : color, false);
-        return;
-      }
-      if (tool === "fill") {
-        if (hit.kind !== "voxel") return;
-        applyNow(floodCells(volumeRef.current, hit.cell), color, false);
-        return;
-      }
-      beginStroke();
-      const patch = brush > 1 ? brushCells(cell, brush) : [cell];
-      const fresh = patch.filter((candidate) => {
-        const key = cellKey(candidate);
-        if (strokeRef.current?.seen.has(key)) return false;
-        strokeRef.current?.seen.add(key);
-        return true;
-      });
-      if (!fresh.length) return;
-      if (tool === "erase") applyNow(fresh, null, true);
-      else if (tool === "paint") {
-        if (hit.kind === "voxel") applyNow(fresh, color, true);
-      } else applyNow(fresh, color, true);
-    },
-    [applyNow, beginStroke, boxMode, boxStart, brush, color, notify, tool]
-  );
-
-  const onHit = useCallback(
-    (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => {
-      if (ev.button !== 0) return;
-      applyHit(hit, ev.shiftKey);
-    },
-    [applyHit]
-  );
-
-  const onHover = useCallback(
-    (hit: VoxelHit | null) => {
-      setHover(hit);
-      if (!hit || !strokeRef.current) return;
-      if (tool === "box" || tool === "fill" || tool === "select" || tool === "eyedrop") return;
-      applyHit(hit, false);
-    },
-    [applyHit, tool]
-  );
-
-  useEffect(() => {
-    const up = () => endStroke();
-    window.addEventListener("pointerup", up);
-    return () => window.removeEventListener("pointerup", up);
-  }, [endStroke]);
-
-  const undo = useCallback(() => {
-    historyRef.current.undo(volumeRef.current);
-    bump();
-  }, [bump]);
-
-  const redo = useCallback(() => {
-    historyRef.current.redo(volumeRef.current);
-    bump();
-  }, [bump]);
-
-  const packVolume = useCallback(() => {
-    const v = volumeRef.current;
-    const items = v.voxels();
-    const bounds = boundsOfCells(items);
-    if (!bounds) {
-      setFocus(volumeCenter(v.size));
-      return;
-    }
-    const next = fitSizeFor(bounds);
-    const sx = Math.floor((next - (bounds.maxX - bounds.minX + 1)) / 2) - bounds.minX;
-    const sy = 0 - bounds.minY;
-    const sz = Math.floor((next - (bounds.maxZ - bounds.minZ + 1)) / 2) - bounds.minZ;
-    const shifted = items.map((item) => ({ x: item.x + sx, y: item.y + sy, z: item.z + sz, c: item.c }));
-    v.resize(next);
-    v.load({ size: next, voxels: shifted });
-    const packed = boundsOfCells(shifted);
-    setClip((current) => ({ ...current, value: Math.min(current.value, next - 1) }));
-    setFocus(
-      packed
-        ? [(packed.minX + packed.maxX) / 2, Math.max(0.5, (packed.minY + packed.maxY) / 2), (packed.minZ + packed.maxZ) / 2]
-        : volumeCenter(next)
+    volumeRef.current.load(
+      draft
     );
-    bump();
-  }, [bump]);
 
-  const clearAll = useCallback(() => {
-    imageJobRef.current += 1;
-    applyNow(volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z })), null, false);
-    setSelected(new Set());
-    setBoxStart(null);
-    setPendingImage(null);
-    setPendingName("");
-    setPendingHash("");
-    setFrontFile(null);
-    setSideFile(null);
-    setPaywall(false);
-    setHover(null);
-    setBusy(false);
-    strokeRef.current = null;
-    notify("CLEARED · READY FOR NEW PROJECT");
-  }, [applyNow, notify]);
+    setTitle(
+      draft.title ||
+        "UNTITLED"
+    );
 
-  const resize = useCallback(
-    (size: number) => {
-      const v = volumeRef.current;
-      if (size === v.size) return;
-      const doomed = v.voxels().filter((vx) => vx.x >= size || vx.y >= size || vx.z >= size).map((vx) => ({ x: vx.x, y: vx.y, z: vx.z }));
-      if (doomed.length) applyNow(doomed, null, false);
-      v.resize(size);
-      setClip((current) => ({ ...current, value: Math.min(current.value, size - 1) }));
-      setFocus(volumeCenter(size));
-      bump();
-    },
-    [applyNow, bump]
-  );
-
-  const selectedCells = useCallback(
-    () => [...selected].map((key) => {
-      const [x, y, z] = key.split(":").map(Number);
-      return { x, y, z };
-    }),
-    [selected]
-  );
-
-  const deleteSelected = useCallback(() => {
-    applyNow(selectedCells(), null, false);
-    setSelected(new Set());
-  }, [applyNow, selectedCells]);
-
-  const paintSelected = useCallback(() => {
-    applyNow(selectedCells(), color, false);
-  }, [applyNow, color, selectedCells]);
-
-  const copySelected = useCallback(() => {
-    const clipSel = selectionClipboard(volumeRef.current, selected);
-    setClipboard(clipSel);
-    notify(clipSel.length ? `COPIED ${clipSel.length}` : "NOTHING SELECTED");
-  }, [notify, selected]);
-
-  const pasteClipboard = useCallback(
-    (origin?: Cell) => {
-      if (!clipboard.length) return;
-      const base = origin ?? ghost ?? { x: Math.floor(volume.size / 2), y: 0, z: Math.floor(volume.size / 2) };
-      const cells = clipboard.map((v) => ({ x: base.x + v.dx, y: base.y + v.dy, z: base.z + v.dz }));
-      const deltas: Delta[] = [];
-      clipboard.forEach((v, i) => {
-        deltas.push(...applyCells(volumeRef.current, [cells[i]], v.c, mirror));
-      });
-      historyRef.current.push(deltas);
-      setSelected(new Set(cells.map(cellKey)));
-      bump();
-    },
-    [bump, clipboard, ghost, mirror, volume.size]
-  );
-
-  const duplicateSelected = useCallback(() => {
-    const clipSel = selectionClipboard(volumeRef.current, selected);
-    if (!clipSel.length) return;
-    setClipboard(clipSel);
-    const cells = selectedCells();
-    pasteClipboard({
-      x: Math.min(...cells.map((c) => c.x)) + 1,
-      y: Math.min(...cells.map((c) => c.y)),
-      z: Math.min(...cells.map((c) => c.z))
-    });
-  }, [pasteClipboard, selected, selectedCells]);
-
-  const moveSelected = useCallback(
-    (dx: number, dy: number, dz: number) => {
-      const v = volumeRef.current;
-      const items = selectedCells().map((cell) => ({ ...cell, c: v.get(cell.x, cell.y, cell.z) ?? color }));
-      historyRef.current.push([
-        ...applyCells(v, items, null, { x: false, y: false, z: false }),
-        ...items.flatMap((item) =>
-          applyCells(v, [{ x: item.x + dx, y: item.y + dy, z: item.z + dz }], item.c, { x: false, y: false, z: false })
+    if (
+      draft.palette?.length
+    ) {
+      setPalette(
+        clonePalette(
+          draft.palette
         )
-      ]);
-      setSelected(new Set(items.map((item) => cellKey({ x: item.x + dx, y: item.y + dy, z: item.z + dz }))));
-      bump();
-    },
-    [bump, color, selectedCells]
-  );
-
-  const exportFiles = useCallback(
-    async (kind: "vox" | "obj" | "json" | "glb") => {
-      const name = (title.trim() || "untitled").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "untitled";
-      const options = { name, unitMeters: 0.1, pivot: "bottom-center" as const, upAxis: "y" as const };
-      try {
-        if (kind === "json") {
-          downloadText(JSON.stringify(projectFromVolume(title, volumeRef.current, palette), null, 2), `${name}.json`, "application/json");
-          notify("PROJECT READY");
-          return;
-        }
-        if (kind === "vox") {
-          notify("EXPORTING VOX");
-          await new Promise((resolve) => window.setTimeout(resolve, 40));
-          downloadBytes(exportVox(volumeRef.current, palette), `${name}.vox`, "application/octet-stream");
-          notify("VOX READY");
-          return;
-        }
-        if (kind === "glb") {
-          notify("EXPORTING GLB");
-          await new Promise((resolve) => window.setTimeout(resolve, 40));
-          const bytes = await exportGlbTextured(volumeRef.current, palette, options);
-          downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
-          notify("GLB READY");
-          return;
-        }
-        notify("EXPORTING OBJ");
-        await new Promise((resolve) => window.setTimeout(resolve, 40));
-        downloadBytes(exportObjArchive(volumeRef.current, palette, options), `${name}-obj.zip`, "application/zip");
-        notify("OBJ READY");
-      } catch (error) {
-        notify(error instanceof Error ? error.message.toUpperCase() : "EXPORT FAILED");
-      }
-    },
-    [notify, palette, title]
-  );
-
-  const publish = useCallback(async () => {
-    const v = volumeRef.current;
-    if (v.count === 0) {
-      notify("NOTHING TO PUBLISH");
-      return;
+      );
     }
-    setBusy(true);
-    try {
-      notify("CONNECT PHANTOM");
-      const wallet = await connectWallet();
-      notify("PUBLISHING");
-      await publishCreation({ wallet, title: title.trim() || "Untitled", size: v.size, palette, voxels: v.voxels() });
-      notify("PUBLISHED");
-    } catch (error) {
-      notify(error instanceof Error ? error.message.toUpperCase() : "PUBLISH FAILED");
-    } finally {
-      setBusy(false);
-    }
-  }, [notify, palette, title]);
 
-  const cancelImage = useCallback(() => {
-    imageJobRef.current += 1;
-    setPendingImage(null);
-    setPendingName("");
-    setPendingHash("");
-    setFrontFile(null);
-    setSideFile(null);
-    setPaywall(false);
-    notify("IMPORT CANCELED");
-  }, [notify]);
-
-  const applyImage = useCallback(() => {
-    if (!pendingImage) return;
-    const gate = consumeImageApply(pendingHash || pendingName || "unknown");
-    refreshCredits();
-    if (!gate.ok) {
-      setPaywall(true);
-      notify(gate.message);
-      return;
-    }
-    const result = pendingImage;
-    const bounds = boundsOfCells(result.voxels);
-    const next = bounds ? fitSizeFor(bounds) : volumeRef.current.size;
-    const sx = bounds ? Math.floor((next - (bounds.maxX - bounds.minX + 1)) / 2) - bounds.minX : 0;
-    const sy = bounds ? 0 - bounds.minY : 0;
-    const sz = bounds ? Math.floor((next - (bounds.maxZ - bounds.minZ + 1)) / 2) - bounds.minZ : 0;
-    const packed = result.voxels.map((vox) => ({ x: vox.x + sx, y: vox.y + sy, z: vox.z + sz, c: vox.c }));
-    const packedBounds = boundsOfCells(packed);
-    if (next !== volumeRef.current.size) volumeRef.current.resize(next);
-    setPendingImage(null);
-    setPendingHash("");
-    setFrontFile(null);
-    setSideFile(null);
-    setPaywall(false);
-    setPalette(result.palette);
-    const deltas: Delta[] = [];
-    const existing = volumeRef.current.voxels().map((v) => ({ x: v.x, y: v.y, z: v.z }));
-    if (existing.length) deltas.push(...applyCells(volumeRef.current, existing, null, { x: false, y: false, z: false }));
-    const byColor = new Map<number, Cell[]>();
-    for (const vox of packed) {
-      if (vox.x < 0 || vox.y < 0 || vox.z < 0 || vox.x >= volumeRef.current.size || vox.y >= volumeRef.current.size || vox.z >= volumeRef.current.size) continue;
-      const list = byColor.get(vox.c) ?? [];
-      list.push({ x: vox.x, y: vox.y, z: vox.z });
-      byColor.set(vox.c, list);
-    }
-    for (const [c, cells] of byColor) deltas.push(...applyCells(volumeRef.current, cells, c, { x: false, y: false, z: false }));
-    historyRef.current.push(deltas);
-    if (pendingName) setTitle(pendingName);
-    setPendingName("");
-    setSelected(new Set());
-    setBoxStart(null);
-    setClip((current) => ({ ...current, value: Math.min(current.value, next - 1) }));
     setFocus(
-      packedBounds
-        ? [(packedBounds.minX + packedBounds.maxX) / 2, Math.max(0.5, (packedBounds.minY + packedBounds.maxY) / 2), (packedBounds.minZ + packedBounds.maxZ) / 2]
-        : volumeCenter(next)
+      volumeCenter(
+        draft.size ||
+          128
+      )
     );
-    bump();
-    notify(gate.reason === "repeat" ? `IMAGE ${result.count ?? result.voxels.length} VX · ${next}³` : `IMAGE APPLIED · ${gate.message} · ${next}³`);
-  }, [bump, notify, pendingHash, pendingImage, pendingName, refreshCredits]);
 
-  const regenerateMultiView = useCallback(
-    async ({ front, side }: { front: File; side?: File }) => {
-      const job = ++imageJobRef.current;
-      setBusy(true);
-      try {
-        const result = await imagesToVoxels({ front, side }, buildImageOptions({
-          volumeSize: volumeRef.current.size,
-          heightMax: imageHeight,
-          maxVoxels: MAX_SAFE,
-          symmetrize,
-          useLocalAi,
-          style
-        }));
-        if (job !== imageJobRef.current) return;
-        setPendingImage(result);
-        const usedViews = Number(Boolean(front)) + Number(Boolean(side));
-        notify(usedViews === 2 ? `Preview ready · 2 views · ${result.count} voxels` : `Preview ready · ${result.count} voxels`);
-      } catch (error) {
-        if (job === imageJobRef.current) {
-          notify(error instanceof Error ? error.message.toUpperCase() : "Could not rebuild from these images");
-        }
-      } finally {
-        if (job === imageJobRef.current) setBusy(false);
-      }
-    },
-    [imageHeight, notify, style, symmetrize, useLocalAi]
-  );
-
-  const rebuildMultiView = useCallback(async () => {
-    if (!frontFile) {
-      notify("Add a front image first");
-      return;
-    }
-    await regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
-  }, [frontFile, notify, regenerateMultiView, sideFile]);
-
-  useEffect(() => {
-    if (!frontFile) return;
-    void regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [style, symmetrize, useLocalAi]);
-
-  useEffect(() => {
-    void aiAvailable().then((status) => {
-      setAiStatus(status.segment || status.depth ? "LOCAL AI MODELS ON" : "LOCAL AI FALLBACK");
+    setClip({
+      axis: null,
+      value:
+        (draft.size ||
+          128) - 1
     });
-  }, []);
 
-  const attachFront = useCallback(
-    async (file: File) => {
-      const job = ++imageJobRef.current;
-      setBusy(true);
-      try {
-        notify("IMPORTING FRONT");
-        const lower = file.name.toLowerCase();
-        if (!(lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp"))) {
-          throw new Error("Unsupported image");
-        }
-        setFrontFile(file);
-        setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
-        setPendingHash(await hashImageFile(file));
-        if (job !== imageJobRef.current) return;
-        const result = sideFile
-          ? await imagesToVoxels({ front: file, side: sideFile }, buildImageOptions({
-              volumeSize: volumeRef.current.size,
-              heightMax: imageHeight,
-              maxVoxels: MAX_SAFE,
-              symmetrize,
-              useLocalAi,
-              style
-            }))
-          : await imageToVoxels(file, buildImageOptions({
-              volumeSize: volumeRef.current.size,
-              heightMax: imageHeight,
-              maxVoxels: MAX_SAFE,
-              symmetrize,
-              useLocalAi,
-              style
-            }));
-        if (job !== imageJobRef.current) return;
-        if (!result.voxels.length) throw new Error("Empty image");
-        setPendingImage(result);
-        notify(`Preview ready · ${result.count ?? result.voxels.length} voxels`);
-        setPaywall(false);
-      } catch (error) {
-        notify(error instanceof Error ? error.message.toUpperCase() : "FRONT IMPORT FAILED");
-      } finally {
-        if (job === imageJobRef.current) setBusy(false);
+    bump();
+  }, [
+    bump,
+    refreshCredits,
+    syncPlan
+  ]);
+
+  useEffect(() => {
+    if (saveTimer.current) {
+      window.clearTimeout(
+        saveTimer.current
+      );
+    }
+
+    saveTimer.current =
+      window.setTimeout(
+        () => {
+          saveDraft(
+            projectFromVolume(
+              title,
+              volumeRef.current,
+              palette
+            )
+          );
+        },
+        250
+      );
+
+    return () => {
+      if (
+        saveTimer.current
+      ) {
+        window.clearTimeout(
+          saveTimer.current
+        );
       }
-    },
-    [imageHeight, notify, sideFile, style, symmetrize, useLocalAi]
-  );
+    };
+  }, [
+    title,
+    palette,
+    rev
+  ]);
 
-  const attachSide = useCallback(
-    async (file: File) => {
-      setSideFile(file);
-      if (!frontFile) {
-        notify("Side image loaded. Add a front image to rebuild.");
-        return;
-      }
-      await regenerateMultiView({ front: frontFile, side: file });
-    },
-    [frontFile, notify, regenerateMultiView]
-  );
+  const applyNow =
+    useCallback(
+      (
+        cells: Cell[],
+        nextColor: number | null,
+        recordStroke: boolean
+      ) => {
+        if (
+          volumeRef.current.count >
+            MAX_SAFE &&
+          nextColor !== null
+        ) {
+          notify(
+            "PERFORMANCE LIMIT"
+          );
 
-  const removeSide = useCallback(() => {
-    setSideFile(null);
-    if (frontFile) void regenerateMultiView({ front: frontFile, side: undefined });
-    else notify("SIDE REMOVED");
-  }, [frontFile, notify, regenerateMultiView]);
-
-  const openProject = useCallback(
-    async (file: File) => {
-      const job = ++imageJobRef.current;
-      setBusy(true);
-      try {
-        const lower = file.name.toLowerCase();
-        if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
-          notify("IMPORTING IMAGE");
-          await new Promise((resolve) => window.setTimeout(resolve, 40));
-          setFrontFile(file);
-          setSideFile(null);
-          const result = await imageToVoxels(file, buildImageOptions({
-            volumeSize: volumeRef.current.size,
-            heightMax: imageHeight,
-            maxVoxels: MAX_SAFE,
-            symmetrize: false,
-            useLocalAi,
-            style
-          }));
-          if (job !== imageJobRef.current) return;
-          if (!result.voxels.length) throw new Error("Empty image");
-          setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
-          setPendingHash(await hashImageFile(file));
-          setPendingImage(result);
-          setPaywall(false);
-          notify(`Preview ready · ${result.count ?? result.voxels.length} voxels`);
           return;
         }
-        if (lower.endsWith(".vox")) {
-          const model = importVox(await file.arrayBuffer());
-          volumeRef.current.load({ size: model.size, voxels: model.voxels });
-          setPalette(clonePalette(model.palette));
-          setTitle(file.name.replace(/\.vox$/i, ""));
+
+        const deltas =
+          applyCells(
+            volumeRef.current,
+            cells,
+            nextColor,
+            mirror
+          );
+
+        if (
+          recordStroke &&
+          strokeRef.current
+        ) {
+          strokeRef.current.deltas.push(
+            ...deltas
+          );
         } else {
-          const parsed = JSON.parse(await file.text()) as DraftV1;
-          if (!Array.isArray(parsed.voxels)) throw new Error("Invalid project");
-          volumeRef.current.load(parsed);
-          setTitle(parsed.title || file.name.replace(/\.json$/i, ""));
-          if (parsed.palette?.length) setPalette(clonePalette(parsed.palette));
+          historyRef.current.push(
+            deltas
+          );
         }
-        historyRef.current.reset();
-        setSelected(new Set());
-        setBoxStart(null);
-        setPendingImage(null);
-        setPendingHash("");
-        setFrontFile(null);
-        setSideFile(null);
-        packVolume();
-        notify("PROJECT LOADED");
-      } catch (error) {
-        notify(error instanceof Error ? error.message.toUpperCase() : "OPEN FAILED");
-      } finally {
-        if (job === imageJobRef.current) setBusy(false);
+
+        bump();
+      },
+      [
+        bump,
+        mirror,
+        notify
+      ]
+    );
+
+  const beginStroke =
+    useCallback(() => {
+      if (
+        !strokeRef.current
+      ) {
+        strokeRef.current = {
+          seen: new Set(),
+          deltas: []
+        };
       }
-    },
-    [imageHeight, notify, packVolume, style, useLocalAi]
-  );
+    }, []);
+
+  const endStroke =
+    useCallback(() => {
+      const stroke =
+        strokeRef.current;
+
+      strokeRef.current =
+        null;
+
+      if (
+        stroke?.deltas.length
+      ) {
+        historyRef.current.push(
+          stroke.deltas
+        );
+      }
+
+      bump();
+    }, [bump]);
+
+  const applyHit =
+    useCallback(
+      (
+        hit: VoxelHit,
+        additive: boolean
+      ) => {
+        const cell =
+          targetCell(
+            hit,
+            tool
+          );
+
+        if (
+          tool ===
+          "eyedrop"
+        ) {
+          if (
+            hit.kind ===
+            "voxel"
+          ) {
+            setColor(
+              volumeRef.current.get(
+                hit.cell.x,
+                hit.cell.y,
+                hit.cell.z
+              ) ?? color
+            );
+          }
+
+          return;
+        }
+
+        if (
+          tool ===
+          "select"
+        ) {
+          const key =
+            cellKey(
+              hit.kind ===
+                "voxel"
+                ? hit.cell
+                : cell
+            );
+
+          setSelected(
+            (current) => {
+              const next =
+                new Set(
+                  additive
+                    ? current
+                    : []
+                );
+
+              if (
+                next.has(key)
+              ) {
+                next.delete(
+                  key
+                );
+              } else if (
+                hit.kind ===
+                "voxel"
+              ) {
+                next.add(key);
+              }
+
+              return next;
+            }
+          );
+
+          return;
+        }
+
+        if (
+          tool === "box"
+        ) {
+          if (!boxStart) {
+            setBoxStart(
+              cell
+            );
+
+            notify(
+              "BOX START"
+            );
+
+            return;
+          }
+
+          const cells =
+            boxCells(
+              boxStart,
+              cell
+            );
+
+          setBoxStart(
+            null
+          );
+
+          if (
+            boxMode ===
+            "select"
+          ) {
+            setSelected(
+              new Set(
+                cells
+                  .filter(
+                    (c) =>
+                      volumeRef.current.has(
+                        c.x,
+                        c.y,
+                        c.z
+                      )
+                  )
+                  .map(
+                    cellKey
+                  )
+              )
+            );
+
+            return;
+          }
+
+          applyNow(
+            cells,
+            boxMode ===
+              "erase"
+              ? null
+              : color,
+            false
+          );
+
+          return;
+        }
+
+        if (
+          tool ===
+          "fill"
+        ) {
+          if (
+            hit.kind !==
+            "voxel"
+          ) {
+            return;
+          }
+
+          applyNow(
+            floodCells(
+              volumeRef.current,
+              hit.cell
+            ),
+            color,
+            false
+          );
+
+          return;
+        }
+
+        beginStroke();
+
+        const patch =
+          brush > 1
+            ? brushCells(
+                cell,
+                brush
+              )
+            : [cell];
+
+        const fresh =
+          patch.filter(
+            (candidate) => {
+              const key =
+                cellKey(
+                  candidate
+                );
+
+              if (
+                strokeRef.current?.seen.has(
+                  key
+                )
+              ) {
+                return false;
+              }
+
+              strokeRef.current?.seen.add(
+                key
+              );
+
+              return true;
+            }
+          );
+
+        if (!fresh.length) {
+          return;
+        }
+
+        if (
+          tool === "erase"
+        ) {
+          applyNow(
+            fresh,
+            null,
+            true
+          );
+        } else if (
+          tool === "paint"
+        ) {
+          if (
+            hit.kind ===
+            "voxel"
+          ) {
+            applyNow(
+              fresh,
+              color,
+              true
+            );
+          }
+        } else {
+          applyNow(
+            fresh,
+            color,
+            true
+          );
+        }
+      },
+      [
+        applyNow,
+        beginStroke,
+        boxMode,
+        boxStart,
+        brush,
+        color,
+        notify,
+        tool
+      ]
+    );
+
+  const onHit =
+    useCallback(
+      (
+        hit: VoxelHit,
+        ev: ThreeEvent<PointerEvent>
+      ) => {
+        if (
+          ev.button !== 0
+        ) {
+          return;
+        }
+
+        applyHit(
+          hit,
+          ev.shiftKey
+        );
+      },
+      [applyHit]
+    );
+
+  const onHover =
+    useCallback(
+      (
+        hit: VoxelHit | null
+      ) => {
+        setHover(hit);
+
+        if (
+          !hit ||
+          !strokeRef.current
+        ) {
+          return;
+        }
+
+        if (
+          tool === "box" ||
+          tool === "fill" ||
+          tool === "select" ||
+          tool === "eyedrop"
+        ) {
+          return;
+        }
+
+        applyHit(
+          hit,
+          false
+        );
+      },
+      [
+        applyHit,
+        tool
+      ]
+    );
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      if (el?.tagName === "INPUT" || el?.tagName === "TEXTAREA") return;
-      const key = e.key.toLowerCase();
-      const mod = e.ctrlKey || e.metaKey;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setBoxStart(null);
-        setSelected(new Set());
-        setPendingImage(null);
-        setPendingName("");
-        setPendingHash("");
-        setFrontFile(null);
-        setSideFile(null);
-        setPaywall(false);
-        strokeRef.current = null;
+    const up =
+      () =>
+        endStroke();
+
+    window.addEventListener(
+      "pointerup",
+      up
+    );
+
+    return () =>
+      window.removeEventListener(
+        "pointerup",
+        up
+      );
+  }, [
+    endStroke
+  ]);
+
+  const undo =
+    useCallback(() => {
+      historyRef.current.undo(
+        volumeRef.current
+      );
+
+      bump();
+    }, [bump]);
+
+  const redo =
+    useCallback(() => {
+      historyRef.current.redo(
+        volumeRef.current
+      );
+
+      bump();
+    }, [bump]);
+
+  const packVolume =
+    useCallback(() => {
+      const v =
+        volumeRef.current;
+
+      const items =
+        v.voxels();
+
+      const bounds =
+        boundsOfCells(
+          items
+        );
+
+      if (!bounds) {
+        setFocus(
+          volumeCenter(
+            v.size
+          )
+        );
+
         return;
       }
-      if (e.key === "Enter" && pendingImage) {
+
+      const next =
+        fitSizeFor(
+          bounds
+        );
+
+      const sx =
+        Math.floor(
+          (
+            next -
+            (
+              bounds.maxX -
+              bounds.minX +
+              1
+            )
+          ) / 2
+        ) -
+        bounds.minX;
+
+      const sy =
+        0 -
+        bounds.minY;
+
+      const sz =
+        Math.floor(
+          (
+            next -
+            (
+              bounds.maxZ -
+              bounds.minZ +
+              1
+            )
+          ) / 2
+        ) -
+        bounds.minZ;
+
+      const shifted =
+        items.map(
+          (item) => ({
+            x:
+              item.x +
+              sx,
+            y:
+              item.y +
+              sy,
+            z:
+              item.z +
+              sz,
+            c: item.c
+          })
+        );
+
+      v.resize(
+        next
+      );
+
+      v.load({
+        size: next,
+        voxels:
+          shifted
+      });
+
+      const packed =
+        boundsOfCells(
+          shifted
+        );
+
+      setClip(
+        (current) => ({
+          ...current,
+          value: Math.min(
+            current.value,
+            next - 1
+          )
+        })
+      );
+
+      setFocus(
+        packed
+          ? [
+              (
+                packed.minX +
+                packed.maxX
+              ) / 2,
+              Math.max(
+                0.5,
+                (
+                  packed.minY +
+                  packed.maxY
+                ) / 2
+              ),
+              (
+                packed.minZ +
+                packed.maxZ
+              ) / 2
+            ]
+          : volumeCenter(
+              next
+            )
+      );
+
+      bump();
+    }, [bump]);
+
+  const clearAll =
+    useCallback(() => {
+      applyNow(
+        volumeRef.current
+          .voxels()
+          .map(
+            (v) => ({
+              x: v.x,
+              y: v.y,
+              z: v.z
+            })
+          ),
+        null,
+        false
+      );
+
+      setSelected(
+        new Set()
+      );
+
+      setBoxStart(
+        null
+      );
+    }, [applyNow]);
+
+  const resize =
+    useCallback(
+      (size: number) => {
+        const v =
+          volumeRef.current;
+
+        if (
+          size ===
+          v.size
+        ) {
+          return;
+        }
+
+        const doomed =
+          v.voxels()
+            .filter(
+              (vx) =>
+                vx.x >= size ||
+                vx.y >= size ||
+                vx.z >= size
+            )
+            .map(
+              (vx) => ({
+                x: vx.x,
+                y: vx.y,
+                z: vx.z
+              })
+            );
+
+        if (
+          doomed.length
+        ) {
+          applyNow(
+            doomed,
+            null,
+            false
+          );
+        }
+
+        v.resize(
+          size
+        );
+
+        setClip(
+          (current) => ({
+            ...current,
+            value: Math.min(
+              current.value,
+              size - 1
+            )
+          })
+        );
+
+        setFocus(
+          volumeCenter(
+            size
+          )
+        );
+
+        bump();
+      },
+      [
+        applyNow,
+        bump
+      ]
+    );
+
+  const selectedCells =
+    useCallback(
+      () =>
+        [...selected].map(
+          (key) => {
+            const [
+              x,
+              y,
+              z
+            ] =
+              key
+                .split(":")
+                .map(
+                  Number
+                );
+
+            return {
+              x,
+              y,
+              z
+            };
+          }
+        ),
+      [selected]
+    );
+
+  const deleteSelected =
+    useCallback(() => {
+      applyNow(
+        selectedCells(),
+        null,
+        false
+      );
+
+      setSelected(
+        new Set()
+      );
+    }, [
+      applyNow,
+      selectedCells
+    ]);
+
+  const paintSelected =
+    useCallback(() => {
+      applyNow(
+        selectedCells(),
+        color,
+        false
+      );
+    }, [
+      applyNow,
+      color,
+      selectedCells
+    ]);
+
+  const copySelected =
+    useCallback(() => {
+      const clipSel =
+        selectionClipboard(
+          volumeRef.current,
+          selected
+        );
+
+      setClipboard(
+        clipSel
+      );
+
+      notify(
+        clipSel.length
+          ? `COPIED ${clipSel.length}`
+          : "NOTHING SELECTED"
+      );
+    }, [
+      notify,
+      selected
+    ]);
+
+  const pasteClipboard =
+    useCallback(
+      (
+        origin?: Cell
+      ) => {
+        if (
+          !clipboard.length
+        ) {
+          return;
+        }
+
+        const base =
+          origin ??
+          ghost ??
+          {
+            x: Math.floor(
+              volume.size / 2
+            ),
+            y: 0,
+            z: Math.floor(
+              volume.size / 2
+            )
+          };
+
+        const cells =
+          clipboard.map(
+            (v) => ({
+              x:
+                base.x +
+                v.dx,
+              y:
+                base.y +
+                v.dy,
+              z:
+                base.z +
+                v.dz
+            })
+          );
+
+        const deltas: Delta[] =
+          [];
+
+        clipboard.forEach(
+          (v, i) => {
+            deltas.push(
+              ...applyCells(
+                volumeRef.current,
+                [
+                  cells[i]
+                ],
+                v.c,
+                mirror
+              )
+            );
+          }
+        );
+
+        historyRef.current.push(
+          deltas
+        );
+
+        setSelected(
+          new Set(
+            cells.map(
+              cellKey
+            )
+          )
+        );
+
+        bump();
+      },
+      [
+        bump,
+        clipboard,
+        ghost,
+        mirror,
+        volume.size
+      ]
+    );
+
+  const duplicateSelected =
+    useCallback(() => {
+      const clipSel =
+        selectionClipboard(
+          volumeRef.current,
+          selected
+        );
+
+      if (!clipSel.length) {
+        return;
+      }
+
+      setClipboard(
+        clipSel
+      );
+
+      const cells =
+        selectedCells();
+
+      pasteClipboard(
+        {
+          x:
+            Math.min(
+              ...cells.map(
+                (c) => c.x
+              )
+            ) + 1,
+          y:
+            Math.min(
+              ...cells.map(
+                (c) => c.y
+              )
+            ),
+          z:
+            Math.min(
+              ...cells.map(
+                (c) => c.z
+              )
+            )
+        }
+      );
+    }, [
+      pasteClipboard,
+      selected,
+      selectedCells
+    ]);
+
+  const moveSelected =
+    useCallback(
+      (
+        dx: number,
+        dy: number,
+        dz: number
+      ) => {
+        const v =
+          volumeRef.current;
+
+        const items =
+          selectedCells().map(
+            (cell) => ({
+              ...cell,
+              c:
+                v.get(
+                  cell.x,
+                  cell.y,
+                  cell.z
+                ) ?? color
+            })
+          );
+
+        historyRef.current.push(
+          [
+            ...applyCells(
+              v,
+              items,
+              null,
+              {
+                x: false,
+                y: false,
+                z: false
+              }
+            ),
+            ...items.flatMap(
+              (item) =>
+                applyCells(
+                  v,
+                  [
+                    {
+                      x:
+                        item.x +
+                        dx,
+                      y:
+                        item.y +
+                        dy,
+                      z:
+                        item.z +
+                        dz
+                    }
+                  ],
+                  item.c,
+                  {
+                    x: false,
+                    y: false,
+                    z: false
+                  }
+                )
+            )
+          ]
+        );
+
+        setSelected(
+          new Set(
+            items.map(
+              (item) =>
+                cellKey({
+                  x:
+                    item.x +
+                    dx,
+                  y:
+                    item.y +
+                    dy,
+                  z:
+                    item.z +
+                    dz
+                })
+            )
+          )
+        );
+
+        bump();
+      },
+      [
+        bump,
+        color,
+        selectedCells
+      ]
+    );
+
+  const exportFiles =
+    useCallback(
+      async (
+        kind:
+          | "vox"
+          | "obj"
+          | "json"
+          | "glb"
+      ) => {
+        const name =
+          (
+            title.trim() ||
+            "untitled"
+          )
+            .toLowerCase()
+            .replace(
+              /[^a-z0-9]+/g,
+              "-"
+            )
+            .replace(
+              /^-+|-+$/g,
+              ""
+            ) ||
+          "untitled";
+
+        const options = {
+          name,
+          unitMeters: 0.1,
+          pivot:
+            "bottom-center" as const,
+          upAxis:
+            "y" as const
+        };
+
+        try {
+          if (
+            kind ===
+            "json"
+          ) {
+            downloadText(
+              JSON.stringify(
+                projectFromVolume(
+                  title,
+                  volumeRef.current,
+                  palette
+                ),
+                null,
+                2
+              ),
+              `${name}.json`,
+              "application/json"
+            );
+
+            notify(
+              "PROJECT READY"
+            );
+
+            return;
+          }
+
+          if (
+            kind ===
+            "vox"
+          ) {
+            notify(
+              "EXPORTING VOX"
+            );
+
+            await new Promise(
+              (resolve) =>
+                window.setTimeout(
+                  resolve,
+                  40
+                )
+            );
+
+            downloadBytes(
+              exportVox(
+                volumeRef.current,
+                palette
+              ),
+              `${name}.vox`,
+              "application/octet-stream"
+            );
+
+            notify(
+              "VOX READY"
+            );
+
+            return;
+          }
+
+          if (
+            kind ===
+            "glb"
+          ) {
+            notify(
+              "EXPORTING GLB"
+            );
+
+            await new Promise(
+              (resolve) =>
+                window.setTimeout(
+                  resolve,
+                  40
+                )
+            );
+
+            const bytes =
+              await exportGlb(
+                volumeRef.current,
+                palette,
+                options
+              );
+
+            downloadBytes(
+              new Uint8Array(
+                bytes
+              ),
+              `${name}.glb`,
+              "model/gltf-binary"
+            );
+
+            notify(
+              "GLB READY"
+            );
+
+            return;
+          }
+
+          notify(
+            "EXPORTING OBJ"
+          );
+
+          await new Promise(
+            (resolve) =>
+              window.setTimeout(
+                resolve,
+                40
+              )
+          );
+
+          downloadBytes(
+            exportObjArchive(
+              volumeRef.current,
+              palette,
+              options
+            ),
+            `${name}-obj.zip`,
+            "application/zip"
+          );
+
+          notify(
+            "OBJ READY"
+          );
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message.toUpperCase()
+              : "EXPORT FAILED"
+          );
+        }
+      },
+      [
+        notify,
+        palette,
+        title
+      ]
+    );
+
+  const publish =
+    useCallback(
+      async () => {
+        const v =
+          volumeRef.current;
+
+        if (
+          v.count === 0
+        ) {
+          notify(
+            "NOTHING TO PUBLISH"
+          );
+
+          return;
+        }
+
+        setBusy(true);
+
+        try {
+          notify(
+            "CONNECT PHANTOM"
+          );
+
+          const wallet =
+            await connectWallet();
+
+          notify(
+            "PUBLISHING"
+          );
+
+          await publishCreation({
+            wallet,
+            title:
+              title.trim() ||
+              "Untitled",
+            size:
+              v.size,
+            palette,
+            voxels:
+              v.voxels()
+          });
+
+          notify(
+            "PUBLISHED"
+          );
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message.toUpperCase()
+              : "PUBLISH FAILED"
+          );
+        } finally {
+          setBusy(false);
+        }
+      },
+      [
+        notify,
+        palette,
+        title
+      ]
+    );
+
+  const cancelImage =
+    useCallback(() => {
+      setPendingImage(
+        null
+      );
+
+      setPendingName(
+        ""
+      );
+
+      setPendingHash(
+        ""
+      );
+
+      setFrontFile(
+        null
+      );
+
+      setSideFile(
+        null
+      );
+
+      setPaywall(
+        false
+      );
+
+      notify(
+        "IMPORT CANCELED"
+      );
+    }, [notify]);
+
+  const applyImage =
+    useCallback(() => {
+      if (
+        !pendingImage
+      ) {
+        return;
+      }
+
+      const gate =
+        consumeImageApply(
+          pendingHash ||
+            pendingName ||
+            "unknown"
+        );
+
+      refreshCredits();
+
+      if (!gate.ok) {
+        setPaywall(
+          true
+        );
+
+        notify(
+          gate.message
+        );
+
+        return;
+      }
+
+      const result =
+        pendingImage;
+
+      const bounds =
+        boundsOfCells(
+          result.voxels
+        );
+
+      const next =
+        bounds
+          ? fitSizeFor(
+              bounds
+            )
+          : volumeRef.current.size;
+
+      const sx =
+        bounds
+          ? Math.floor(
+              (
+                next -
+                (
+                  bounds.maxX -
+                  bounds.minX +
+                  1
+                )
+              ) / 2
+            ) -
+            bounds.minX
+          : 0;
+
+      const sy =
+        bounds
+          ? 0 -
+            bounds.minY
+          : 0;
+
+      const sz =
+        bounds
+          ? Math.floor(
+              (
+                next -
+                (
+                  bounds.maxZ -
+                  bounds.minZ +
+                  1
+                )
+              ) / 2
+            ) -
+            bounds.minZ
+          : 0;
+
+      const packed =
+        result.voxels.map(
+          (vox) => ({
+            x:
+              vox.x +
+              sx,
+            y:
+              vox.y +
+              sy,
+            z:
+              vox.z +
+              sz,
+            c: vox.c
+          })
+        );
+
+      const packedBounds =
+        boundsOfCells(
+          packed
+        );
+
+      if (
+        next !==
+        volumeRef.current.size
+      ) {
+        volumeRef.current.resize(
+          next
+        );
+      }
+
+      setPendingImage(
+        null
+      );
+
+      setPendingHash(
+        ""
+      );
+
+      setFrontFile(
+        null
+      );
+
+      setSideFile(
+        null
+      );
+
+      setPaywall(
+        false
+      );
+
+      setPalette(
+        result.palette
+      );
+
+      const deltas: Delta[] =
+        [];
+
+      const existing =
+        volumeRef.current
+          .voxels()
+          .map(
+            (v) => ({
+              x: v.x,
+              y: v.y,
+              z: v.z
+            })
+          );
+
+      if (
+        existing.length
+      ) {
+        deltas.push(
+          ...applyCells(
+            volumeRef.current,
+            existing,
+            null,
+            {
+              x: false,
+              y: false,
+              z: false
+            }
+          )
+        );
+      }
+
+      const byColor =
+        new Map<
+          number,
+          Cell[]
+        >();
+
+      for (
+        const vox of packed
+      ) {
+        if (
+          vox.x < 0 ||
+          vox.y < 0 ||
+          vox.z < 0 ||
+          vox.x >=
+            volumeRef.current.size ||
+          vox.y >=
+            volumeRef.current.size ||
+          vox.z >=
+            volumeRef.current.size
+        ) {
+          continue;
+        }
+
+        const list =
+          byColor.get(
+            vox.c
+          ) ?? [];
+
+        list.push({
+          x: vox.x,
+          y: vox.y,
+          z: vox.z
+        });
+
+        byColor.set(
+          vox.c,
+          list
+        );
+      }
+
+      for (
+        const [
+          c,
+          cells
+        ] of byColor
+      ) {
+        deltas.push(
+          ...applyCells(
+            volumeRef.current,
+            cells,
+            c,
+            {
+              x: false,
+              y: false,
+              z: false
+            }
+          )
+        );
+      }
+
+      historyRef.current.push(
+        deltas
+      );
+
+      if (
+        pendingName
+      ) {
+        setTitle(
+          pendingName
+        );
+      }
+
+      setPendingName(
+        ""
+      );
+
+      setSelected(
+        new Set()
+      );
+
+      setBoxStart(
+        null
+      );
+
+      setClip(
+        (current) => ({
+          ...current,
+          value: Math.min(
+            current.value,
+            next - 1
+          )
+        })
+      );
+
+      setFocus(
+        packedBounds
+          ? [
+              (
+                packedBounds.minX +
+                packedBounds.maxX
+              ) / 2,
+              Math.max(
+                0.5,
+                (
+                  packedBounds.minY +
+                  packedBounds.maxY
+                ) / 2
+              ),
+              (
+                packedBounds.minZ +
+                packedBounds.maxZ
+              ) / 2
+            ]
+          : volumeCenter(
+              next
+            )
+      );
+
+      bump();
+
+      notify(
+        gate.reason ===
+          "repeat"
+          ? `IMAGE ${
+              result.count ??
+              result.voxels.length
+            } VX · ${next}³`
+          : `IMAGE APPLIED · ${
+              gate.message
+            } · ${next}³`
+      );
+    }, [
+      bump,
+      notify,
+      pendingHash,
+      pendingImage,
+      pendingName,
+      refreshCredits
+    ]);
+
+  const regenerateMultiView =
+    useCallback(
+      async ({
+        front,
+        side
+      }: {
+        front: File;
+        side?: File;
+      }) => {
+        setBusy(
+          true
+        );
+
+        try {
+          const result =
+            await imagesToVoxels(
+              {
+                front,
+                side
+              },
+              {
+                volumeSize:
+                  volumeRef.current.size,
+                mode:
+                  aiCategory ? "model" : "solid",
+                heightMax:
+                  aiCategory ? aiCategoryPreset(aiCategory).heightMax : imageHeight,
+                maxVoxels:
+                  MAX_SAFE,
+                symmetrize:
+                  aiCategory ? aiCategoryPreset(aiCategory).symmetrize : symmetrize,
+                useLocalAi:
+                  Boolean(aiCategory),
+                aiCategory:
+                  aiCategory ?? undefined
+              }
+            );
+
+          setPendingImage(
+            result
+          );
+
+          const usedViews =
+            Number(Boolean(front)) +
+            Number(Boolean(side));
+
+          notify(
+            usedViews === 2
+              ? `2 VIEWS · ${result.count} VX`
+              : `${result.count} VX READY`
+          );
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message.toUpperCase()
+              : "MULTI-VIEW FAILED"
+          );
+        } finally {
+          setBusy(
+            false
+          );
+        }
+      },
+      [
+        aiCategory,
+        imageHeight,
+        notify,
+        symmetrize
+      ]
+    );
+
+  const rebuildMultiView =
+    useCallback(
+      async () => {
+        if (!frontFile) {
+          notify(
+            "ADD FRONT PNG FIRST"
+          );
+
+          return;
+        }
+
+        if (aiCategory && !sideFile) {
+          notify("AI MODE REQUIRES FRONT + SIDE");
+          return;
+        }
+
+        await regenerateMultiView({
+          front: frontFile,
+          side: sideFile ?? undefined
+        });
+      },
+      [
+        frontFile,
+        notify,
+        regenerateMultiView,
+        sideFile
+      ]
+    );
+
+  const attachFront =
+    useCallback(
+      async (
+        file: File
+      ) => {
+        setBusy(
+          true
+        );
+
+        try {
+          notify(
+            "IMPORTING FRONT"
+          );
+
+          const lower =
+            file.name.toLowerCase();
+
+          if (
+            !(
+              lower.endsWith(".png") ||
+              lower.endsWith(".jpg") ||
+              lower.endsWith(".jpeg") ||
+              lower.endsWith(".webp")
+            )
+          ) {
+            throw new Error(
+              "Unsupported image"
+            );
+          }
+
+          setFrontFile(
+            file
+          );
+
+          /*
+           * SIDE survives while FRONT is replaced so the
+           * user can correct the main view without rebuilding
+           * the workflow from scratch.
+           */
+          setPendingName(
+            file.name.replace(
+              /\.(png|jpe?g|webp)$/i,
+              ""
+            )
+          );
+
+          setPendingHash(
+            await hashImageFile(file)
+          );
+
+          if (aiCategory && !sideFile) {
+            setPendingImage(null);
+            notify("AI MODE · ADD SIDE PNG");
+            setPaywall(false);
+            return;
+          }
+
+          const result = sideFile
+            ? await imagesToVoxels(
+                { front: file, side: sideFile },
+                {
+                  volumeSize: volumeRef.current.size,
+                  mode: aiCategory ? "model" : "solid",
+                  heightMax: aiCategory ? aiCategoryPreset(aiCategory).heightMax : imageHeight,
+                  maxVoxels: MAX_SAFE,
+                  symmetrize: aiCategory ? aiCategoryPreset(aiCategory).symmetrize : symmetrize,
+                  useLocalAi: Boolean(aiCategory),
+                  aiCategory: aiCategory ?? undefined
+                }
+              )
+            : await imageToVoxels(
+                file,
+                {
+                  volumeSize: volumeRef.current.size,
+                  mode: aiCategory ? "model" : "solid",
+                  heightMax: aiCategory ? aiCategoryPreset(aiCategory).heightMax : imageHeight,
+                  maxVoxels: MAX_SAFE,
+                  symmetrize: aiCategory ? aiCategoryPreset(aiCategory).symmetrize : symmetrize,
+                  useLocalAi: Boolean(aiCategory),
+                  aiCategory: aiCategory ?? undefined
+                }
+              );
+
+          if (!result.voxels.length) {
+            throw new Error("Empty image");
+          }
+
+          setPendingImage(result);
+          notify(`${result.count ?? result.voxels.length} VX READY`);
+
+          setPaywall(
+            false
+          );
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message.toUpperCase()
+              : "FRONT IMPORT FAILED"
+          );
+        } finally {
+          setBusy(
+            false
+          );
+        }
+      },
+      [
+        aiCategory,
+        imageHeight,
+        notify,
+        regenerateMultiView,
+        sideFile,
+        symmetrize
+      ]
+    );
+
+  const attachSide =
+    useCallback(
+      async (
+        file: File
+      ) => {
+        setSideFile(
+          file
+        );
+
+        if (!frontFile) {
+          notify(
+            "SIDE READY · ADD FRONT PNG"
+          );
+
+          return;
+        }
+
+        await regenerateMultiView({
+          front: frontFile,
+          side: file
+        });
+      },
+      [
+        frontFile,
+        notify,
+        regenerateMultiView
+      ]
+    );
+
+  const removeSide =
+    useCallback(() => {
+      setSideFile(
+        null
+      );
+
+      if (frontFile) {
+        void regenerateMultiView({
+          front: frontFile,
+          side: undefined
+        });
+      } else {
+        notify(
+          "SIDE REMOVED"
+        );
+      }
+    }, [
+      frontFile,
+      notify,
+      regenerateMultiView
+    ]);
+
+  const openProject =
+    useCallback(
+      async (
+        file: File
+      ) => {
+        setBusy(
+          true
+        );
+
+        try {
+          const lower =
+            file.name.toLowerCase();
+
+          if (
+            lower.endsWith(".png") ||
+            lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") ||
+            lower.endsWith(".webp")
+          ) {
+            notify(
+              "IMPORTING IMAGE"
+            );
+
+            await new Promise(
+              (resolve) =>
+                window.setTimeout(
+                  resolve,
+                  40
+                )
+            );
+
+            setFrontFile(
+              file
+            );
+
+            setSideFile(
+              null
+            );
+
+            const result =
+              await imageToVoxels(
+                file,
+                {
+                  volumeSize:
+                    volumeRef.current.size,
+                  heightMax:
+                    imageHeight,
+                  maxVoxels:
+                    MAX_SAFE,
+                  symmetrize:
+                    false
+                }
+              );
+
+            if (
+              !result.voxels.length
+            ) {
+              throw new Error(
+                "Empty image"
+              );
+            }
+
+            setPendingName(
+              file.name.replace(
+                /\.(png|jpe?g|webp)$/i,
+                ""
+              )
+            );
+
+            setPendingHash(
+              await hashImageFile(
+                file
+              )
+            );
+
+            setPendingImage(
+              result
+            );
+
+            setPaywall(
+              false
+            );
+
+            notify(
+              `${result.count ?? result.voxels.length} VX READY`
+            );
+
+            return;
+          }
+
+          if (
+            lower.endsWith(
+              ".vox"
+            )
+          ) {
+            const model =
+              importVox(
+                await file.arrayBuffer()
+              );
+
+            volumeRef.current.load(
+              {
+                size:
+                  model.size,
+                voxels:
+                  model.voxels
+              }
+            );
+
+            setPalette(
+              clonePalette(
+                model.palette
+              )
+            );
+
+            setTitle(
+              file.name.replace(
+                /\.vox$/i,
+                ""
+              )
+            );
+          } else {
+            const parsed =
+              JSON.parse(
+                await file.text()
+              ) as DraftV1;
+
+            if (
+              !Array.isArray(
+                parsed.voxels
+              )
+            ) {
+              throw new Error(
+                "Invalid project"
+              );
+            }
+
+            volumeRef.current.load(
+              parsed
+            );
+
+            setTitle(
+              parsed.title ||
+                file.name.replace(
+                  /\.json$/i,
+                  ""
+                )
+            );
+
+            if (
+              parsed.palette?.length
+            ) {
+              setPalette(
+                clonePalette(
+                  parsed.palette
+                )
+              );
+            }
+          }
+
+          historyRef.current.reset();
+
+          setSelected(
+            new Set()
+          );
+
+          setBoxStart(
+            null
+          );
+
+          setPendingImage(
+            null
+          );
+
+          setPendingHash(
+            ""
+          );
+
+          setFrontFile(
+            null
+          );
+
+          setSideFile(
+            null
+          );
+
+
+          packVolume();
+
+          notify(
+            "PROJECT LOADED"
+          );
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message.toUpperCase()
+              : "OPEN FAILED"
+          );
+        } finally {
+          setBusy(
+            false
+          );
+        }
+      },
+      [
+        imageHeight,
+        notify,
+        packVolume,
+        symmetrize
+      ]
+    );
+
+  useEffect(() => {
+    const handler = (
+      e: KeyboardEvent
+    ) => {
+      const el =
+        e.target as HTMLElement | null;
+
+      if (
+        el?.tagName ===
+          "INPUT" ||
+        el?.tagName ===
+          "TEXTAREA"
+      ) {
+        return;
+      }
+
+      const key =
+        e.key.toLowerCase();
+
+      const mod =
+        e.ctrlKey ||
+        e.metaKey;
+
+      if (
+        e.key ===
+        "Escape"
+      ) {
+        e.preventDefault();
+
+        setBoxStart(
+          null
+        );
+
+        setSelected(
+          new Set()
+        );
+
+        setPendingImage(
+          null
+        );
+
+        setPendingName(
+          ""
+        );
+
+        setPendingHash(
+          ""
+        );
+
+        setFrontFile(
+          null
+        );
+
+        setSideFile(
+          null
+        );
+
+
+        setPaywall(
+          false
+        );
+
+        strokeRef.current =
+          null;
+
+        return;
+      }
+
+      if (
+        e.key ===
+          "Enter" &&
+        pendingImage
+      ) {
         e.preventDefault();
         applyImage();
         return;
       }
-      if (key === "f" && !mod) {
+
+      if (
+        key ===
+          "f" &&
+        !mod
+      ) {
         e.preventDefault();
         packVolume();
-        notify("FIT");
+        notify(
+          "FIT"
+        );
         return;
       }
-      if (clip.axis && key === ",") setClip((current) => ({ ...current, value: Math.max(0, current.value - 1) }));
-      if (clip.axis && key === ".") setClip((current) => ({ ...current, value: Math.min(volume.size - 1, current.value + 1) }));
-      if (mod && key === "z") {
+
+      if (
+        clip.axis &&
+        key === ","
+      ) {
+        setClip(
+          (current) => ({
+            ...current,
+            value:
+              Math.max(
+                0,
+                current.value -
+                  1
+              )
+          })
+        );
+      }
+
+      if (
+        clip.axis &&
+        key === "."
+      ) {
+        setClip(
+          (current) => ({
+            ...current,
+            value:
+              Math.min(
+                volume.size -
+                  1,
+                current.value +
+                  1
+              )
+          })
+        );
+      }
+
+      if (
+        mod &&
+        key === "z"
+      ) {
         e.preventDefault();
-        if (e.shiftKey) redo();
-        else undo();
+
+        if (
+          e.shiftKey
+        ) {
+          redo();
+        } else {
+          undo();
+        }
+
         return;
       }
-      if (mod && key === "y") {
+
+      if (
+        mod &&
+        key === "y"
+      ) {
         e.preventDefault();
         redo();
         return;
       }
-      if (mod && key === "c") {
+
+      if (
+        mod &&
+        key === "c"
+      ) {
         e.preventDefault();
         copySelected();
         return;
       }
-      if (mod && key === "v") {
+
+      if (
+        mod &&
+        key === "v"
+      ) {
         e.preventDefault();
         pasteClipboard();
         return;
       }
-      if (mod && key === "d") {
+
+      if (
+        mod &&
+        key === "d"
+      ) {
         e.preventDefault();
         duplicateSelected();
         return;
       }
-      if (key === "b") setTool("attach");
-      if (key === "e") setTool("erase");
-      if (key === "p") setTool("paint");
-      if (key === "g") setTool("fill");
-      if (key === "i") setTool("eyedrop");
-      if (key === "q") setTool("select");
-      if (key === "u") setTool("box");
-      if (key === "x") setMirror((m) => ({ ...m, x: !m.x }));
-      if (key === "y" && !mod) setMirror((m) => ({ ...m, y: !m.y }));
-      if (key === "z" && !mod) setMirror((m) => ({ ...m, z: !m.z }));
-      if (key === "[") setBrush((n) => Math.max(1, n - 1));
-      if (key === "]") setBrush((n) => Math.min(5, n + 1));
-      if (key === "delete" || key === "backspace") deleteSelected();
-      if (e.key === "ArrowLeft") moveSelected(-1, 0, 0);
-      if (e.key === "ArrowRight") moveSelected(1, 0, 0);
-      if (e.key === "ArrowUp") moveSelected(0, e.shiftKey ? 1 : 0, e.shiftKey ? 0 : -1);
-      if (e.key === "ArrowDown") moveSelected(0, e.shiftKey ? -1 : 0, e.shiftKey ? 0 : 1);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [applyImage, clip.axis, copySelected, deleteSelected, duplicateSelected, moveSelected, notify, packVolume, pasteClipboard, pendingImage, redo, undo, volume.size]);
 
-  const creditLabel = creditsLeft === Number.POSITIVE_INFINITY ? "PRO" : `${creditsLeft}/${FREE_IMAGE_APPLIES}`;
+      if (
+        key === "b"
+      ) {
+        setTool(
+          "attach"
+        );
+      }
+
+      if (
+        key === "e"
+      ) {
+        setTool(
+          "erase"
+        );
+      }
+
+      if (
+        key === "p"
+      ) {
+        setTool(
+          "paint"
+        );
+      }
+
+      if (
+        key === "g"
+      ) {
+        setTool(
+          "fill"
+        );
+      }
+
+      if (
+        key === "i"
+      ) {
+        setTool(
+          "eyedrop"
+        );
+      }
+
+      if (
+        key === "q"
+      ) {
+        setTool(
+          "select"
+        );
+      }
+
+      if (
+        key === "u"
+      ) {
+        setTool(
+          "box"
+        );
+      }
+
+      if (
+        key === "x"
+      ) {
+        setMirror(
+          (m) => ({
+            ...m,
+            x: !m.x
+          })
+        );
+      }
+
+      if (
+        key === "y" &&
+        !mod
+      ) {
+        setMirror(
+          (m) => ({
+            ...m,
+            y: !m.y
+          })
+        );
+      }
+
+      if (
+        key === "z" &&
+        !mod
+      ) {
+        setMirror(
+          (m) => ({
+            ...m,
+            z: !m.z
+          })
+        );
+      }
+
+      if (
+        key === "["
+      ) {
+        setBrush(
+          (n) =>
+            Math.max(
+              1,
+              n - 1
+            )
+        );
+      }
+
+      if (
+        key === "]"
+      ) {
+        setBrush(
+          (n) =>
+            Math.min(
+              5,
+              n + 1
+            )
+        );
+      }
+
+      if (
+        key === "delete" ||
+        key === "backspace"
+      ) {
+        deleteSelected();
+      }
+
+      if (
+        e.key ===
+        "ArrowLeft"
+      ) {
+        moveSelected(
+          -1,
+          0,
+          0
+        );
+      }
+
+      if (
+        e.key ===
+        "ArrowRight"
+      ) {
+        moveSelected(
+          1,
+          0,
+          0
+        );
+      }
+
+      if (
+        e.key ===
+        "ArrowUp"
+      ) {
+        moveSelected(
+          0,
+          e.shiftKey
+            ? 1
+            : 0,
+          e.shiftKey
+            ? 0
+            : -1
+        );
+      }
+
+      if (
+        e.key ===
+        "ArrowDown"
+      ) {
+        moveSelected(
+          0,
+          e.shiftKey
+            ? -1
+            : 0,
+          e.shiftKey
+            ? 0
+            : 1
+        );
+      }
+    };
+
+    window.addEventListener(
+      "keydown",
+      handler
+    );
+
+    return () =>
+      window.removeEventListener(
+        "keydown",
+        handler
+      );
+  }, [
+    applyImage,
+    clip.axis,
+    copySelected,
+    deleteSelected,
+    duplicateSelected,
+    moveSelected,
+    notify,
+    packVolume,
+    pasteClipboard,
+    pendingImage,
+    redo,
+    undo,
+    volume.size
+  ]);
+
+  const creditLabel =
+    creditsLeft ===
+    Number.POSITIVE_INFINITY
+      ? "PRO"
+      : `${creditsLeft}/${FREE_IMAGE_APPLIES}`;
 
   return (
     <main className="builderShell">
       <header className="builderHeader">
         <div className="headerLeft">
-          <Link href="/" className="brand">
-            <span className="brandMark">◆</span> VOXEL
+          <Link
+            href="/"
+            className="brand"
+          >
+            <span className="brandMark">
+              ◆
+            </span>{" "}
+            VOXEL
           </Link>
         </div>
+
         <div className="creationTitle">
           {editingTitle ? (
             <input
               autoFocus
               className="titleInput"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={() => setEditingTitle(false)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") setEditingTitle(false);
+              value={
+                title
+              }
+              onChange={(
+                e
+              ) =>
+                setTitle(
+                  e.target.value
+                )
+              }
+              onBlur={() =>
+                setEditingTitle(
+                  false
+                )
+              }
+              onKeyDown={(
+                e
+              ) => {
+                if (
+                  e.key ===
+                  "Enter"
+                ) {
+                  setEditingTitle(
+                    false
+                  );
+                }
               }}
             />
           ) : (
             <>
-              <span>{title}</span>
-              <button className="titleEditBtn" onClick={() => setEditingTitle(true)}>EDIT</button>
+              <span>
+                {title}
+              </span>
+
+              <button
+                className="titleEditBtn"
+                onClick={() =>
+                  setEditingTitle(
+                    true
+                  )
+                }
+              >
+                EDIT
+              </button>
             </>
           )}
         </div>
+
         <div className="builderActions">
-          <button onClick={undo} disabled={!canUndo || busy}>UNDO</button>
-          <button onClick={redo} disabled={!canRedo || busy}>REDO</button>
-          <button onClick={() => fileRef.current?.click()} disabled={busy}>OPEN</button>
-          <button onClick={() => void exportFiles("json")} disabled={busy}>PROJECT</button>
-          <button onClick={() => void exportFiles("vox")} disabled={busy}>VOX</button>
-          <button onClick={() => void exportFiles("glb")} disabled={busy}>GLB</button>
-          <button onClick={() => void exportFiles("obj")} disabled={busy}>OBJ</button>
-          <button className="primaryButton" onClick={() => void publish()} disabled={busy}>PUBLISH</button>
+          <button
+            onClick={undo}
+            disabled={
+              !canUndo ||
+              busy
+            }
+          >
+            UNDO
+          </button>
+
+          <button
+            onClick={redo}
+            disabled={
+              !canRedo ||
+              busy
+            }
+          >
+            REDO
+          </button>
+
+          <button
+            onClick={() =>
+              fileRef.current?.click()
+            }
+            disabled={busy}
+          >
+            OPEN
+          </button>
+
+          <button
+            onClick={() =>
+              void exportFiles(
+                "json"
+              )
+            }
+            disabled={busy}
+          >
+            PROJECT
+          </button>
+
+          <button
+            onClick={() =>
+              void exportFiles(
+                "vox"
+              )
+            }
+            disabled={busy}
+          >
+            VOX
+          </button>
+
+          <button
+            onClick={() =>
+              void exportFiles(
+                "glb"
+              )
+            }
+            disabled={busy}
+          >
+            GLB
+          </button>
+
+          <button
+            onClick={() =>
+              void exportFiles(
+                "obj"
+              )
+            }
+            disabled={busy}
+          >
+            OBJ
+          </button>
+
+          <button
+            className="primaryButton"
+            onClick={() =>
+              void publish()
+            }
+            disabled={busy}
+          >
+            PUBLISH
+          </button>
+
           <input
             ref={fileRef}
             type="file"
             accept=".json,.vox,.png,.jpg,.jpeg,.webp,application/json,image/png,image/jpeg,image/webp"
             hidden
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void openProject(file);
-              e.target.value = "";
+            onChange={(
+              e
+            ) => {
+              const file =
+                e.target.files?.[0];
+
+              if (
+                file
+              ) {
+                void openProject(
+                  file
+                );
+              }
+
+              e.target.value =
+                "";
             }}
           />
+
           <input
             ref={frontRef}
             type="file"
             accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
             hidden
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void attachFront(file);
-              e.target.value = "";
+            onChange={(
+              e
+            ) => {
+              const file =
+                e.target.files?.[0];
+
+              if (
+                file
+              ) {
+                void attachFront(
+                  file
+                );
+              }
+
+              e.target.value =
+                "";
             }}
           />
         </div>
@@ -1077,225 +3564,862 @@ export default function Builder() {
 
       <div className="builderBody voxelBody">
         <aside className="brickPanel">
-          <p className="panelLabel">TOOLS</p>
+          <p className="panelLabel">
+            TOOLS
+          </p>
+
           <div className="toolStack">
-            {TOOLS.map((item) => (
-              <button key={item.id} className={tool === item.id ? "modeOn" : ""} onClick={() => setTool(item.id)}>
-                {item.label}
-                <small>{item.key}</small>
-              </button>
-            ))}
-          </div>
-          {tool === "box" && (
-            <div className="viewRow">
-              {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
-                <button key={mode} className={boxMode === mode ? "modeOn" : ""} onClick={() => setBoxMode(mode)}>
-                  {mode.toUpperCase()}
+            {TOOLS.map(
+              (
+                item
+              ) => (
+                <button
+                  key={
+                    item.id
+                  }
+                  className={
+                    tool ===
+                    item.id
+                      ? "modeOn"
+                      : ""
+                  }
+                  onClick={() =>
+                    setTool(
+                      item.id
+                    )
+                  }
+                >
+                  {
+                    item.label
+                  }
+                  <small>
+                    {
+                      item.key
+                    }
+                  </small>
                 </button>
-              ))}
+              )
+            )}
+          </div>
+
+          {tool ===
+            "box" && (
+            <div className="viewRow">
+              {(
+                [
+                  "fill",
+                  "erase",
+                  "select"
+                ] as BoxMode[]
+              ).map(
+                (
+                  mode
+                ) => (
+                  <button
+                    key={
+                      mode
+                    }
+                    className={
+                      boxMode ===
+                      mode
+                        ? "modeOn"
+                        : ""
+                    }
+                    onClick={() =>
+                      setBoxMode(
+                        mode
+                      )
+                    }
+                  >
+                    {mode.toUpperCase()}
+                  </button>
+                )
+              )}
             </div>
           )}
+
           <details className="fold">
-            <summary>STATUS · {creditLabel}</summary>
+            <summary>
+              STATUS ·{" "}
+              {
+                creditLabel
+              }
+            </summary>
+
             <div className="foldBody">
               <p className="foldHint">
-                {tool.toUpperCase()} · MODEL · {count} VX · {volume.size}³
-                {pendingImage ? " · PREVIEW" : ""}
-                {sideFile ? " · SIDE" : ""}
-                {busy ? " · BUSY" : ""}
+                {
+                  tool.toUpperCase()
+                }{" "}
+                ·{" "}
+                MODEL{" "}
+                ·{" "}
+                {count} VX ·{" "}
+                {volume.size}³
+                {pendingImage
+                  ? " · PREVIEW"
+                  : ""}
+                {sideFile
+                  ? " · SIDE"
+                  : ""}
+                {busy
+                  ? " · BUSY"
+                  : ""}
               </p>
-              <button onClick={() => void syncPlan()} disabled={busy}>SYNC WALLET</button>
+
+              <button
+                onClick={() =>
+                  void syncPlan()
+                }
+                disabled={
+                  busy
+                }
+              >
+                SYNC WALLET
+              </button>
             </div>
           </details>
-          <p className="category">BRUSH {brush}</p>
+
+          <p className="category">
+            BRUSH{" "}
+            {brush}
+          </p>
+
           <div className="viewRow">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>{n}</button>
-            ))}
+            {[1, 2, 3, 4, 5].map(
+              (n) => (
+                <button
+                  key={n}
+                  className={
+                    brush ===
+                    n
+                      ? "modeOn"
+                      : ""
+                  }
+                  onClick={() =>
+                    setBrush(
+                      n
+                    )
+                  }
+                >
+                  {n}
+                </button>
+              )
+            )}
           </div>
-          <p className="category">MIRROR</p>
+
+          <p className="category">
+            MIRROR
+          </p>
+
           <div className="viewRow">
-            {(["x", "y", "z"] as const).map((axis) => (
-              <button key={axis} className={mirror[axis] ? "modeOn" : ""} onClick={() => setMirror((m) => ({ ...m, [axis]: !m[axis] }))}>
-                {axis.toUpperCase()}
-              </button>
-            ))}
+            {(
+              [
+                "x",
+                "y",
+                "z"
+              ] as const
+            ).map(
+              (
+                axis
+              ) => (
+                <button
+                  key={
+                    axis
+                  }
+                  className={
+                    mirror[
+                      axis
+                    ]
+                      ? "modeOn"
+                      : ""
+                  }
+                  onClick={() =>
+                    setMirror(
+                      (
+                        m
+                      ) => ({
+                        ...m,
+                        [axis]:
+                          !m[
+                            axis
+                          ]
+                      })
+                    )
+                  }
+                >
+                  {axis.toUpperCase()}
+                </button>
+              )
+            )}
           </div>
-          <p className="category">VOLUME</p>
+
+          <p className="category">
+            VOLUME
+          </p>
+
           <div className="viewRow">
-            {SIZES.map((size) => (
-              <button key={size} className={volume.size === size ? "modeOn" : ""} onClick={() => resize(size)}>{size}</button>
-            ))}
+            {SIZES.map(
+              (size) => (
+                <button
+                  key={
+                    size
+                  }
+                  className={
+                    volume.size ===
+                    size
+                      ? "modeOn"
+                      : ""
+                  }
+                  onClick={() =>
+                    resize(
+                      size
+                    )
+                  }
+                >
+                  {size}
+                </button>
+              )
+            )}
           </div>
-          <button onClick={packVolume} disabled={!count}>FIT</button>
-          <button onClick={() => applyNow(hollowCells(volumeRef.current), null, false)}>HOLLOW</button>
-          <button onClick={clearAll}>CLEAR</button>
+
+          <button
+            onClick={
+              packVolume
+            }
+            disabled={
+              !count
+            }
+          >
+            FIT
+          </button>
+
+          <button
+            onClick={() =>
+              applyNow(
+                hollowCells(
+                  volumeRef.current
+                ),
+                null,
+                false
+              )
+            }
+          >
+            HOLLOW
+          </button>
+
+          <button
+            onClick={
+              clearAll
+            }
+          >
+            CLEAR
+          </button>
         </aside>
 
         <section className="viewport">
           <Canvas
             shadows
-            dpr={[1, 1.75]}
-            camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}
-            gl={{ toneMappingExposure: 1.4 }}
+            dpr={[
+              1,
+              1.75
+            ]}
+            camera={{
+              position: [
+                40,
+                28,
+                40
+              ],
+              fov: 42,
+              near: 0.1,
+              far: 4000
+            }}
           >
-            <color attach="background" args={["#222737"]} />
-            <ambientLight intensity={2.1} />
-            <hemisphereLight intensity={1.3} groundColor="#1b2130" color="#8b97b5" />
-            <directionalLight position={[18, 32, 14]} intensity={4.6} castShadow />
-            <directionalLight position={[-18, 20, 10]} intensity={2.4} />
-            <directionalLight position={[0, 12, -20]} intensity={1.2} />
+            <color
+              attach="background"
+              args={[
+                "#222737"
+              ]}
+            />
+
+            <ambientLight
+              intensity={
+                1.45
+              }
+            />
+
+            <hemisphereLight
+              intensity={
+                0.9
+              }
+              groundColor="#1b2130"
+              color="#68758f"
+            />
+
+            <directionalLight
+              position={[
+                18,
+                32,
+                14
+              ]}
+              intensity={
+                3.8
+              }
+              castShadow
+            />
+
+            <directionalLight
+              position={[
+                -18,
+                20,
+                10
+              ]}
+              intensity={
+                1.7
+              }
+            />
+
             {grid && (
               <Grid
-                args={[volume.size, volume.size]}
-                position={[cx, -0.49, cz]}
+                args={[
+                  volume.size,
+                  volume.size
+                ]}
+                position={[
+                  cx,
+                  -0.49,
+                  cz
+                ]}
                 cellSize={1}
-                cellThickness={0.55}
+                cellThickness={
+                  0.55
+                }
                 cellColor="#3c3457"
                 sectionSize={8}
-                sectionThickness={1.1}
+                sectionThickness={
+                  1.1
+                }
                 sectionColor="#a678ff"
-                fadeDistance={volume.size * 2}
+                fadeDistance={
+                  volume.size *
+                  2
+                }
               />
             )}
-            <Ground size={volume.size} onHit={onHit} onHover={onHover} />
-            <VolumeFrame size={volume.size} />
-            <VoxelCloud volume={volume} palette={palette} revision={rev} selected={selected} clip={clip} onHit={onHit} onHover={onHover} />
-            {pendingImage && <PendingPreview voxels={pendingImage.voxels} palette={pendingImage.palette} />}
-            {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
-              <Ghost cell={ghost} color={palette[color]} valid={ghostValid || tool !== "attach"} />
+
+            <Ground
+              size={
+                volume.size
+              }
+              onHit={onHit}
+              onHover={
+                onHover
+              }
+            />
+
+            <VolumeFrame
+              size={
+                volume.size
+              }
+            />
+
+            <VoxelCloud
+              volume={
+                volume
+              }
+              palette={
+                palette
+              }
+              revision={
+                rev
+              }
+              selected={
+                selected
+              }
+              clip={
+                clip
+              }
+              onHit={
+                onHit
+              }
+              onHover={
+                onHover
+              }
+            />
+
+            {pendingImage && (
+              <PendingPreview
+                voxels={
+                  pendingImage.voxels
+                }
+                palette={
+                  pendingImage.palette
+                }
+              />
             )}
-            {tool === "box" && boxStart && ghost && <BoxPreview a={boxStart} b={ghost} />}
-            {tool !== "box" && clipboard.length > 0 && ghost && <OffsetGhost items={clipboard} origin={ghost} />}
-            <CameraRig view={view} size={volume.size} focus={focus} />
+
+            {ghost &&
+              tool !==
+                "box" &&
+              (
+                tool ===
+                  "attach" ||
+                brush > 1
+              ) && (
+                <Ghost
+                  cell={
+                    ghost
+                  }
+                  color={
+                    palette[
+                      color
+                    ]
+                  }
+                  valid={
+                    ghostValid ||
+                    tool !==
+                      "attach"
+                  }
+                />
+              )}
+
+            {tool ===
+              "box" &&
+              boxStart &&
+              ghost && (
+                <BoxPreview
+                  a={
+                    boxStart
+                  }
+                  b={
+                    ghost
+                  }
+                />
+              )}
+
+            {tool !==
+              "box" &&
+              clipboard.length >
+                0 &&
+              ghost && (
+                <OffsetGhost
+                  items={
+                    clipboard
+                  }
+                  origin={
+                    ghost
+                  }
+                />
+              )}
+
+            <CameraRig
+              view={
+                view
+              }
+              size={
+                volume.size
+              }
+              focus={
+                focus
+              }
+            />
+
             <OrbitControls
               makeDefault
               enableDamping
-              dampingFactor={0.08}
-              target={focus}
-              mouseButtons={{ LEFT: undefined, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }}
-              enableRotate={view === "iso"}
-              minDistance={4}
-              maxDistance={volume.size * 4}
+              dampingFactor={
+                0.08
+              }
+              target={
+                focus
+              }
+              mouseButtons={{
+                LEFT:
+                  undefined,
+                MIDDLE:
+                  THREE.MOUSE.PAN,
+                RIGHT:
+                  THREE.MOUSE.ROTATE
+              }}
+              enableRotate={
+                view ===
+                "iso"
+              }
+              minDistance={
+                4
+              }
+              maxDistance={
+                volume.size *
+                4
+              }
             />
           </Canvas>
-          {toast && <div className="toast">{toast}</div>}
-          {pendingImage && !paywall && (
-            <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
-              <div style={{ marginBottom: 8 }}>
-                APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX · {pendingImage.width}×{pendingImage.height} · MODEL · {viewLabel}
-              </div>
-              <div className="viewRow">
-                <button onClick={applyImage} disabled={busy}>APPLY</button>
-                <button onClick={cancelImage} disabled={busy}>CANCEL</button>
-              </div>
+
+          {toast && (
+            <div className="toast">
+              {
+                toast
+              }
             </div>
           )}
+
+          {pendingImage &&
+            !paywall && (
+              <div
+                className="toast"
+                style={{
+                  bottom: 24,
+                  minWidth: 300
+                }}
+              >
+                <div
+                  style={{
+                    marginBottom: 8
+                  }}
+                >
+                  APPLY IMAGE ·{" "}
+                  {
+                    pendingImage.count ??
+                    pendingImage.voxels.length
+                  }{" "}
+                  VX ·{" "}
+                  {
+                    pendingImage.width
+                  }
+                  ×
+                  {
+                    pendingImage.height
+                  }{" "}
+                  ·{" "}
+                  MODEL{" "}
+                  ·{" "}
+                  {viewLabel}
+                </div>
+
+                <div className="viewRow">
+                  <button
+                    onClick={
+                      applyImage
+                    }
+                    disabled={
+                      busy
+                    }
+                  >
+                    APPLY
+                  </button>
+
+                  <button
+                    onClick={
+                      cancelImage
+                    }
+                    disabled={
+                      busy
+                    }
+                  >
+                    CANCEL
+                  </button>
+                </div>
+              </div>
+            )}
+
           {paywall && (
-            <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
-              <div style={{ marginBottom: 8 }}>FREE LIMIT REACHED · {MONTHLY_SOL} SOL / month · Phantom</div>
+            <div
+              className="toast"
+              style={{
+                bottom: 24,
+                minWidth: 300
+              }}
+            >
+              <div
+                style={{
+                  marginBottom: 8
+                }}
+              >
+                FREE LIMIT REACHED ·{" "}
+                {
+                  MONTHLY_SOL
+                }{" "}
+                SOL / month · Phantom
+              </div>
+
               <div className="viewRow">
-                <button onClick={() => void subscribe()} disabled={busy}>PAY {MONTHLY_SOL} SOL</button>
-                <button onClick={cancelImage} disabled={busy}>CANCEL</button>
+                <button
+                  onClick={() =>
+                    void subscribe()
+                  }
+                  disabled={
+                    busy
+                  }
+                >
+                  PAY{" "}
+                  {
+                    MONTHLY_SOL
+                  }{" "}
+                  SOL
+                </button>
+
+                <button
+                  onClick={
+                    cancelImage
+                  }
+                  disabled={
+                    busy
+                  }
+                >
+                  CANCEL
+                </button>
               </div>
             </div>
           )}
         </section>
 
         <aside className="inspector">
-          <p className="panelLabel">INSPECTOR</p>
+          <p className="panelLabel">
+            INSPECTOR
+          </p>
+
           <details className="fold">
-            <summary>GUIDE</summary>
+            <summary>
+              GUIDE
+            </summary>
+
             <div className="foldBody">
               <p className="foldHint">
-                Front PNG is required. Side PNG is optional and improves depth.
+                FRONT / SIDE PNG
                 <br />
-                Depth follows the silhouette: thin parts stay thin.
+                MULTI-VIEW RECONSTRUCTION
                 <br />
-                Symmetry is for characters and armor, not props.
+                MODEL + 2 VIEWS = MAX QUALITY
                 <br />
-                Enter applies the preview. Esc cancels. F fits the volume.
+                SYMMETRY = CHARACTER / ARMOR
                 <br />
-                Export GLB, VOX or OBJ ZIP when you are happy with the mesh.
+                ENTER apply · ESC cancel · F fit
+                <br />
+                GLB / VOX / OBJ ZIP
               </p>
             </div>
           </details>
+
           <div className="viewRow">
-            {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
-              <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
-                {mode.toUpperCase()}
-              </button>
-            ))}
+            {(
+              [
+                "iso",
+                "top",
+                "front",
+                "side"
+              ] as ViewMode[]
+            ).map(
+              (
+                mode
+              ) => (
+                <button
+                  key={
+                    mode
+                  }
+                  className={
+                    view ===
+                    mode
+                      ? "modeOn"
+                      : ""
+                  }
+                  onClick={() =>
+                    setView(
+                      mode
+                    )
+                  }
+                >
+                  {mode.toUpperCase()}
+                </button>
+              )
+            )}
           </div>
-          <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>GRID {grid ? "ON" : "OFF"}</button>
-          <p className="category">CLIP</p>
+
+          <button
+            className={
+              grid
+                ? "modeOn"
+                : ""
+            }
+            onClick={() =>
+              setGrid(
+                (g) => !g
+              )
+            }
+          >
+            GRID{" "}
+            {
+              grid
+                ? "ON"
+                : "OFF"
+            }
+          </button>
+
+          <p className="category">
+            CLIP
+          </p>
+
           <div className="viewRow">
-            {([null, "x", "y", "z"] as const).map((axis) => (
-              <button
-                key={String(axis)}
-                className={clip.axis === axis ? "modeOn" : ""}
-                onClick={() => setClip({ axis, value: axis ? Math.floor(volume.size / 2) : volume.size - 1 })}
-              >
-                {axis ? axis.toUpperCase() : "OFF"}
-              </button>
-            ))}
+            {(
+              [
+                null,
+                "x",
+                "y",
+                "z"
+              ] as const
+            ).map(
+              (
+                axis
+              ) => (
+                <button
+                  key={String(
+                    axis
+                  )}
+                  className={
+                    clip.axis ===
+                    axis
+                      ? "modeOn"
+                      : ""
+                  }
+                  onClick={() =>
+                    setClip(
+                      {
+                        axis,
+                        value:
+                          axis
+                            ? Math.floor(
+                                volume.size /
+                                  2
+                              )
+                            : volume.size -
+                              1
+                      }
+                    )
+                  }
+                >
+                  {axis
+                    ? axis.toUpperCase()
+                    : "OFF"}
+                </button>
+              )
+            )}
           </div>
+
           {clip.axis && (
-            <input type="range" min={0} max={volume.size - 1} value={clip.value} onChange={(e) => setClip((current) => ({ ...current, value: Number(e.target.value) }))} />
+            <input
+              type="range"
+              min={0}
+              max={
+                volume.size -
+                1
+              }
+              value={
+                clip.value
+              }
+              onChange={(
+                e
+              ) =>
+                setClip(
+                  (current) => ({
+                    ...current,
+                    value:
+                      Number(
+                        e.target.value
+                      )
+                  })
+                )
+              }
+            />
           )}
-          <p className="category">IMAGE IMPORT</p>
-          <p className="foldHint">Maximum depth · style {style}</p>
+
+          <p className="category">
+            AI MODE
+          </p>
+
+          <div className="viewRow">
+            <button
+              className={!aiCategory ? "modeOn" : ""}
+              onClick={disableAiMode}
+              disabled={busy}
+            >
+              OFF
+            </button>
+            {AI_CATEGORY_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                className={aiCategory === preset.id ? "modeOn" : ""}
+                onClick={() => activateAiCategory(preset.id)}
+                disabled={busy}
+                title={preset.description}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
+          <p className="foldHint">
+            {aiCategory
+              ? `${aiCategoryPreset(aiCategory).label} · LOCAL ONNX SEGMENTATION · GAME ASSET`
+              : "STANDARD RECONSTRUCTION · AI SEGMENTATION OFF"}
+          </p>
+
           <div className="viewRow">
             {[4, 8, 12, 16].map((n) => (
               <button
                 key={n}
                 className={imageHeight === n ? "modeOn" : ""}
-                onClick={() => {
-                  setImageHeight(n);
-                  if (frontFile) void rebuildMultiView();
-                }}
-                title={`Maximum extrusion depth: ${n} voxels`}
+                onClick={() => setImageHeight(n)}
+                disabled={busy || Boolean(aiCategory)}
               >
-                D{n}
+                H{n}
               </button>
             ))}
           </div>
-          <button className={symmetrize ? "modeOn" : ""} onClick={() => setSymmetrize((value) => !value)} title="Mirror on X. Use for characters and armor.">
+
+          <button
+            className={symmetrize ? "modeOn" : ""}
+            onClick={() => setSymmetrize((value) => !value)}
+            disabled={busy || Boolean(aiCategory)}
+            title="AI MODE uses the selected category preset"
+          >
             SYMMETRY {symmetrize ? "ON" : "OFF"}
           </button>
-          <button className={useLocalAi ? "modeOn" : ""} onClick={() => setUseLocalAi((value) => !value)}>
-            LOCAL AI {useLocalAi ? "ON" : "OFF"}
+
+          <p className="category">
+            MULTI VIEW · {viewCount}/2
+          </p>
+
+          <button
+            onClick={() => frontRef.current?.click()}
+            disabled={busy}
+            className={frontFile ? "modeOn" : ""}
+          >
+            {frontFile ? "FRONT ON" : "ADD FRONT PNG"}
           </button>
-          <p className="foldHint">{aiStatus}</p>
-          <p className="category">LIBRARY</p>
-          {CATALOG.map((item) => (
-            <button
-              key={item.id}
-              className={style === item.category && imageHeight === item.depth ? "modeOn" : ""}
-              onClick={() => {
-                const preset = presetFromCatalog(item);
-                setStyle(preset.style);
-                setImageHeight(preset.heightMax);
-                setSymmetrize(preset.symmetrize);
-                notify(`${item.name} · ${preset.style} · D${preset.heightMax}`);
-                if (frontFile) void rebuildMultiView();
-              }}
-              title={item.promptFront}
-            >
-              {item.name}
-            </button>
-          ))}
-          <p className="category">MULTI VIEW · {viewCount}/2</p>
-          <button onClick={() => frontRef.current?.click()} disabled={busy} className={frontFile ? "modeOn" : ""}>
-            {frontFile ? "Front image on" : "Add front PNG"}
+
+          <button
+            onClick={() => sideRef.current?.click()}
+            disabled={busy}
+            className={sideFile ? "modeOn" : ""}
+          >
+            {sideFile ? "SIDE ON · QUALITY BOOST" : aiCategory ? "ADD SIDE PNG · REQUIRED" : "ADD SIDE PNG (OPTIONAL)"}
           </button>
-          <button onClick={() => sideRef.current?.click()} disabled={busy} className={sideFile ? "modeOn" : ""}>
-            {sideFile ? "Side image on" : "Add side PNG"}
+
+          <button
+            onClick={() => void rebuildMultiView()}
+            disabled={busy || !frontFile}
+          >
+            REBUILD 3D
           </button>
-          <button onClick={() => void rebuildMultiView()} disabled={busy || !frontFile}>Rebuild preview</button>
+
           <div className="viewRow">
-            <button onClick={removeSide} disabled={busy || !sideFile}>Remove side</button>
+            <button
+              onClick={removeSide}
+              disabled={busy || !sideFile || Boolean(aiCategory)}
+            >
+              REMOVE SIDE
+            </button>
           </div>
+
           <input
             ref={sideRef}
             type="file"
@@ -1307,38 +4431,135 @@ export default function Builder() {
               e.target.value = "";
             }}
           />
+
           <p className="foldHint">
-            {frontFile ? "Front image ready" : "Front image required"}
+            {frontFile ? "FRONT READY" : "FRONT REQUIRED"}
             <br />
-            {sideFile ? "Side image ready" : "Side image optional"}
+            {sideFile ? "SIDE READY · QUALITY BOOST" : aiCategory ? "SIDE REQUIRED FOR AI MODE" : "SIDE OPTIONAL"}
             <br />
-            {viewCount === 2 ? "Preview uses both views" : viewCount === 1 ? "Preview uses the front image only" : "Add a front image to generate a preview"}
+            {viewCount === 2
+              ? "2-VIEW MODEL READY · HIGHER QUALITY"
+              : viewCount === 1
+                ? "FRONT-ONLY MODEL READY"
+                : "ADD FRONT IMAGE"}
           </p>
-          <p className="category">PALETTE</p>
+
+          <p className="category">
+            PALETTE
+          </p>
+
           <div className="colorRow dense">
-            {palette.slice(0, 64).map((hex, i) => (
-              <button key={`${hex}-${i}`} className={`swatch ${color === i ? "swatchOn" : ""}`} style={{ background: hex }} onClick={() => setColor(i)} />
-            ))}
+            {palette
+              .slice(
+                0,
+                64
+              )
+              .map(
+                (
+                  hex,
+                  i
+                ) => (
+                  <button
+                    key={`${hex}-${i}`}
+                    className={`swatch ${
+                      color === i
+                        ? "swatchOn"
+                        : ""
+                    }`}
+                    style={{
+                      background:
+                        hex
+                    }}
+                    onClick={() =>
+                      setColor(
+                        i
+                      )
+                    }
+                  />
+                )
+              )}
           </div>
+
           <input
             type="color"
-            value={palette[color]}
-            onChange={(e) => {
-              const next = palette.slice();
-              next[color] = e.target.value;
-              setPalette(next);
+            value={
+              palette[
+                color
+              ]
+            }
+            onChange={(
+              e
+            ) => {
+              const next =
+                palette.slice();
+
+              next[color] =
+                e.target.value;
+
+              setPalette(
+                next
+              );
             }}
           />
-          <p className="hint">{selected.size ? `${selected.size} SELECTED` : ghost ? `${ghost.x},${ghost.y},${ghost.z}` : "NO HIT"}</p>
-          {selected.size > 0 && (
+
+          <p className="hint">
+            {selected.size
+              ? `${selected.size} SELECTED`
+              : ghost
+                ? `${ghost.x},${ghost.y},${ghost.z}`
+                : "NO HIT"}
+          </p>
+
+          {selected.size >
+            0 && (
             <>
-              <button onClick={copySelected}>COPY</button>
-              <button onClick={duplicateSelected}>DUPLICATE</button>
-              <button onClick={paintSelected}>PAINT SEL</button>
-              <button onClick={deleteSelected}>DELETE SEL</button>
+              <button
+                onClick={
+                  copySelected
+                }
+              >
+                COPY
+              </button>
+
+              <button
+                onClick={
+                  duplicateSelected
+                }
+              >
+                DUPLICATE
+              </button>
+
+              <button
+                onClick={
+                  paintSelected
+                }
+              >
+                PAINT SEL
+              </button>
+
+              <button
+                onClick={
+                  deleteSelected
+                }
+              >
+                DELETE SEL
+              </button>
             </>
           )}
-          {clipboard.length > 0 && <button onClick={() => pasteClipboard()}>PASTE {clipboard.length}</button>}
+
+          {clipboard.length >
+            0 && (
+            <button
+              onClick={() =>
+                pasteClipboard()
+              }
+            >
+              PASTE{" "}
+              {
+                clipboard.length
+              }
+            </button>
+          )}
         </aside>
       </div>
     </main>
