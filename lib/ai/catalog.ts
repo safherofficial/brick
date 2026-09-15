@@ -24,9 +24,9 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "sword-short",
     name: "Short sword",
-    category: "weapon",
-    depth: STYLE_PROFILES.weapon.depth,
-    symmetrize: STYLE_PROFILES.weapon.symmetrize,
+    category: "sword",
+    depth: STYLE_PROFILES.sword.depth,
+    symmetrize: STYLE_PROFILES.sword.symmetrize,
     promptFront:
       "Orthographic front view, short medieval sword, blade up, white background, flat colors, no shadow.",
     promptSide:
