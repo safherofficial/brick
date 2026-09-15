@@ -2805,17 +2805,28 @@ export default function Builder() {
               null
             );
 
+            if (aiCategory) {
+              setSideFile(null);
+              setPendingImage(null);
+              notify("AI MODE · USE FRONT + SIDE IMPORT");
+              return;
+            }
+
             const result =
               await imageToVoxels(
                 file,
                 {
                   volumeSize:
                     volumeRef.current.size,
+                  mode:
+                    imageMode,
                   heightMax:
                     imageHeight,
                   maxVoxels:
                     MAX_SAFE,
                   symmetrize:
+                    false,
+                  useLocalAi:
                     false
                 }
               );
