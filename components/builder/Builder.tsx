@@ -1111,6 +1111,14 @@ export default function Builder() {
                 : "Side image optional"}
           </p>
           <p className="foldHint">
+            SIDE guide · edge-on profile (thin), white bg, tip up, same height as FRONT — not a second front view
+          </p>
+          {imageMode === "model" && sideFile && frontFile && (
+            <p className="foldHint">
+              Tip: if the mesh is fat or short, re-export SIDE as a true side silhouette
+            </p>
+          )}
+          <p className="foldHint">
             AI category · ONNX matte + depth presets
             {imageCategory ? ` · ${aiCategoryProfile(imageCategory).label}` : " · auto"}
           </p>
