@@ -103,12 +103,16 @@ export function assessSideView(
 ): SideViewAssessment {
   const aspectWH = frontBounds.width / Math.max(1, frontBounds.height);
   const aspectDH = sideBounds.width / Math.max(1, sideBounds.height);
-  const sideLooksLikeFront = aspectDH > aspectWH * 0.55;
-  const sideLooksLikeProfile = aspectDH < 0.28 && aspectDH < aspectWH * 0.5;
+  // Strict: only treat as "second front" when SIDE is nearly as wide as FRONT
+  // and not thin. Previous 0.55× threshold forced flat extrusion on almost every
+  // valid SIDE (including real profiles) and ignored the visual hull.
+  const sideLooksLikeFront =
+    aspectDH >= Math.max(0.4, aspectWH * 0.9) && aspectDH >= aspectWH * 0.85;
+  const sideLooksLikeProfile = aspectDH < 0.28 && aspectDH < aspectWH * 0.55;
 
   let score = 1;
   if (sideLooksLikeFront) score -= 0.55;
-  else if (aspectDH > 0.35) score -= 0.25;
+  else if (aspectDH > 0.4) score -= 0.2;
   else if (sideLooksLikeProfile) score += 0.1;
   score = Math.max(0, Math.min(1, score));
 
@@ -119,7 +123,7 @@ export function assessSideView(
   } else if (sideLooksLikeProfile) {
     message = "SIDE profile looks good · thin depth for visual hull";
   } else {
-    message = "SIDE loaded · check that height matches FRONT (tip to base)";
+    message = "SIDE loaded · visual hull active (FRONT ∩ SIDE)";
   }
 
   return {
