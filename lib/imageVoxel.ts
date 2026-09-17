@@ -854,9 +854,41 @@ function normalizeToVolume(voxels: ImageVoxel[], volumeSize: number) {
 }
 
 /**
- * Adaptive MODEL resolution — aspect ratios from FRONT (W/H) and SIDE (D/H)
- * are locked. Budget pressure scales all axes uniformly so tall thin props
- * (swords) are not squashed by height-first reduction.
+ * Median horizontal span of a side silhouette, relative to its height.
+ * More stable than full AABB width when the guard is wider than the blade.
+ */
+function sideProfileAspect(sideMask: boolean[][], sideBounds: Bounds): {
+  /** max row span / height — grid must fit the widest slice (guard) */
+  maxAspect: number;
+  /** median row span / height — typical thickness along the shaft */
+  medianAspect: number;
+} {
+  const spans: number[] = [];
+  for (let y = sideBounds.minY; y <= sideBounds.maxY; y += 1) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (let x = sideBounds.minX; x <= sideBounds.maxX; x += 1) {
+      if (!sideMask[y]?.[x]) continue;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+    }
+    if (Number.isFinite(minX)) spans.push(maxX - minX + 1);
+  }
+  const h = Math.max(1, sideBounds.height);
+  if (!spans.length) return { maxAspect: 0.12, medianAspect: 0.08 };
+  spans.sort((a, b) => a - b);
+  const median = spans[Math.floor(spans.length / 2)];
+  const maxSpan = spans[spans.length - 1];
+  return {
+    maxAspect: maxSpan / h,
+    medianAspect: median / h
+  };
+}
+
+/**
+ * Adaptive MODEL resolution. FRONT locks height + width; SIDE locks depth.
+ * Budget scales uniformly. If SIDE looks like another front view (similar
+ * aspect), depth falls back to heightMax so the mesh is not inflated into a slab.
  */
 function adaptiveModelDimensions(
   frontBounds: Bounds,
@@ -864,7 +896,8 @@ function adaptiveModelDimensions(
   volumeSize: number,
   maxVoxels: number,
   heightMax: number,
-  symmetrize = false
+  symmetrize = false,
+  sideMask?: boolean[][]
 ): Dimensions {
   const maxAxis = Math.max(MODEL_MIN_AXIS, volumeSize - 8);
   const safeBudget = Math.max(
@@ -872,18 +905,43 @@ function adaptiveModelDimensions(
     Math.min(Math.floor(maxVoxels), Math.floor(volumeSize ** 3 * MODEL_BUDGET_FILL))
   );
 
-  // Aspect ratios from silhouette bounds (content box, not full canvas).
   const aspectWH = frontBounds.width / Math.max(1, frontBounds.height);
-  const aspectDH = sideBounds
-    ? sideBounds.width / Math.max(1, sideBounds.height)
-    : heightMax / Math.max(1, frontBounds.height);
 
-  // Ideal size: fit height to maxAxis, derive W/D from ratios.
+  let aspectDH: number;
+  if (sideBounds && sideMask) {
+    const profile = sideProfileAspect(sideMask, sideBounds);
+    // Use median thickness for body depth; keep max so guard still fits the grid.
+    aspectDH = profile.medianAspect;
+    // SIDE resembles FRONT (not a thin profile) → treat as extrusion, not hull depth.
+    if (profile.medianAspect > aspectWH * 0.55) {
+      aspectDH = Math.min(
+        profile.medianAspect,
+        Math.max(heightMax, 3) / Math.max(1, frontBounds.height)
+      );
+      // Force a thin 2.5D depth in voxel space after height is chosen (below).
+      aspectDH = -1; // sentinel: use heightMax voxels directly
+    } else {
+      aspectDH = Math.min(profile.maxAspect, Math.max(profile.medianAspect * 1.35, profile.medianAspect));
+    }
+  } else if (sideBounds) {
+    aspectDH = sideBounds.width / Math.max(1, sideBounds.height);
+  } else {
+    aspectDH = -1;
+  }
+
+  // Master axis = FRONT height (never derive height from SIDE).
   let height = Math.min(maxAxis, Math.max(MODEL_MIN_AXIS, frontBounds.height));
   let width = Math.max(MODEL_MIN_AXIS, Math.round(height * aspectWH));
-  let depth = Math.max(MODEL_MIN_AXIS, Math.round(height * aspectDH));
+  let depth: number;
+  if (aspectDH < 0) {
+    depth = Math.max(MODEL_MIN_AXIS, Math.round(Math.max(3, heightMax || 6)));
+  } else {
+    depth = Math.max(MODEL_MIN_AXIS, Math.round(height * aspectDH));
+    if (heightMax > 0) {
+      depth = Math.min(depth, Math.max(MODEL_MIN_AXIS, Math.round(heightMax * 1.5)));
+    }
+  }
 
-  // Cap any axis that exceeds the volume; rescale the other two to keep ratios.
   const axisCap = Math.max(width, height, depth);
   if (axisCap > maxAxis) {
     const fit = maxAxis / axisCap;
@@ -892,42 +950,30 @@ function adaptiveModelDimensions(
     depth = Math.max(MODEL_MIN_AXIS, Math.round(depth * fit));
   }
 
-  // Thin side silhouettes only: soft ceiling from heightMax so AA/padding on a
-  // near-1px-wide side view cannot inflate depth into a slab. Thick props
-  // (aspectDH >= 0.22) keep pure silhouette ratio.
-  if (sideBounds && heightMax > 0 && aspectDH < 0.22) {
-    const thinCap = Math.max(MODEL_MIN_AXIS, Math.round(heightMax * 1.35));
-    depth = Math.min(depth, thinCap);
-  }
-
   const targetBudget = symmetrize
     ? Math.floor(safeBudget * 0.46)
     : Math.floor(safeBudget * 0.94);
   const targetProduct = Math.max(MODEL_MIN_AXIS ** 3, targetBudget);
 
-  // Uniform scale into budget — never preferentially eat height (that was
-  // destroying sword proportions: tall axis shrunk first → short fat mesh).
   let product = width * height * depth;
   if (product > targetProduct) {
     const scale = Math.cbrt(targetProduct / product);
-    width = Math.max(MODEL_MIN_AXIS, Math.max(1, Math.floor(width * scale)));
-    height = Math.max(MODEL_MIN_AXIS, Math.max(1, Math.floor(height * scale)));
-    depth = Math.max(MODEL_MIN_AXIS, Math.max(1, Math.floor(depth * scale)));
-    product = width * height * depth;
+    width = Math.max(MODEL_MIN_AXIS, Math.floor(width * scale));
+    height = Math.max(MODEL_MIN_AXIS, Math.floor(height * scale));
+    depth = Math.max(MODEL_MIN_AXIS, Math.floor(depth * scale));
   }
 
-  // Final integer fit: scale uniformly by ~0.98 until under safeBudget.
+  // Uniform shrink only — never height-first (that crushed tall weapons).
   let guard = 0;
   while (width * height * depth > safeBudget && guard < 48) {
-    const scale = Math.pow(safeBudget / (width * height * depth), 1 / 3) * 0.99;
+    const scale = Math.pow(safeBudget / Math.max(1, width * height * depth), 1 / 3) * 0.99;
     const nw = Math.max(MODEL_MIN_AXIS, Math.floor(width * scale));
     const nh = Math.max(MODEL_MIN_AXIS, Math.floor(height * scale));
     const nd = Math.max(MODEL_MIN_AXIS, Math.floor(depth * scale));
     if (nw === width && nh === height && nd === depth) {
-      // Stuck at minimums — drop one voxel on the largest axis only as last resort.
-      if (height >= width && height >= depth && height > MODEL_MIN_AXIS) height -= 1;
-      else if (width >= depth && width > MODEL_MIN_AXIS) width -= 1;
-      else if (depth > MODEL_MIN_AXIS) depth -= 1;
+      if (width >= height && width >= depth && width > MODEL_MIN_AXIS) width -= 1;
+      else if (depth >= height && depth > MODEL_MIN_AXIS) depth -= 1;
+      else if (height > MODEL_MIN_AXIS) height -= 1;
       else break;
     } else {
       width = nw;
@@ -1008,6 +1054,50 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   return components.filter((c) => c.length >= threshold).flat();
 }
 
+/** True if side silhouette is solid at (z) near row y (Y slack reduces height cuts). */
+function sideHit(
+  side: boolean[][],
+  y: number,
+  z: number,
+  height: number,
+  ySlack: number
+): boolean {
+  for (let dy = -ySlack; dy <= ySlack; dy += 1) {
+    const yy = y + dy;
+    if (yy < 0 || yy >= height) continue;
+    if (side[yy]?.[z]) return true;
+  }
+  return false;
+}
+
+/**
+ * Per-row Z span from the side mask (with Y slack). Used so a slightly
+ * misaligned SIDE does not delete the tip/pommel of the FRONT silhouette.
+ */
+function sideSpanAt(
+  side: boolean[][],
+  y: number,
+  depth: number,
+  height: number,
+  ySlack: number
+): { z0: number; z1: number } | null {
+  let z0 = Infinity;
+  let z1 = -Infinity;
+  for (let dy = -ySlack; dy <= ySlack; dy += 1) {
+    const yy = y + dy;
+    if (yy < 0 || yy >= height) continue;
+    const row = side[yy];
+    if (!row) continue;
+    for (let z = 0; z < depth; z += 1) {
+      if (!row[z]) continue;
+      z0 = Math.min(z0, z);
+      z1 = Math.max(z1, z);
+    }
+  }
+  if (!Number.isFinite(z0)) return null;
+  return { z0, z1 };
+}
+
 function reconstructVisualHull(
   frontRaster: Raster,
   frontMask: boolean[][],
@@ -1034,10 +1124,15 @@ function reconstructVisualHull(
     dimensions.height
   );
 
+  // ~1.5% of height as Y tolerance — absorbs FRONT/SIDE framing mismatch
+  // without letting depth bleed across distant slices.
+  const ySlack = Math.max(1, Math.round(dimensions.height * 0.015));
+
   const voxels: ImageVoxel[] = [];
 
   for (let y = 0; y < dimensions.height; y += 1) {
     const ny = dimensions.height <= 1 ? 0.5 : y / (dimensions.height - 1);
+    const span = sideSpanAt(side, y, dimensions.depth, dimensions.height, ySlack);
 
     for (let x = 0; x < dimensions.width; x += 1) {
       if (!front[y]?.[x]) continue;
@@ -1045,14 +1140,15 @@ function reconstructVisualHull(
       const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
       const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
 
-      for (let z = 0; z < dimensions.depth; z += 1) {
-        const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
+      // If SIDE has no row near this Y, keep a thin extrusion so height from
+      // FRONT is preserved (better than deleting the tip).
+      const z0 = span ? span.z0 : Math.floor((dimensions.depth - 1) * 0.35);
+      const z1 = span ? span.z1 : Math.ceil((dimensions.depth - 1) * 0.65);
 
-        // TRUE VISUAL HULL:
-        // FRONT gives the X/Y silhouette and SIDE gives the Z/Y silhouette.
-        // A voxel exists only in the intersection of the two silhouette
-        // volumes. There is no later voxel thinning step.
-        if (side && !side[y]?.[z]) continue;
+      for (let z = z0; z <= z1; z += 1) {
+        if (span && !sideHit(side, y, z, dimensions.height, ySlack)) continue;
+
+        const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
         let color: [number, number, number] = [
           frontColor.r,
@@ -1060,19 +1156,13 @@ function reconstructVisualHull(
           frontColor.b
         ];
 
-        if (sideRaster && sideBounds && side?.[y]?.[z]) {
+        if (sideRaster && sideBounds && sideHit(side, y, z, dimensions.height, ySlack)) {
           const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
-          // Treat FRONT as the primary material source near the front surface
-          // and progressively trust SIDE toward the rear surface. This avoids
-          // washing out front-facing weapon details while still giving the
-          // hidden half a coherent material derived from the second view.
           const surfaceT = clamp((nz - 0.14) / 0.72, 0, 1);
           const eased = surfaceT * surfaceT * (3 - 2 * surfaceT);
-          color = blendRgb(frontColor, sideColor, 0.10 + eased * 0.72);
+          color = blendRgb(frontColor, sideColor, 0.1 + eased * 0.72);
         }
 
-        // The rear volume is inferred only from the required FRONT + SIDE
-        // silhouettes and their colors; no third view is sampled.
         const shade = 0.98 - nz * 0.16;
         color = [color[0] * shade, color[1] * shade, color[2] * shade];
 
@@ -1088,8 +1178,6 @@ function reconstructVisualHull(
 
   if (!voxels.length) throw new Error("No voxels reconstructed");
 
-  // The adaptive dimensions guarantee the requested budget before this point.
-  // No post-generation decimation is performed.
   if (options.symmetrize) {
     symmetrizeVoxels(voxels, options.volumeSize, palette.length);
   }
@@ -1424,7 +1512,8 @@ export async function imagesToVoxels(
       normalized.volumeSize,
       budget,
       normalized.heightMax,
-      normalized.symmetrize
+      normalized.symmetrize,
+      sideMask
     );
 
     if (!sideRaster || !sideMask || !sideBounds) {
