@@ -433,6 +433,8 @@ export default function Builder() {
   const [symmetrize, setSymmetrize] = useState(false);
   /** Optional AI category — drives ONNX depth, matte, 2.5D height presets. */
   const [imageCategory, setImageCategory] = useState<AiCategory | null>(null);
+  const [sideMetricsLabel, setSideMetricsLabel] = useState<string>("");
+  const [sideMetricsWarn, setSideMetricsWarn] = useState<string | null>(null);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [pendingHash, setPendingHash] = useState("");
@@ -623,6 +625,82 @@ export default function Builder() {
     [imageOptions, notify, sideFile]
   );
 
+  const refreshSideMetrics = useCallback(async (front: File, side: File) => {
+    try {
+      const { computeHullMetrics } = await import("@/lib/ai/importMetrics");
+      // Lightweight bounds from decoded images (alpha/luma threshold).
+      const loadBounds = (file: File) =>
+        new Promise<{ width: number; height: number; minX: number; minY: number; maxX: number; maxY: number }>(
+          (resolve, reject) => {
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => {
+              const c = document.createElement("canvas");
+              c.width = img.width;
+              c.height = img.height;
+              const ctx = c.getContext("2d");
+              if (!ctx) {
+                URL.revokeObjectURL(url);
+                reject(new Error("canvas"));
+                return;
+              }
+              ctx.drawImage(img, 0, 0);
+              const data = ctx.getImageData(0, 0, c.width, c.height).data;
+              let minX = c.width;
+              let minY = c.height;
+              let maxX = 0;
+              let maxY = 0;
+              for (let y = 0; y < c.height; y += 2) {
+                for (let x = 0; x < c.width; x += 2) {
+                  const i = (y * c.width + x) * 4;
+                  const a = data[i + 3];
+                  const lum = data[i] * 0.3 + data[i + 1] * 0.59 + data[i + 2] * 0.11;
+                  if (a < 20 || lum > 245) continue;
+                  minX = Math.min(minX, x);
+                  minY = Math.min(minY, y);
+                  maxX = Math.max(maxX, x);
+                  maxY = Math.max(maxY, y);
+                }
+              }
+              URL.revokeObjectURL(url);
+              if (maxX < minX) {
+                resolve({
+                  width: c.width,
+                  height: c.height,
+                  minX: 0,
+                  minY: 0,
+                  maxX: c.width - 1,
+                  maxY: c.height - 1
+                });
+              } else {
+                resolve({
+                  minX,
+                  minY,
+                  maxX,
+                  maxY,
+                  width: maxX - minX + 1,
+                  height: maxY - minY + 1
+                });
+              }
+            };
+            img.onerror = () => {
+              URL.revokeObjectURL(url);
+              reject(new Error("image"));
+            };
+            img.src = url;
+          }
+        );
+      const [fb, sb] = await Promise.all([loadBounds(front), loadBounds(side)]);
+      const m = computeHullMetrics(fb, sb);
+      setSideMetricsLabel(m.label);
+      setSideMetricsWarn(m.warning);
+      if (m.warning) notify(m.warning.toUpperCase());
+    } catch {
+      setSideMetricsLabel("");
+      setSideMetricsWarn(null);
+    }
+  }, [notify]);
+
   const attachSide = useCallback(
     async (file: File) => {
       if (!frontFile) {
@@ -630,9 +708,10 @@ export default function Builder() {
         return;
       }
       setSideFile(file);
+      void refreshSideMetrics(frontFile, file);
       await regenerateMultiView({ front: frontFile, side: file });
     },
-    [frontFile, notify, regenerateMultiView]
+    [frontFile, notify, regenerateMultiView, refreshSideMetrics]
   );
 
   const applyImage = useCallback(() => {
@@ -1114,9 +1193,18 @@ export default function Builder() {
             SIDE guide · edge-on profile (thin), white bg, tip up, same height as FRONT — not a second front view
           </p>
           {imageMode === "model" && sideFile && frontFile && (
-            <p className="foldHint">
-              Tip: if the mesh is fat or short, re-export SIDE as a true side silhouette
-            </p>
+            <>
+              {sideMetricsLabel && <p className="foldHint">{sideMetricsLabel}</p>}
+              {sideMetricsWarn ? (
+                <p className="foldHint" style={{ color: "#f0a0a0" }}>
+                  {sideMetricsWarn}
+                </p>
+              ) : (
+                <p className="foldHint">
+                  Tip: if the mesh is fat or short, re-export SIDE as a true side silhouette
+                </p>
+              )}
+            </>
           )}
           <p className="foldHint">
             AI category · ONNX matte + depth presets
