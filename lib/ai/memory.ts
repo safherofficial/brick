@@ -5,7 +5,7 @@
 
 import type { StyleId } from "@/lib/ai/styleProfiles";
 import type { ShapeKind } from "@/lib/ai/recognize";
-import type { AiCategory } from "@/lib/ai/aiCategories";
+import { aiCategoryProfile, type AiCategory } from "@/lib/ai/aiCategories";
 
 export type QualityTier = 32 | 64 | 128 | 256;
 
@@ -143,40 +143,20 @@ export type CategoryMemory = {
   description: string;
 };
 
-export const CATEGORY_MEMORY: readonly CategoryMemory[] = [
-  {
-    category: "swords",
-    defaultStyle: "sword",
-    heightMax: 5,
-    preferDepthMap: false,
-    colorSharpness: 1.15,
-    description: "Blades and melee edges · thin Z · sharp outline"
-  },
-  {
-    category: "guns",
-    defaultStyle: "weapon",
-    heightMax: 6,
-    preferDepthMap: true,
-    colorSharpness: 1.05,
-    description: "Handguns · compact body · grip and barrel cues"
-  },
-  {
-    category: "rifles",
-    defaultStyle: "weapon",
-    heightMax: 9,
-    preferDepthMap: true,
-    colorSharpness: 1.05,
-    description: "Long arms · stock/barrel depth budget"
-  },
-  {
-    category: "objects",
-    defaultStyle: "prop",
-    heightMax: 8,
-    preferDepthMap: true,
-    colorSharpness: 1,
-    description: "Props, crates, pickups · preserve small protrusions"
-  }
-];
+/** Mirrors aiCategories profiles — keep in sync via aiCategoryProfile. */
+export const CATEGORY_MEMORY: readonly CategoryMemory[] = (
+  ["swords", "guns", "rifles", "objects"] as const
+).map((category) => {
+  const p = aiCategoryProfile(category);
+  return {
+    category,
+    defaultStyle: p.defaultStyle as StyleId,
+    heightMax: p.heightMax,
+    preferDepthMap: p.preferDepthMap,
+    colorSharpness: p.colorSharpness,
+    description: p.description
+  };
+});
 
 /** Unity / common engines: fixed scale and pivot (matches existing UNITY_EXPORT). */
 export const ENGINE_MEMORY = {
