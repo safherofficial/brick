@@ -1233,6 +1233,11 @@ export default function Builder() {
               )}
             </>
           )}
+          {pendingImage?.aiStatus && (
+            <p className="foldHint" title="Local ONNX diagnostics">
+              AI · {pendingImage.aiStatus}
+            </p>
+          )}
           <p className="foldHint">
             AI category · ONNX matte + depth presets
             {imageCategory ? ` · ${aiCategoryProfile(imageCategory).label}` : " · auto"}
