@@ -1,4 +1,8 @@
-import { aiCategoryPreset, type AiCategory } from "@/lib/ai/aiCategories";
+import {
+  aiCategoryHeightMax,
+  aiCategoryPreset,
+  type AiCategory
+} from "@/lib/ai/aiCategories";
 import type { CatalogItem } from "@/lib/ai/catalog";
 import type { ImageMode, ImageVoxelOptions } from "@/lib/imageVoxel";
 import { budgetForVolume } from "@/lib/ai/memory";
@@ -20,10 +24,15 @@ export function buildImageOptions(input: {
     ? "model"
     : (input.mode ?? "solid");
 
+  // 2.5D cap: category heightMax clamped to volume * maxDepthRatio (Unity-friendly thin props).
+  const heightMax = input.category
+    ? aiCategoryHeightMax(input.category, input.volumeSize)
+    : input.heightMax;
+
   return {
     volumeSize: input.volumeSize,
     mode,
-    heightMax: input.category ? preset!.heightMax : input.heightMax,
+    heightMax,
     maxVoxels: Math.min(input.maxVoxels, budget.maxVoxels),
     symmetrize: input.category ? preset!.symmetrize : input.symmetrize,
     useLocalAi: input.useLocalAi ?? true,
