@@ -110,18 +110,149 @@ function CameraRig({
   size: number;
   focus: [number, number, number];
 }) {
-  const { camera } = useThree();
+  const { camera, controls } = useThree();
+  // Preset angles only when view or volume size changes — never fight user orbit.
   useEffect(() => {
-    const dist = Math.max(8, size * 0.9);
     const [cx, cy, cz] = focus;
+    const dist = Math.max(8, size * 0.88);
+    const elev = Math.max(1.5, size * 0.1);
+    // Bias look/target upward so the model sits in the upper half of the frame
+    const lookY = cy + Math.max(2, size * 0.08);
     if (view === "top") camera.position.set(cx, dist, cz + 0.01);
-    else if (view === "front") camera.position.set(cx, cy + size * 0.2, cz + dist);
-    else if (view === "side") camera.position.set(cx + dist, cy + size * 0.2, cz);
-    else camera.position.set(cx + dist * 0.75, cy + dist * 0.5, cz + dist * 0.75);
-    camera.lookAt(cx, cy, cz);
+    else if (view === "front") camera.position.set(cx, lookY + elev, cz + dist);
+    else if (view === "side") camera.position.set(cx + dist, lookY + elev, cz);
+    else camera.position.set(cx + dist * 0.74, lookY + dist * 0.48, cz + dist * 0.74);
+    camera.near = 0.05;
+    camera.far = Math.max(2000, size * 12);
+    camera.lookAt(cx, lookY, cz);
     camera.updateProjectionMatrix();
-  }, [camera, focus, size, view]);
+    const orbit = controls as unknown as { target?: THREE.Vector3; update?: () => void } | null;
+    if (orbit?.target) {
+      orbit.target.set(cx, lookY, cz);
+      orbit.update?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: do not re-run on focus alone
+  }, [camera, controls, size, view]);
+
+  // When focus moves (APPLY / FRAME), only move the orbit target — keep current camera pose.
+  useEffect(() => {
+    const [cx, cy, cz] = focus;
+    const lookY = cy + Math.max(2, size * 0.08);
+    const orbit = controls as unknown as { target?: THREE.Vector3; update?: () => void } | null;
+    if (orbit?.target) {
+      orbit.target.set(cx, lookY, cz);
+      orbit.update?.();
+    }
+  }, [controls, focus, size]);
+
   return null;
+}
+
+
+/** Studio key aimed at the built subject (focus). Toggle with L. */
+function SubjectLights({
+  on,
+  focus,
+  size
+}: {
+  on: boolean;
+  focus: [number, number, number];
+  size: number;
+}) {
+  const [cx, cy, cz] = focus;
+  const reach = Math.max(12, size * 0.75);
+  // Soft "occhio di bue" always on the subject (diffuse cone)
+  const bullHeight = cy + Math.max(10, size * 0.55);
+  const bullDist = Math.max(18, size * 1.1);
+  const bullAngle = on ? 0.42 : 0.55;
+  const bullPenumbra = on ? 0.55 : 0.75;
+
+  if (!on) {
+    return (
+      <>
+        <ambientLight intensity={1.55} color="#e0e6f4" />
+        <hemisphereLight intensity={1.0} color="#eef2ff" groundColor="#2a303c" />
+        <spotLight
+          position={[cx, bullHeight, cz]}
+          intensity={3.8}
+          color="#fff8f0"
+          angle={bullAngle}
+          penumbra={bullPenumbra}
+          distance={bullDist}
+          decay={1.2}
+          castShadow={false}
+        >
+          <object3D attach="target" position={[cx, cy, cz]} />
+        </spotLight>
+        <pointLight
+          position={[cx, cy + Math.max(3, size * 0.18), cz]}
+          intensity={1.8}
+          distance={Math.max(24, size * 1.15)}
+          decay={1.4}
+          color="#f2f5ff"
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <ambientLight intensity={0.65} color="#c8d2ea" />
+      <hemisphereLight intensity={0.7} color="#e8eeff" groundColor="#18141e" />
+      <directionalLight
+        position={[cx + reach * 0.55, cy + reach * 0.95, cz + reach * 0.4]}
+        intensity={7.5}
+        color="#fff6ec"
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-camera-near={0.5}
+        shadow-camera-far={reach * 8}
+        shadow-camera-left={-reach}
+        shadow-camera-right={reach}
+        shadow-camera-top={reach}
+        shadow-camera-bottom={-reach}
+        shadow-bias={-0.00015}
+      >
+        <object3D attach="target" position={[cx, cy, cz]} />
+      </directionalLight>
+      <directionalLight
+        position={[cx - reach * 0.7, cy + reach * 0.45, cz - reach * 0.25]}
+        intensity={2.2}
+        color="#a8bcff"
+      >
+        <object3D attach="target" position={[cx, cy, cz]} />
+      </directionalLight>
+      <directionalLight
+        position={[cx - reach * 0.15, cy + reach * 0.55, cz - reach * 1.0]}
+        intensity={3.8}
+        color="#ffc9a0"
+      >
+        <object3D attach="target" position={[cx, cy, cz]} />
+      </directionalLight>
+      <spotLight
+        position={[cx + reach * 0.12, bullHeight, cz + reach * 0.08]}
+        intensity={10}
+        color="#fffaf4"
+        angle={bullAngle}
+        penumbra={bullPenumbra}
+        distance={bullDist}
+        decay={1.1}
+        castShadow
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
+      >
+        <object3D attach="target" position={[cx, cy, cz]} />
+      </spotLight>
+      <pointLight
+        position={[cx, cy + Math.max(5, size * 0.3), cz]}
+        intensity={3.4}
+        distance={Math.max(28, size * 1.3)}
+        decay={1.3}
+        color="#ffe9d4"
+      />
+    </>
+  );
 }
 
 function Ground({
@@ -151,8 +282,8 @@ function Ground({
         });
       }}
     >
-      <planeGeometry args={[size + 8, size + 8]} />
-      <shadowMaterial opacity={0.22} />
+      <planeGeometry args={[size + 12, size + 12]} />
+      <shadowMaterial opacity={0.32} color="#05060a" />
     </mesh>
   );
 }
@@ -286,6 +417,7 @@ export default function Builder() {
   const [mirror, setMirror] = useState<Mirror>({ x: false, y: false, z: false });
   const [view, setView] = useState<ViewMode>("iso");
   const [grid, setGrid] = useState(true);
+  const [studioLight, setStudioLight] = useState(true);
   const [hover, setHover] = useState<VoxelHit | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [clipboard] = useState<ClipboardVoxel[]>([]);
@@ -373,6 +505,24 @@ export default function Builder() {
   useEffect(() => {
     refreshCredits();
   }, [refreshCredits]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "l" || e.key === "L") {
+        e.preventDefault();
+        setStudioLight((v) => {
+          const next = !v;
+          notify(next ? "STUDIO LIGHT · ON" : "STUDIO LIGHT · OFF");
+          return next;
+        });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [notify]);
 
   const regenerateMultiView = useCallback(
     async (views: { front: File; side?: File }) => {
@@ -492,8 +642,17 @@ export default function Builder() {
     const nextSize = fitSizeFor(bounds);
     if (nextSize !== volumeRef.current.size) {
       volumeRef.current.resize(nextSize);
-      setFocus(volumeCenter(nextSize));
       setClip({ axis: null, value: nextSize - 1 });
+    }
+    // Orbit target = content centroid (fixes “always looking at the floor”).
+    {
+      const midY = (bounds.minY + bounds.maxY) * 0.5;
+      const height = Math.max(1, bounds.maxY - bounds.minY);
+      setFocus([
+        (bounds.minX + bounds.maxX) * 0.5,
+        midY + height * 0.12,
+        (bounds.minZ + bounds.maxZ) * 0.5
+      ]);
     }
     if (result.palette.length) setPalette(clonePalette(result.palette));
     volumeRef.current.clear();
@@ -509,6 +668,31 @@ export default function Builder() {
     bump();
     notify(`APPLIED · ${result.count ?? result.voxels.length} VX`);
   }, [bump, notify, pendingHash, pendingImage, pendingName, refreshCredits]);
+
+  const frameContent = useCallback(() => {
+    const cells: { x: number; y: number; z: number }[] = volumeRef.current
+      .voxels()
+      .map((v) => ({ x: v.x, y: v.y, z: v.z }));
+    if (pendingImage?.voxels?.length) {
+      for (const v of pendingImage.voxels) cells.push({ x: v.x, y: v.y, z: v.z });
+    }
+    const bounds = boundsOfCells(cells);
+    if (!bounds) {
+      setFocus(volumeCenter(volumeRef.current.size));
+      notify("FRAME · VOLUME CENTER");
+      return;
+    }
+    {
+      const midY = (bounds.minY + bounds.maxY) * 0.5;
+      const height = Math.max(1, bounds.maxY - bounds.minY);
+      setFocus([
+        (bounds.minX + bounds.maxX) * 0.5,
+        midY + height * 0.12,
+        (bounds.minZ + bounds.maxZ) * 0.5
+      ]);
+    }
+    notify("FRAME · CONTENT");
+  }, [notify, pendingImage]);
 
   const undo = useCallback(() => {
     historyRef.current.undo(volumeRef.current);
@@ -857,9 +1041,26 @@ export default function Builder() {
                 {mode.toUpperCase()}
               </button>
             ))}
+            <button type="button" onClick={frameContent} title="Frame content center">
+              FRAME
+            </button>
           </div>
+          <p className="foldHint">RMB orbit · MMB pan · scroll zoom · L studio light · FRAME centers model</p>
           <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>
             GRID {grid ? "ON" : "OFF"}
+          </button>
+          <button
+            className={studioLight ? "modeOn" : ""}
+            onClick={() => {
+              setStudioLight((v) => {
+                const next = !v;
+                notify(next ? "STUDIO LIGHT · ON" : "STUDIO LIGHT · OFF");
+                return next;
+              });
+            }}
+            title="Toggle studio light (L)"
+          >
+            LIGHT {studioLight ? "ON" : "OFF"} · L
           </button>
           <p className="category">CLIP</p>
           <div className="viewRow">
@@ -1002,12 +1203,15 @@ export default function Builder() {
         </aside>
 
         <section className="viewport">
-          <Canvas shadows dpr={[1, 1.75]} camera={{ position: [40, 28, 40], fov: 42, near: 0.1, far: 4000 }}>
-            <color attach="background" args={["#222737"]} />
-            <ambientLight intensity={1.45} />
-            <hemisphereLight intensity={0.9} groundColor="#1b2130" color="#68758f" />
-            <directionalLight position={[18, 32, 14]} intensity={3.8} castShadow />
-            <directionalLight position={[-18, 20, 10]} intensity={1.7} />
+          <Canvas
+            shadows
+            dpr={[1, 2]}
+            camera={{ position: [48, 36, 48], fov: 40, near: 0.05, far: 4000 }}
+            gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}
+          >
+            <color attach="background" args={["#0d1018"]} />
+            <fog attach="fog" args={["#0d1018", volume.size * 1.35, volume.size * 4.2]} />
+            <SubjectLights on={studioLight} focus={focus} size={volume.size} />
             {grid && (
               <Grid
                 args={[volume.size, volume.size]}
@@ -1049,6 +1253,8 @@ export default function Builder() {
               dampingFactor={0.08}
               target={focus}
               mouseButtons={{ LEFT: undefined, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }}
+              enablePan
+              screenSpacePanning
               enableRotate={view === "iso"}
               minDistance={4}
               maxDistance={volume.size * 4}
