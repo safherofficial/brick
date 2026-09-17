@@ -403,13 +403,22 @@ async function runMap(
   return { map, sizeLabel: `${width}×${height}` };
 }
 
-/** (B) Luma/chroma heuristic matte when ONNX segment is missing or too weak. */
+function maxAlpha(a: Float32Array, b: Float32Array) {
+  const n = Math.min(a.length, b.length);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i += 1) out[i] = a[i] > b[i] ? a[i] : b[i];
+  return out;
+}
+
+/** Background = corner color, not "bright = empty". Keeps silver blades. */
 function heuristicMatte(raster: AiRaster, category?: AiCategory): Float32Array {
   const { width, height, rgba } = raster;
   const out = new Float32Array(width * height);
-  // Weapons: slightly more permissive on dark steel; objects: stricter on white bg.
-  const whiteCut = category === "objects" ? 242 : 248;
-  const darkBoost = category === "swords" || category === "rifles" ? 1.08 : 1;
+  const bg = estimateCornerBg(raster);
+  const weapon =
+    category === "swords" || category === "guns" || category === "rifles" || !category;
+  const bgTol = weapon ? 26 : 20;
+  const whiteCut = category === "objects" ? 242 : 250;
   for (let i = 0; i < width * height; i += 1) {
     const o = i * 4;
     const r = rgba[o];
@@ -422,15 +431,14 @@ function heuristicMatte(raster: AiRaster, category?: AiCategory): Float32Array {
     }
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-    // Near-white low-chroma → background
-    if (lum >= whiteCut && chroma < 18) {
+    const dist = Math.sqrt((r - bg[0]) ** 2 + (g - bg[1]) ** 2 + (b - bg[2]) ** 2);
+    if (lum >= whiteCut && chroma < 14 && dist < bgTol) {
       out[i] = 0;
       continue;
     }
-    // Subject score
-    const inv = 1 - lum / 255;
-    const score = clamp(inv * darkBoost + chroma / 255 * 0.35, 0, 1) * a;
-    out[i] = score;
+    const steel = weapon && lum >= 130 && lum <= 242 && chroma <= 48 && dist >= bgTol * 0.55;
+    const score = steel ? 0.88 : clamp(dist / 72, 0, 1);
+    out[i] = score * a;
   }
   return out;
 }
@@ -496,8 +504,10 @@ export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = 
           despillRgb(next, alpha);
           diag.segment = "ok";
         } else {
-          // (B) ONNX too weak → heuristic fallback
-          let alpha = refineAlphaMap(heuristicMatte(raster, options.category), matte);
+          let alpha = refineAlphaMap(
+            maxAlpha(raw.map, heuristicMatte(raster, options.category)),
+            matte
+          );
           alpha = guidedAlphaRefine(alpha, raster, 1, 0.01);
           alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.24);
           writeAlpha(next, alpha);
