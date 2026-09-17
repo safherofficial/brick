@@ -1,3 +1,8 @@
+import {
+  aiCategoryPrecision,
+  aiCategoryWantsDepth
+} from "@/lib/ai/aiCategories";
+
 export type ImageMode =
   | "solid"
   | "flat"
@@ -362,18 +367,8 @@ type AiPrecisionProfile = {
 };
 
 function aiPrecisionProfile(category: ImageVoxelOptions["aiCategory"]): AiPrecisionProfile | null {
-  switch (category) {
-    case "swords":
-      return { minComponentPixels: 10, minComponentRatio: 0.0008, preserveThinContour: true };
-    case "guns":
-      return { minComponentPixels: 10, minComponentRatio: 0.0009, preserveThinContour: true };
-    case "rifles":
-      return { minComponentPixels: 10, minComponentRatio: 0.0007, preserveThinContour: true };
-    case "objects":
-      return { minComponentPixels: 12, minComponentRatio: 0.0010, preserveThinContour: true };
-    default:
-      return null;
-  }
+  if (!category) return null;
+  return aiCategoryPrecision(category);
 }
 
 function cleanModelMask(
@@ -1251,7 +1246,7 @@ export async function imageToVoxels(
   let raster = await loadImage(file);
   if (useLocalAi) {
     raster = await applyLocalAiRaster(raster, {
-      depth: normalized.mode === "relief" || normalized.mode === "model"
+      depth: aiCategoryWantsDepth(normalized.aiCategory, normalized.mode)
     });
   }
   const mask = buildMask(raster, normalized.mode);
@@ -1322,12 +1317,9 @@ export async function imagesToVoxels(
   const files = [views.front, views.side].filter(Boolean) as File[];
   let rasters = await Promise.all(files.map((file) => loadImage(file)));
   if (useLocalAi) {
+    const wantDepth = aiCategoryWantsDepth(normalized.aiCategory, normalized.mode);
     rasters = await Promise.all(
-      rasters.map((raster) =>
-        applyLocalAiRaster(raster, {
-          depth: normalized.mode === "relief" || normalized.mode === "model"
-        })
-      )
+      rasters.map((raster) => applyLocalAiRaster(raster, { depth: wantDepth }))
     );
   }
   const masks = rasters.map((raster) => {
