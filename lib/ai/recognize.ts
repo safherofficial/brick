@@ -1,4 +1,5 @@
 import type { StyleId } from "@/lib/ai/styleProfiles";
+import type { AiCategory } from "@/lib/ai/aiCategories";
 
 export type ShapeKind =
   | "sphere"
@@ -16,8 +17,17 @@ export type ShapeKind =
 export type ShapeGuess = {
   kind: ShapeKind;
   style: StyleId;
+  category: AiCategory;
   confidence: number;
 };
+
+export function categoryFromKind(kind: ShapeKind, slenderness = 1, aspect = 1): AiCategory {
+  if (kind === "sword" && aspect <= 0.78 && slenderness >= 3.15) return "rifles";
+  if (kind === "sword") return "swords";
+  if (kind === "axe" && aspect <= 0.78) return "guns";
+  if (kind === "axe") return "objects";
+  return "objects";
+}
 
 function maskStats(mask: boolean[][]) {
   const h = mask.length;
@@ -92,7 +102,7 @@ function maskStats(mask: boolean[][]) {
 
 export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
   const s = maskStats(mask);
-  if (s.hits < 24) return { kind: "prop", style: "prop", confidence: 0.2 };
+  if (s.hits < 24) return { kind: "prop", style: "prop", category: "objects", confidence: 0.2 };
 
   if (
     s.aspect >= 0.78 &&
@@ -101,7 +111,7 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
     s.fill <= 0.87 &&
     s.symmetry >= 0.7
   ) {
-    return { kind: "sphere", style: "pickup", confidence: 0.9 };
+    return { kind: "sphere", style: "pickup", category: "objects", confidence: 0.9 };
   }
 
   if (
@@ -113,7 +123,7 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
     s.symmetry >= 0.68 &&
     s.bulge < 1.12
   ) {
-    return { kind: "cylinder", style: "pickup", confidence: 0.86 };
+    return { kind: "cylinder", style: "pickup", category: "objects", confidence: 0.86 };
   }
 
   if (
@@ -124,7 +134,7 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
     s.bulge >= 1.1 &&
     s.symmetry >= 0.66
   ) {
-    return { kind: "barrel", style: "prop", confidence: 0.84 };
+    return { kind: "barrel", style: "prop", category: "objects", confidence: 0.84 };
   }
 
   if (
@@ -134,7 +144,7 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
     s.taper <= 0.58 &&
     s.symmetry >= 0.64
   ) {
-    return { kind: "cone", style: "pickup", confidence: 0.82 };
+    return { kind: "cone", style: "pickup", category: "objects", confidence: 0.82 };
   }
 
   if (
@@ -145,31 +155,32 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
     s.taper >= 0.42 &&
     s.cv <= 0.28
   ) {
-    return { kind: "capsule", style: "pickup", confidence: 0.8 };
+    return { kind: "capsule", style: "pickup", category: "objects", confidence: 0.8 };
   }
 
   if (s.aspect < 1.15 && s.fill >= 0.9) {
-    return { kind: "tile", style: "tile", confidence: 0.82 };
+    return { kind: "tile", style: "tile", category: "objects", confidence: 0.82 };
   }
   // Landscape photos of firearms (aspect = H/W).
   if (s.aspect <= 0.78 && s.fill >= 0.12 && s.fill <= 0.48 && s.slenderness >= 2.05) {
     return {
       kind: s.slenderness >= 3.15 ? "sword" : "axe",
       style: "weapon",
+      category: s.slenderness >= 3.15 ? "rifles" : "guns",
       confidence: s.slenderness >= 3.15 ? 0.78 : 0.74
     };
   }
   if (s.aspect >= 1.7 && s.fill <= 0.28 && s.slenderness >= 2.4 && s.head < 2.2) {
-    return { kind: "sword", style: "weapon", confidence: 0.8 };
+    return { kind: "sword", style: "weapon", category: "swords", confidence: 0.8 };
   }
   if (s.aspect >= 1.2 && s.head >= 2.3 && s.fill <= 0.42) {
-    return { kind: "axe", style: "weapon", confidence: 0.74 };
+    return { kind: "axe", style: "weapon", category: "objects", confidence: 0.74 };
   }
   if (s.aspect >= 1.35 && s.symmetry >= 0.78 && s.fill >= 0.28 && s.fill <= 0.62) {
-    return { kind: "bottle", style: "pickup", confidence: 0.76 };
+    return { kind: "bottle", style: "pickup", category: "objects", confidence: 0.76 };
   }
   if (s.aspect >= 1.6 && s.symmetry >= 0.72 && s.fill >= 0.22 && s.fill <= 0.5) {
-    return { kind: "character", style: "character", confidence: 0.7 };
+    return { kind: "character", style: "character", category: "objects", confidence: 0.7 };
   }
-  return { kind: "prop", style: "prop", confidence: 0.55 };
+  return { kind: "prop", style: "prop", category: "objects", confidence: 0.55 };
 }
