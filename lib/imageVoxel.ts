@@ -627,9 +627,10 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
         if (!mask[y]?.[x]) continue;
         const s = sampleAt(raster, x, y);
         if (!s.visible) continue;
-        const r = Math.round(s.r / 8) * 8;
-        const g = Math.round(s.g / 8) * 8;
-        const b = Math.round(s.b / 8) * 8;
+        // Finer buckets → closer to source colors (was /8).
+        const r = Math.round(s.r / 4) * 4;
+        const g = Math.round(s.g / 4) * 4;
+        const b = Math.round(s.b / 4) * 4;
         const key = `${r}:${g}:${b}`;
         const existing = buckets.get(key);
         if (existing) existing.weight += 1;
@@ -1016,7 +1017,11 @@ function reconstructVisualHull(
   options: NormalizedImageVoxelOptions,
   paletteValues: [number, number, number][],
   dimensions: Dimensions,
-  palette: string[]
+  palette: string[],
+  /** Fractional Y shift of SIDE vs FRONT from viewAlign (±~0.08). */
+  sideYOffset = 0,
+  /** Optional ONNX depth [0..1] same size as frontRaster — mild shade only. */
+  frontDepth: Float32Array | null = null
 ) {
   const front = resampleMaskToBounds(
     frontMask,
@@ -1033,21 +1038,27 @@ function reconstructVisualHull(
   );
 
   const voxels: ImageVoxel[] = [];
+  const h = dimensions.height;
 
-  for (let y = 0; y < dimensions.height; y += 1) {
-    const ny = dimensions.height <= 1 ? 0.5 : y / (dimensions.height - 1);
+  for (let y = 0; y < h; y += 1) {
+    const ny = h <= 1 ? 0.5 : y / (h - 1);
+    // Align SIDE row to FRONT (tip-to-base correlation from viewAlign).
+    const ySide = clamp(Math.round(y + sideYOffset * Math.max(0, h - 1)), 0, h - 1);
 
     for (let x = 0; x < dimensions.width; x += 1) {
       if (!front[y]?.[x]) continue;
 
       const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
       const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
+      const px = frontBounds.minX + nx * (frontBounds.maxX - frontBounds.minX);
+      const py = frontBounds.minY + ny * (frontBounds.maxY - frontBounds.minY);
+      const depthSample = depthAt(frontDepth, frontRaster, px, py);
 
       for (let z = 0; z < dimensions.depth; z += 1) {
         const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
-        // TRUE VISUAL HULL: FRONT = X/Y, SIDE = Z/Y intersection.
-        if (side && !side[y]?.[z]) continue;
+        // TRUE VISUAL HULL: FRONT = X/Y, SIDE = Z/Y (Y-aligned).
+        if (side && !side[ySide]?.[z]) continue;
 
         let color: [number, number, number] = [
           frontColor.r,
@@ -1055,14 +1066,15 @@ function reconstructVisualHull(
           frontColor.b
         ];
 
-        if (sideRaster && sideBounds && side?.[y]?.[z]) {
-          const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny);
+        if (sideRaster && sideBounds && side?.[ySide]?.[z]) {
+          const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny + sideYOffset);
           const surfaceT = clamp((nz - 0.14) / 0.72, 0, 1);
           const eased = surfaceT * surfaceT * (3 - 2 * surfaceT);
-          color = blendRgb(frontColor, sideColor, 0.10 + eased * 0.72);
+          color = blendRgb(frontColor, sideColor, 0.1 + eased * 0.72);
         }
 
-        const shade = 0.98 - nz * 0.16;
+        // Depth map: subtle volumetric shade only (geometry stays pure hull).
+        const shade = (0.98 - nz * 0.16) * (0.94 + depthSample * 0.1);
         color = [color[0] * shade, color[1] * shade, color[2] * shade];
 
         voxels.push({
@@ -1245,18 +1257,24 @@ function depthAt(depth: Float32Array | null, raster: Raster, x: number, y: numbe
 async function finalizeLocalAi(
   result: ImageImport,
   volumeSize: number,
-  mask: boolean[][]
+  mask: boolean[][],
+  aiCategory?: ImageVoxelOptions["aiCategory"]
 ): Promise<ImageImport> {
   try {
-    const [{ recognizeFromMask }, { finishVoxels }, { lintVoxels }] = await Promise.all([
-      import("@/lib/ai/recognize"),
-      import("@/lib/ai/finish"),
-      import("@/lib/ai/lint")
-    ]);
+    const [{ recognizeFromMask }, { finishVoxels }, { lintVoxels }, { aiCategoryProfile }] =
+      await Promise.all([
+        import("@/lib/ai/recognize"),
+        import("@/lib/ai/finish"),
+        import("@/lib/ai/lint"),
+        import("@/lib/ai/aiCategories")
+      ]);
     const guess = recognizeFromMask(mask);
+    const thinFeatures = aiCategory
+      ? aiCategoryProfile(aiCategory).thinFeatures
+      : guess.kind === "sword" || guess.kind === "axe";
     let voxels = result.voxels;
-    voxels = lintVoxels(voxels);
-    voxels = finishVoxels(voxels, volumeSize, guess.kind !== "tile");
+    voxels = lintVoxels(voxels, { thinFeatures });
+    voxels = finishVoxels(voxels, volumeSize, guess.kind !== "tile", { thinFeatures });
     return {
       ...result,
       voxels,
@@ -1321,7 +1339,9 @@ export async function imageToVoxels(
       palette,
       depthMap
     );
-    return useLocalAi ? await finalizeLocalAi(result, normalized.volumeSize, mask) : result;
+    return useLocalAi
+      ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory)
+      : result;
   }
 
   const result = buildNonModel(
@@ -1335,7 +1355,9 @@ export async function imageToVoxels(
     palette,
     depthMap
   );
-  return useLocalAi ? await finalizeLocalAi(result, normalized.volumeSize, mask) : result;
+  return useLocalAi
+    ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory)
+    : result;
 }
 
 export async function imagesToVoxels(
@@ -1397,7 +1419,6 @@ export async function imagesToVoxels(
   const sideMask = views.side ? masks[1] : undefined;
   const sideBounds = sideMask ? findBounds(sideMask) : null;
 
-
   if (normalized.mode === "model") {
     const budget = effectiveBudget(
       normalized.volumeSize,
@@ -1418,6 +1439,16 @@ export async function imagesToVoxels(
       throw new Error("MODEL MODE REQUIRES A VALID SIDE VIEW");
     }
 
+    // A: correlate FRONT/SIDE vertical profiles → small Y shift for hull sampling.
+    let sideYOffset = 0;
+    try {
+      const { bestSideYShiftBins, sideYOffsetFromShift } = await import("@/lib/ai/viewAlign");
+      const align = bestSideYShiftBins(frontMask, frontBounds, sideMask, sideBounds);
+      sideYOffset = sideYOffsetFromShift(align.shiftBins);
+    } catch {
+      sideYOffset = 0;
+    }
+
     const hull = reconstructVisualHull(
       frontRaster,
       frontMask,
@@ -1428,9 +1459,13 @@ export async function imagesToVoxels(
       normalized,
       paletteValues,
       dimensions,
-      palette
+      palette,
+      sideYOffset,
+      frontDepth
     );
-    return useLocalAi ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask) : hull;
+    return useLocalAi
+      ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask, normalized.aiCategory)
+      : hull;
   }
 
   const flat = buildNonModel(
@@ -1444,5 +1479,7 @@ export async function imagesToVoxels(
     palette,
     frontDepth
   );
-  return useLocalAi ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask) : flat;
+  return useLocalAi
+    ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask, normalized.aiCategory)
+    : flat;
 }
