@@ -24,6 +24,8 @@ export type ImageImport = {
   count: number;
   /** (D) Compact local-AI status for UI, e.g. "segment OK · depth skip · 48×96×8" */
   aiStatus?: string;
+  shape?: string;
+  category?: import("@/lib/ai/aiCategories").AiCategory;
 };
 
 export type ImageVoxelOptions = {
@@ -1370,34 +1372,58 @@ async function finalizeLocalAi(
         import("@/lib/ai/aiCategories")
       ]);
     const guess = recognizeFromMask(mask);
-    // (5) Auto-category from silhouette when UI left AUTO.
-    let resolvedCategory = aiCategory;
-    if (!resolvedCategory) {
-      if (guess.kind === "sword" && guess.style === "weapon" && guess.confidence >= 0.77) {
-        // Portrait blades vs landscape long-arms (see recognize landscape branch).
-        resolvedCategory = "swords";
-      } else if (guess.kind === "axe" && guess.style === "weapon") {
-        resolvedCategory = "guns";
-      } else if (guess.kind === "sword" && guess.style === "weapon") {
-        resolvedCategory = "rifles";
-      } else if (guess.kind === "bottle" || guess.kind === "prop" || guess.kind === "sphere" || guess.kind === "cylinder") {
-        resolvedCategory = "objects";
-      }
-    }
-    const thinFeatures = resolvedCategory
-      ? aiCategoryProfile(resolvedCategory).thinFeatures
-      : guess.kind === "sword" || guess.kind === "axe";
+    const resolvedCategory = aiCategory ?? guess.category;
+    const profile = resolvedCategory ? aiCategoryProfile(resolvedCategory) : null;
+    const thinFeatures = profile?.thinFeatures ?? (guess.kind === "sword" || guess.kind === "axe");
     let voxels = result.voxels;
     voxels = lintVoxels(voxels, { thinFeatures });
-    voxels = finishVoxels(voxels, volumeSize, guess.kind !== "tile", { thinFeatures });
+    voxels = finishVoxels(voxels, volumeSize, guess.kind !== "tile", {
+      thinFeatures,
+      shell: resolvedCategory === "swords" || resolvedCategory === "rifles"
+    });
     return {
       ...result,
       voxels,
-      count: voxels.length
+      count: voxels.length,
+      shape: guess.kind,
+      category: resolvedCategory
     };
   } catch {
     return result;
   }
+}
+
+async function resolveCategoryAndDepth(
+  raster: Raster,
+  mask: boolean[][],
+  normalized: NormalizedImageVoxelOptions,
+  depthMap: Float32Array | null,
+  useLocalAi: boolean
+): Promise<{
+  category: NormalizedImageVoxelOptions["aiCategory"];
+  depthMap: Float32Array | null;
+  raster: Raster;
+  extraDiag?: LocalAiResult["diagnostics"];
+}> {
+  let category = normalized.aiCategory;
+  if (!category) {
+    try {
+      const { recognizeFromMask } = await import("@/lib/ai/recognize");
+      category = recognizeFromMask(mask).category;
+    } catch {
+      category = undefined;
+    }
+  }
+  normalized.aiCategory = category;
+  const want = useLocalAi && aiCategoryWantsDepth(category, normalized.mode);
+  if (!want || depthMap) return { category, depthMap, raster };
+  const again = await applyLocalAiRaster(raster, { depth: true, category });
+  return {
+    category,
+    depthMap: again.depth,
+    raster: again.raster,
+    extraDiag: again.diagnostics
+  };
 }
 
 export async function imageToVoxels(
@@ -1429,6 +1455,14 @@ export async function imageToVoxels(
   let mask = buildMask(raster, normalized.mode);
   if (normalized.mode === "model" || useLocalAi) {
     mask = cleanModelMask(mask, raster, normalized.aiCategory);
+  }
+  const resolved = await resolveCategoryAndDepth(raster, mask, normalized, depthMap, useLocalAi);
+  raster = resolved.raster;
+  depthMap = resolved.depthMap;
+  normalized.aiCategory = resolved.category;
+  if (resolved.extraDiag) aiDiag = resolved.extraDiag;
+  if (normalized.mode === "model" || useLocalAi) {
+    mask = cleanModelMask(buildMask(raster, normalized.mode), raster, normalized.aiCategory);
   }
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
@@ -1521,16 +1555,33 @@ export async function imagesToVoxels(
     frontDepth = enhanced[0]?.depth ?? null;
     aiDiag = enhanced[0]?.diagnostics;
   }
-  // (C) Depth thickness only for volumetric categories — never swords.
-  const cat = normalized.aiCategory;
-  normalized.useDepthThickness =
-    Boolean(frontDepth) && (cat === "guns" || cat === "rifles" || cat === "objects");
-  const masks = rasters.map((raster) => {
+  let masks = rasters.map((raster) => {
     const mask = buildMask(raster, normalized.mode);
     return normalized.mode === "model"
       ? cleanModelMask(mask, raster, normalized.aiCategory)
       : mask;
   });
+  if (useLocalAi && rasters[0] && masks[0]) {
+    const resolved = await resolveCategoryAndDepth(
+      rasters[0],
+      masks[0],
+      normalized,
+      frontDepth,
+      useLocalAi
+    );
+    rasters[0] = resolved.raster;
+    frontDepth = resolved.depthMap;
+    normalized.aiCategory = resolved.category;
+    if (resolved.extraDiag) aiDiag = resolved.extraDiag;
+    masks[0] = cleanModelMask(
+      buildMask(rasters[0], normalized.mode),
+      rasters[0],
+      normalized.aiCategory
+    );
+  }
+  const cat = normalized.aiCategory;
+  normalized.useDepthThickness =
+    Boolean(frontDepth) && (cat === "guns" || cat === "rifles" || cat === "objects");
 
   const palette = createPalette(
     rasters,
