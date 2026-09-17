@@ -1,6 +1,7 @@
+import { aiCategoryPreset, type AiCategory } from "@/lib/ai/aiCategories";
 import type { CatalogItem } from "@/lib/ai/catalog";
-import { profileById } from "@/lib/ai/styleProfiles";
-import type { ImageVoxelOptions } from "@/lib/imageVoxel";
+import type { ImageMode, ImageVoxelOptions } from "@/lib/imageVoxel";
+import { budgetForVolume } from "@/lib/ai/memory";
 
 export function buildImageOptions(input: {
   volumeSize: number;
@@ -8,27 +9,31 @@ export function buildImageOptions(input: {
   maxVoxels: number;
   symmetrize: boolean;
   useLocalAi?: boolean;
-  catalog?: CatalogItem | null;
-  outline?: boolean;
+  category?: AiCategory;
+  mode?: ImageMode;
 }): ImageVoxelOptions {
-  const style = input.catalog?.style ?? "prop";
-  const profile = profileById(style);
+  const preset = input.category ? aiCategoryPreset(input.category) : null;
+  const budget = budgetForVolume(input.volumeSize);
+
+  // Category forces model + preset geometry; otherwise respect explicit mode from the UI.
+  const mode: ImageMode = input.category
+    ? "model"
+    : (input.mode ?? "solid");
+
   return {
     volumeSize: input.volumeSize,
-    heightMax: input.heightMax,
-    maxVoxels: input.maxVoxels,
-    symmetrize: input.symmetrize,
+    mode,
+    heightMax: input.category ? preset!.heightMax : input.heightMax,
+    maxVoxels: Math.min(input.maxVoxels, budget.maxVoxels),
+    symmetrize: input.category ? preset!.symmetrize : input.symmetrize,
     useLocalAi: input.useLocalAi ?? true,
-    style,
-    outline: input.outline ?? profile.outline
+    aiCategory: input.category
   };
 }
 
 export function presetFromCatalog(item: CatalogItem) {
   return {
-    style: item.style,
     heightMax: item.depth,
-    symmetrize: item.symmetrize,
-    outline: profileById(item.style).outline
+    symmetrize: item.symmetrize
   };
 }
