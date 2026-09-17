@@ -92,7 +92,8 @@ const DEFAULT_PALETTE = [
 ];
 
 const MAX_RASTER_EDGE = 512;
-const MIN_ALPHA = 20;
+/** Pixels below this alpha are treated as empty (post-ONNX matte is near-binary). */
+const MIN_ALPHA = 16;
 const MODEL_BUDGET_FILL = 0.90;
 const MODEL_MIN_AXIS = 4;
 const MODEL_EDGE_TOLERANCE = 72;
@@ -1094,7 +1095,8 @@ function buildNonModel(
   sideBounds: Bounds | null,
   options: NormalizedImageVoxelOptions,
   paletteValues: [number, number, number][],
-  palette: string[]
+  palette: string[],
+  depthMap: Float32Array | null = null
 ): ImageImport {
   const maxAxis = Math.max(4, options.volumeSize - 8);
   const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
@@ -1109,6 +1111,9 @@ function buildNonModel(
         ? Math.max(2, Math.round(options.heightMax * 0.30))
         : Math.max(2, Math.round(options.heightMax * 0.62));
 
+  const useDepthRelief =
+    Boolean(depthMap) && (options.mode === "relief" || options.mode === "solid");
+
   const voxels: ImageVoxel[] = [];
 
   for (let y = 0; y < height; y += 1) {
@@ -1121,6 +1126,16 @@ function buildNonModel(
 
       if (sideMask && sideBounds && maskMapped(sideMask, sideBounds, 0.5, ny)) {
         finalDepth = Math.max(1, Math.round(depthBase * 1.18));
+      }
+
+      // ONNX depth modulates extrusion so relief follows subject volume, not a slab.
+      if (useDepthRelief) {
+        const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
+        const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
+        const d = depthAt(depthMap, raster, px, py);
+        // Near-camera / brighter depth → more voxels; keep at least 1.
+        finalDepth = Math.max(1, Math.round(depthBase * (0.45 + d * 1.05)));
+        finalDepth = Math.min(finalDepth, Math.max(depthBase, options.heightMax));
       }
 
       for (let z = 0; z < finalDepth; z += 1) {
@@ -1184,24 +1199,43 @@ function spatialBudget(voxels: ImageVoxel[], budget: number) {
 }
 
 
+type LocalAiResult = {
+  raster: Raster;
+  depth: Float32Array | null;
+};
+
 async function applyLocalAiRaster(
   raster: Raster,
-  options: { depth?: boolean }
-): Promise<Raster> {
+  options: {
+    depth?: boolean;
+    category?: ImageVoxelOptions["aiCategory"];
+  }
+): Promise<LocalAiResult> {
   try {
     const { enhanceRaster } = await import("@/lib/ai/enhance");
     const enhanced = await enhanceRaster(
       { width: raster.width, height: raster.height, rgba: raster.rgba },
-      { depth: options.depth === true }
+      { depth: options.depth === true, category: options.category }
     );
     return {
-      width: enhanced.raster.width,
-      height: enhanced.raster.height,
-      rgba: enhanced.raster.rgba
+      raster: {
+        width: enhanced.raster.width,
+        height: enhanced.raster.height,
+        rgba: enhanced.raster.rgba
+      },
+      depth: enhanced.depth
     };
   } catch {
-    return raster;
+    return { raster, depth: null };
   }
+}
+
+/** Sample normalized depth [0..1] at raster pixel; missing map → mid bias. */
+function depthAt(depth: Float32Array | null, raster: Raster, x: number, y: number): number {
+  if (!depth || !raster.width) return 0.55;
+  const xx = clamp(Math.round(x), 0, raster.width - 1);
+  const yy = clamp(Math.round(y), 0, raster.height - 1);
+  return clamp(depth[yy * raster.width + xx] ?? 0.55, 0, 1);
 }
 
 async function finalizeLocalAi(
@@ -1244,10 +1278,14 @@ export async function imageToVoxels(
   };
 
   let raster = await loadImage(file);
+  let depthMap: Float32Array | null = null;
   if (useLocalAi) {
-    raster = await applyLocalAiRaster(raster, {
-      depth: aiCategoryWantsDepth(normalized.aiCategory, normalized.mode)
+    const ai = await applyLocalAiRaster(raster, {
+      depth: aiCategoryWantsDepth(normalized.aiCategory, normalized.mode),
+      category: normalized.aiCategory
     });
+    raster = ai.raster;
+    depthMap = ai.depth;
   }
   const mask = buildMask(raster, normalized.mode);
   const bounds = findBounds(mask);
@@ -1276,7 +1314,8 @@ export async function imageToVoxels(
       null,
       reliefOpts,
       paletteValues,
-      palette
+      palette,
+      depthMap
     );
     return useLocalAi ? await finalizeLocalAi(result, normalized.volumeSize, mask) : result;
   }
@@ -1289,7 +1328,8 @@ export async function imageToVoxels(
     null,
     normalized,
     paletteValues,
-    palette
+    palette,
+    depthMap
   );
   return useLocalAi ? await finalizeLocalAi(result, normalized.volumeSize, mask) : result;
 }
@@ -1316,11 +1356,19 @@ export async function imagesToVoxels(
   const useLocalAi = options.useLocalAi ?? true;
   const files = [views.front, views.side].filter(Boolean) as File[];
   let rasters = await Promise.all(files.map((file) => loadImage(file)));
+  let frontDepth: Float32Array | null = null;
   if (useLocalAi) {
     const wantDepth = aiCategoryWantsDepth(normalized.aiCategory, normalized.mode);
-    rasters = await Promise.all(
-      rasters.map((raster) => applyLocalAiRaster(raster, { depth: wantDepth }))
+    const enhanced = await Promise.all(
+      rasters.map((raster) =>
+        applyLocalAiRaster(raster, {
+          depth: wantDepth,
+          category: normalized.aiCategory
+        })
+      )
     );
+    rasters = enhanced.map((e) => e.raster);
+    frontDepth = enhanced[0]?.depth ?? null;
   }
   const masks = rasters.map((raster) => {
     const mask = buildMask(raster, normalized.mode);
@@ -1389,7 +1437,8 @@ export async function imagesToVoxels(
     sideBounds,
     normalized,
     paletteValues,
-    palette
+    palette,
+    frontDepth
   );
   return useLocalAi ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask) : flat;
 }
