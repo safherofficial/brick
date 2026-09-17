@@ -22,6 +22,8 @@ export type ImageImport = {
   voxels: ImageVoxel[];
   palette: string[];
   count: number;
+  /** (D) Compact local-AI status for UI, e.g. "segment OK · depth skip · 48×96×8" */
+  aiStatus?: string;
 };
 
 export type ImageVoxelOptions = {
@@ -43,6 +45,8 @@ type NormalizedImageVoxelOptions = Omit<Required<ImageVoxelOptions>, "aiCategory
   aiCategory?: ImageVoxelOptions["aiCategory"];
   /** When true, ONNX depth may soft-clamp Z (ambiguous SIDE only). */
   sideAmbiguous?: boolean;
+  /** (C) Per-row depth thickness bias for guns/rifles/objects. */
+  useDepthThickness?: boolean;
 };
 
 type Raster = {
@@ -1062,14 +1066,22 @@ function reconstructVisualHull(
       const py = frontBounds.minY + ny * (frontBounds.maxY - frontBounds.minY);
       const depthSample = depthAt(frontDepth, frontRaster, px, py);
 
-      // (3) Soft depth clamp ONLY when SIDE is ambiguous (mid aspect) and
-      // ONNX depth is present — never on thin profiles or clear second-fronts.
+      // Depth soft-clamp: ambiguous SIDE (legacy) OR (C) guns/rifles/objects
+      // per-row thickness from MiDaS. Swords never use this path.
       const useDepthClamp =
         Boolean(frontDepth) &&
         dimensions.depth > 2 &&
-        options.sideAmbiguous === true;
+        (options.sideAmbiguous === true || options.useDepthThickness === true);
       const depthHalf = useDepthClamp
-        ? Math.max(1, Math.round(dimensions.depth * (0.22 + depthSample * 0.4)))
+        ? Math.max(
+            1,
+            Math.round(
+              dimensions.depth *
+                (options.useDepthThickness
+                  ? 0.18 + depthSample * 0.5
+                  : 0.22 + depthSample * 0.4)
+            )
+          )
         : dimensions.depth;
       const zMid = (dimensions.depth - 1) * 0.5;
 
@@ -1239,6 +1251,11 @@ function spatialBudget(voxels: ImageVoxel[], budget: number) {
 type LocalAiResult = {
   raster: Raster;
   depth: Float32Array | null;
+  diagnostics?: {
+    segment: string;
+    depth: string;
+    segmentSize: string;
+  };
 };
 
 async function applyLocalAiRaster(
@@ -1260,11 +1277,27 @@ async function applyLocalAiRaster(
         height: enhanced.raster.height,
         rgba: enhanced.raster.rgba
       },
-      depth: enhanced.depth
+      depth: enhanced.depth,
+      diagnostics: enhanced.diagnostics
     };
   } catch {
-    return { raster, depth: null };
+    return {
+      raster,
+      depth: null,
+      diagnostics: { segment: "fail", depth: "skip", segmentSize: "-" }
+    };
   }
+}
+
+function formatAiStatus(
+  diag: LocalAiResult["diagnostics"] | undefined,
+  dims?: { width: number; height: number; depth: number }
+): string {
+  const seg = diag?.segment ?? "skip";
+  const dep = diag?.depth ?? "skip";
+  const sz = diag?.segmentSize && diag.segmentSize !== "-" ? ` · net ${diag.segmentSize}` : "";
+  const hull = dims ? ` · hull ${dims.width}×${dims.height}×${dims.depth}` : "";
+  return `segment ${seg} · depth ${dep}${sz}${hull}`;
 }
 
 /** Sample normalized depth [0..1] at raster pixel; missing map → mid bias. */
@@ -1328,6 +1361,7 @@ export async function imageToVoxels(
 
   let raster = await loadImage(file);
   let depthMap: Float32Array | null = null;
+  let aiDiag: LocalAiResult["diagnostics"];
   if (useLocalAi) {
     const ai = await applyLocalAiRaster(raster, {
       depth: aiCategoryWantsDepth(normalized.aiCategory, normalized.mode),
@@ -1335,6 +1369,7 @@ export async function imageToVoxels(
     });
     raster = ai.raster;
     depthMap = ai.depth;
+    aiDiag = ai.diagnostics;
   }
   const mask = buildMask(raster, normalized.mode);
   const bounds = findBounds(mask);
@@ -1346,6 +1381,13 @@ export async function imageToVoxels(
     normalized.mode === "model" ? 64 : 48
   );
   const paletteValues = paletteRgb(palette);
+
+  const withStatus = async (result: ImageImport) => {
+    const finished = useLocalAi
+      ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory)
+      : result;
+    return { ...finished, aiStatus: formatAiStatus(aiDiag) };
+  };
 
   // Single-view: MODEL needs a SIDE image for visual-hull. Fall back to relief
   // so the UI can still preview FRONT while waiting for SIDE (no hard crash).
@@ -1366,9 +1408,7 @@ export async function imageToVoxels(
       palette,
       depthMap
     );
-    return useLocalAi
-      ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory)
-      : result;
+    return withStatus(result);
   }
 
   const result = buildNonModel(
@@ -1382,9 +1422,7 @@ export async function imageToVoxels(
     palette,
     depthMap
   );
-  return useLocalAi
-    ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory)
-    : result;
+  return withStatus(result);
 }
 
 export async function imagesToVoxels(
@@ -1410,6 +1448,7 @@ export async function imagesToVoxels(
   const files = [views.front, views.side].filter(Boolean) as File[];
   let rasters = await Promise.all(files.map((file) => loadImage(file)));
   let frontDepth: Float32Array | null = null;
+  let aiDiag: LocalAiResult["diagnostics"];
   if (useLocalAi) {
     const wantDepth = aiCategoryWantsDepth(normalized.aiCategory, normalized.mode);
     const enhanced = await Promise.all(
@@ -1422,7 +1461,12 @@ export async function imagesToVoxels(
     );
     rasters = enhanced.map((e) => e.raster);
     frontDepth = enhanced[0]?.depth ?? null;
+    aiDiag = enhanced[0]?.diagnostics;
   }
+  // (C) Depth thickness only for volumetric categories — never swords.
+  const cat = normalized.aiCategory;
+  normalized.useDepthThickness =
+    Boolean(frontDepth) && (cat === "guns" || cat === "rifles" || cat === "objects");
   const masks = rasters.map((raster) => {
     const mask = buildMask(raster, normalized.mode);
     return normalized.mode === "model"
@@ -1493,9 +1537,13 @@ export async function imagesToVoxels(
       sideYOffset,
       frontDepth
     );
-    return useLocalAi
+    const finished = useLocalAi
       ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask, normalized.aiCategory)
       : hull;
+    return {
+      ...finished,
+      aiStatus: formatAiStatus(aiDiag, dimensions)
+    };
   }
 
   const flat = buildNonModel(
@@ -1509,7 +1557,8 @@ export async function imagesToVoxels(
     palette,
     frontDepth
   );
-  return useLocalAi
+  const finished = useLocalAi
     ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask, normalized.aiCategory)
     : flat;
+  return { ...finished, aiStatus: formatAiStatus(aiDiag) };
 }
