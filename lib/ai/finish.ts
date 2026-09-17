@@ -111,7 +111,25 @@ export function evenPack(voxels: ImageVoxel[], volumeSize: number): ImageVoxel[]
 export type FinishOptions = {
   /** Skip interior color flattening (keeps multi-tone blades / painted details). */
   thinFeatures?: boolean;
+  /** Keep only exposed voxels when the body is a thick slab (swords / barrels). */
+  shell?: boolean;
 };
+
+export function surfaceShell(voxels: ImageVoxel[]): ImageVoxel[] {
+  if (voxels.length < 8) return voxels;
+  const occ = new Set(voxels.map((v) => key(v.x, v.y, v.z)));
+  const kept = voxels.filter((v) => {
+    return (
+      !occ.has(key(v.x - 1, v.y, v.z)) ||
+      !occ.has(key(v.x + 1, v.y, v.z)) ||
+      !occ.has(key(v.x, v.y - 1, v.z)) ||
+      !occ.has(key(v.x, v.y + 1, v.z)) ||
+      !occ.has(key(v.x, v.y, v.z - 1)) ||
+      !occ.has(key(v.x, v.y, v.z + 1))
+    );
+  });
+  return kept.length ? kept : voxels;
+}
 
 export function finishVoxels(
   voxels: ImageVoxel[],
@@ -120,9 +138,9 @@ export function finishVoxels(
   options: FinishOptions = {}
 ): ImageVoxel[] {
   const doFlatten = flatten && !options.thinFeatures;
-  const prepared = doFlatten ? flattenColumnColors(voxels) : voxels;
-  // Thin weapons: skip stabilizeBase ground fill that can thicken the pommel/tip.
-  if (options.thinFeatures) {
+  let prepared = doFlatten ? flattenColumnColors(voxels) : voxels;
+  if (options.shell || options.thinFeatures) {
+    prepared = surfaceShell(prepared);
     return evenPack(prepared, volumeSize);
   }
   return evenPack(stabilizeBase(prepared), volumeSize);
