@@ -1427,8 +1427,9 @@ async function resolveCategoryAndDepth(
   raster: Raster;
   extraDiag?: LocalAiResult["diagnostics"];
 }> {
+  const locked = Boolean(normalized.aiCategory);
   let category = normalized.aiCategory;
-  if (!category) {
+  if (!locked) {
     try {
       const { recognizeFromMask } = await import("@/lib/ai/recognize");
       category = recognizeFromMask(mask).category;
@@ -1438,10 +1439,13 @@ async function resolveCategoryAndDepth(
   }
   normalized.aiCategory = category;
   applyCategoryProfile(normalized);
+  if (category === "swords") depthMap = null;
   const want =
     useLocalAi &&
+    category !== "swords" &&
     (aiCategoryWantsDepth(category, normalized.mode) || normalized.useDepthThickness === true);
-  if (!want || depthMap) return { category, depthMap, raster };
+  if (!want) return { category, depthMap: null, raster };
+  if (depthMap) return { category, depthMap, raster };
   const again = await applyLocalAiRaster(raster, { depth: true, category });
   return {
     category,
@@ -1470,8 +1474,7 @@ export async function imageToVoxels(
   let aiDiag: LocalAiResult["diagnostics"];
   if (useLocalAi) {
     const ai = await applyLocalAiRaster(raster, {
-      depth: Boolean(normalized.aiCategory) &&
-        aiCategoryWantsDepth(normalized.aiCategory, normalized.mode),
+      depth: false,
       category: normalized.aiCategory
     });
     raster = ai.raster;
@@ -1569,11 +1572,10 @@ export async function imagesToVoxels(
   let frontDepth: Float32Array | null = null;
   let aiDiag: LocalAiResult["diagnostics"];
   if (useLocalAi) {
-    const wantDepth = aiCategoryWantsDepth(normalized.aiCategory, normalized.mode);
     const enhanced = await Promise.all(
       rasters.map((raster) =>
         applyLocalAiRaster(raster, {
-          depth: wantDepth,
+          depth: false,
           category: normalized.aiCategory
         })
       )
