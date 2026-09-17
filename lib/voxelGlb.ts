@@ -19,6 +19,28 @@ function pad4(n: number) {
   return (4 - (n % 4)) % 4;
 }
 
+function socketNodes(
+  minPx: number, minPy: number, minPz: number,
+  maxPx: number, maxPy: number, maxPz: number,
+  shape?: string
+) {
+  const cx = (minPx + maxPx) / 2;
+  const cy = (minPy + maxPy) / 2;
+  const cz = (minPz + maxPz) / 2;
+  const nodes: { name: string; translation: [number, number, number] }[] = [
+    { name: "Socket_Ground", translation: [cx, minPy, cz] },
+    { name: "Socket_Center", translation: [cx, cy, cz] }
+  ];
+  if (shape === "sword" || shape === "axe" || shape === "capsule") {
+    nodes.push({ name: "Socket_Grip", translation: [cx, minPy + (maxPy - minPy) * 0.12, cz] });
+    nodes.push({ name: "Socket_Tip", translation: [cx, maxPy, cz] });
+  } else {
+    nodes.push({ name: "Socket_Grip", translation: [cx, cy, minPz] });
+    nodes.push({ name: "Socket_Muzzle", translation: [cx, cy, maxPz] });
+  }
+  return nodes;
+}
+
 function encodeChunk(type: number, bytes: Uint8Array) {
   const padding = pad4(bytes.length);
   const out = new Uint8Array(8 + bytes.length + padding);
@@ -316,14 +338,15 @@ export async function exportGlbTextured(
       extras: buildGlbExtras({
         name: resolved.name,
         voxelCount: volume.count,
-        volumeSize: volume.size
+        volumeSize: volume.size,
+        shape: options?.shape as never
       })
     },
     scene: 0,
-    scenes: [{ nodes: [0, 1], name: resolved.name }],
+    scenes: [{ nodes: [0, 1, 2, 3, 4], name: resolved.name }],
     nodes: [
       { mesh: 0, name: resolved.name },
-      { name: "Socket_Grip", translation: [0, 0, 0] }
+      ...socketNodes(minPx, minPy, minPz, maxPx, maxPy, maxPz, options?.shape)
     ],
     meshes: [
       {
