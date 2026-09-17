@@ -65,4 +65,18 @@ for (const file of FILES) {
   if (!ok) console.error("MISSING", file.name);
 }
 
+const aliases = [
+  ["u2netp.onnx", "rmbg.onnx"],
+  ["midas-small.onnx", "depth-small.onnx"]
+];
+for (const [srcName, aliasName] of aliases) {
+  const src = path.join(outDir, srcName);
+  const alias = path.join(outDir, aliasName);
+  if ((await exists(src)) && !(await exists(alias))) {
+    const { copyFile } = await import("node:fs/promises");
+    await copyFile(src, alias);
+    console.log("alias", aliasName, "←", srcName);
+  }
+}
+
 console.log("Done. Models in public/models/");
