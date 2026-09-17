@@ -156,9 +156,15 @@ export function aiCategoryWantsDepth(
   category: AiCategory | undefined,
   mode: "solid" | "flat" | "relief" | "model"
 ): boolean {
-  if (mode !== "relief" && mode !== "model") return false;
-  if (!category) return true;
+  if (mode === "flat") return false;
+  if (!category) return mode === "relief" || mode === "model" || mode === "solid";
   return PROFILES[category].preferDepthMap;
+}
+
+export function styleFromCategory(category: AiCategory): "sword" | "weapon" | "prop" | "pickup" {
+  if (category === "swords") return "sword";
+  if (category === "guns" || category === "rifles") return "weapon";
+  return "prop";
 }
 
 /** Clamp heightMax to category 2.5D budget for a given volume size. */
