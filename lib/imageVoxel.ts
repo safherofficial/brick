@@ -854,12 +854,9 @@ function normalizeToVolume(voxels: ImageVoxel[], volumeSize: number) {
 }
 
 /**
- * Adaptive MODEL resolution.
- *
- * We never build a huge voxel volume and then decimate it. The dimensions are
- * solved first from the reference aspect ratios and the requested voxel
- * budget. The final reconstruction is therefore generated at its final
- * resolution and cannot create horizontal missing bands.
+ * Adaptive MODEL resolution — aspect ratios from FRONT (W/H) and SIDE (D/H)
+ * are locked. Budget pressure scales all axes uniformly so tall thin props
+ * (swords) are not squashed by height-first reduction.
  */
 function adaptiveModelDimensions(
   frontBounds: Bounds,
@@ -875,49 +872,69 @@ function adaptiveModelDimensions(
     Math.min(Math.floor(maxVoxels), Math.floor(volumeSize ** 3 * MODEL_BUDGET_FILL))
   );
 
-  let height = Math.min(maxAxis, Math.max(MODEL_MIN_AXIS, frontBounds.height));
-  let width = Math.max(
-    MODEL_MIN_AXIS,
-    Math.round(height * (frontBounds.width / Math.max(1, frontBounds.height)))
-  );
+  // Aspect ratios from silhouette bounds (content box, not full canvas).
+  const aspectWH = frontBounds.width / Math.max(1, frontBounds.height);
+  const aspectDH = sideBounds
+    ? sideBounds.width / Math.max(1, sideBounds.height)
+    : heightMax / Math.max(1, frontBounds.height);
 
-  let depth: number;
-  if (sideBounds) {
-    depth = Math.max(
-      MODEL_MIN_AXIS,
-      Math.round(height * (sideBounds.width / Math.max(1, sideBounds.height)))
-    );
-  } else {
-    depth = Math.max(MODEL_MIN_AXIS, Math.round(heightMax * 1.05));
+  // Ideal size: fit height to maxAxis, derive W/D from ratios.
+  let height = Math.min(maxAxis, Math.max(MODEL_MIN_AXIS, frontBounds.height));
+  let width = Math.max(MODEL_MIN_AXIS, Math.round(height * aspectWH));
+  let depth = Math.max(MODEL_MIN_AXIS, Math.round(height * aspectDH));
+
+  // Cap any axis that exceeds the volume; rescale the other two to keep ratios.
+  const axisCap = Math.max(width, height, depth);
+  if (axisCap > maxAxis) {
+    const fit = maxAxis / axisCap;
+    width = Math.max(MODEL_MIN_AXIS, Math.round(width * fit));
+    height = Math.max(MODEL_MIN_AXIS, Math.round(height * fit));
+    depth = Math.max(MODEL_MIN_AXIS, Math.round(depth * fit));
   }
 
-  width = Math.min(maxAxis, width);
-  depth = Math.min(maxAxis, depth);
+  // Thin side silhouettes only: soft ceiling from heightMax so AA/padding on a
+  // near-1px-wide side view cannot inflate depth into a slab. Thick props
+  // (aspectDH >= 0.22) keep pure silhouette ratio.
+  if (sideBounds && heightMax > 0 && aspectDH < 0.22) {
+    const thinCap = Math.max(MODEL_MIN_AXIS, Math.round(heightMax * 1.35));
+    depth = Math.min(depth, thinCap);
+  }
 
-  let product = width * height * depth;
   const targetBudget = symmetrize
     ? Math.floor(safeBudget * 0.46)
     : Math.floor(safeBudget * 0.94);
+  const targetProduct = Math.max(MODEL_MIN_AXIS ** 3, targetBudget);
 
-  const targetProduct = Math.max(
-    MODEL_MIN_AXIS ** 3,
-    targetBudget
-  );
-
+  // Uniform scale into budget — never preferentially eat height (that was
+  // destroying sword proportions: tall axis shrunk first → short fat mesh).
+  let product = width * height * depth;
   if (product > targetProduct) {
     const scale = Math.cbrt(targetProduct / product);
-    width = Math.max(MODEL_MIN_AXIS, Math.floor(width * scale));
-    height = Math.max(MODEL_MIN_AXIS, Math.floor(height * scale));
-    depth = Math.max(MODEL_MIN_AXIS, Math.floor(depth * scale));
+    width = Math.max(MODEL_MIN_AXIS, Math.max(1, Math.floor(width * scale)));
+    height = Math.max(MODEL_MIN_AXIS, Math.max(1, Math.floor(height * scale)));
+    depth = Math.max(MODEL_MIN_AXIS, Math.max(1, Math.floor(depth * scale)));
+    product = width * height * depth;
   }
 
-  // Reduce the largest dimension until even the complete bounding box is
-  // inside the budget. Visual-hull occupancy is always <= this box.
-  while (width * height * depth > safeBudget) {
-    if (height >= width && height >= depth && height > MODEL_MIN_AXIS) height -= 1;
-    else if (width >= depth && width > MODEL_MIN_AXIS) width -= 1;
-    else if (depth > MODEL_MIN_AXIS) depth -= 1;
-    else break;
+  // Final integer fit: scale uniformly by ~0.98 until under safeBudget.
+  let guard = 0;
+  while (width * height * depth > safeBudget && guard < 48) {
+    const scale = Math.pow(safeBudget / (width * height * depth), 1 / 3) * 0.99;
+    const nw = Math.max(MODEL_MIN_AXIS, Math.floor(width * scale));
+    const nh = Math.max(MODEL_MIN_AXIS, Math.floor(height * scale));
+    const nd = Math.max(MODEL_MIN_AXIS, Math.floor(depth * scale));
+    if (nw === width && nh === height && nd === depth) {
+      // Stuck at minimums — drop one voxel on the largest axis only as last resort.
+      if (height >= width && height >= depth && height > MODEL_MIN_AXIS) height -= 1;
+      else if (width >= depth && width > MODEL_MIN_AXIS) width -= 1;
+      else if (depth > MODEL_MIN_AXIS) depth -= 1;
+      else break;
+    } else {
+      width = nw;
+      height = nh;
+      depth = nd;
+    }
+    guard += 1;
   }
 
   return {
