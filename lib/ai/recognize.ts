@@ -151,6 +151,14 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
   if (s.aspect < 1.15 && s.fill >= 0.9) {
     return { kind: "tile", style: "tile", confidence: 0.82 };
   }
+  // Landscape photos of firearms (aspect = H/W).
+  if (s.aspect <= 0.78 && s.fill >= 0.12 && s.fill <= 0.48 && s.slenderness >= 2.05) {
+    return {
+      kind: s.slenderness >= 3.15 ? "sword" : "axe",
+      style: "weapon",
+      confidence: s.slenderness >= 3.15 ? 0.78 : 0.74
+    };
+  }
   if (s.aspect >= 1.7 && s.fill <= 0.28 && s.slenderness >= 2.4 && s.head < 2.2) {
     return { kind: "sword", style: "weapon", confidence: 0.8 };
   }
