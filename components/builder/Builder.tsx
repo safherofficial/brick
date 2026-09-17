@@ -47,9 +47,10 @@ import {
   type AiCategory
 } from "@/lib/ai/aiCategories";
 import {
-  consumeImageApply,
+  consumeImageApplyRemote,
   FREE_IMAGE_APPLIES,
   hashImageFile,
+  readEntitlement,
   remainingApplies
 } from "@/lib/entitlement";
 import { MONTHLY_SOL, restorePlan, subscribeWithSol } from "@/lib/solanaCheckout";
@@ -436,6 +437,7 @@ export default function Builder() {
   const [sideMetricsLabel, setSideMetricsLabel] = useState<string>("");
   const [sideMetricsWarn, setSideMetricsWarn] = useState<string | null>(null);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
+  const [lastShape, setLastShape] = useState<string | undefined>(undefined);
   const [pendingName, setPendingName] = useState("");
   const [pendingHash, setPendingHash] = useState("");
   const [frontFile, setFrontFile] = useState<File | null>(null);
@@ -714,9 +716,12 @@ export default function Builder() {
     [frontFile, notify, regenerateMultiView, refreshSideMetrics]
   );
 
-  const applyImage = useCallback(() => {
+  const applyImage = useCallback(async () => {
     if (!pendingImage) return;
-    const gate = consumeImageApply(pendingHash || pendingName || "unknown");
+    const gate = await consumeImageApplyRemote(
+      pendingHash || pendingName || "unknown",
+      readEntitlement().wallet
+    );
     refreshCredits();
     if (!gate.ok) {
       setPaywall(true);
@@ -724,6 +729,7 @@ export default function Builder() {
       return;
     }
     const result = pendingImage;
+    setLastShape(result.shape);
     const bounds = boundsOfCells(result.voxels);
     if (!bounds) return;
     const nextSize = fitSizeFor(bounds);
@@ -961,7 +967,7 @@ export default function Builder() {
       const archive = await exportObjArchive(volumeRef.current, palette, UNITY_EXPORT);
       downloadBytes(archive, `${name}-obj.zip`, "application/zip");
     },
-    [palette, title]
+    [lastShape, palette, title]
   );
 
   const publish = useCallback(async () => {
