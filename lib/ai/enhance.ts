@@ -281,20 +281,28 @@ async function runMap(id: "segment" | "depth", raster: AiRaster) {
   const ort = await import("onnxruntime-web");
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
-  // (4) Prefer higher segment resolution when the model allows (cap 512 for WASM).
+  // Higher segment input when dynamic; fixed models keep native size (usually 320).
+  // Cap 512 for WASM stability.
   let fallback = id === "segment" ? 320 : 256;
   if (id === "segment") {
     const edge = Math.max(raster.width, raster.height);
-    const dyn = dims?.[2] === -1 || dims?.[3] === -1 || dims?.[2] === 0 || dims?.[3] === 0;
-    if (dyn || !dims?.[2] || !dims?.[3]) {
-      fallback = Math.min(512, Math.max(320, edge));
+    const d2 = dims?.[2];
+    const d3 = dims?.[3];
+    const dyn =
+      d2 === -1 ||
+      d3 === -1 ||
+      d2 === 0 ||
+      d3 === 0 ||
+      d2 === undefined ||
+      d3 === undefined;
+    if (dyn) {
+      fallback = edge >= 400 ? 512 : edge >= 256 ? 384 : 320;
     } else {
-      const fixed = Math.max(Number(dims[2]) || 0, Number(dims[3]) || 0);
+      const fixed = Math.max(Number(d2) || 0, Number(d3) || 0);
       fallback = fixed > 0 ? fixed : 320;
     }
   }
   const size = modelSize(dims, fallback);
-  // Hard cap — large tensors hurt ort-wasm on low-end devices.
   const cap = id === "segment" ? 512 : 384;
   const width = Math.min(cap, size.width);
   const height = Math.min(cap, size.height);
