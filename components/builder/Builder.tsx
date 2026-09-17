@@ -42,6 +42,11 @@ import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxe
 import { UNITY_EXPORT } from "@/lib/ai/unity";
 import { buildImageOptions } from "@/lib/ai/buildOptions";
 import {
+  AI_CATEGORIES,
+  aiCategoryProfile,
+  type AiCategory
+} from "@/lib/ai/aiCategories";
+import {
   consumeImageApply,
   FREE_IMAGE_APPLIES,
   hashImageFile,
@@ -426,6 +431,8 @@ export default function Builder() {
   const [imageMode, setImageMode] = useState<LocalImageMode>("solid");
   const [imageHeight, setImageHeight] = useState(6);
   const [symmetrize, setSymmetrize] = useState(false);
+  /** Optional AI category — drives ONNX depth, matte, 2.5D height presets. */
+  const [imageCategory, setImageCategory] = useState<AiCategory | null>(null);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [pendingHash, setPendingHash] = useState("");
@@ -466,9 +473,10 @@ export default function Builder() {
         maxVoxels: MAX_SAFE,
         symmetrize: imageMode === "model" ? symmetrize : false,
         useLocalAi: true,
-        mode: imageMode
+        mode: imageMode,
+        category: imageCategory ?? undefined
       }),
-    [imageHeight, imageMode, symmetrize]
+    [imageCategory, imageHeight, imageMode, symmetrize]
   );
 
   const commit = useCallback(
@@ -1102,6 +1110,41 @@ export default function Builder() {
                 ? "Side image ready"
                 : "Side image optional"}
           </p>
+          <p className="foldHint">
+            AI category · ONNX matte + depth presets
+            {imageCategory ? ` · ${aiCategoryProfile(imageCategory).label}` : " · auto"}
+          </p>
+          <div className="viewRow">
+            <button
+              className={imageCategory === null ? "modeOn" : ""}
+              disabled={busy}
+              onClick={() => {
+                setImageCategory(null);
+                if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
+              }}
+            >
+              AUTO
+            </button>
+            {AI_CATEGORIES.map((id) => (
+              <button
+                key={id}
+                className={imageCategory === id ? "modeOn" : ""}
+                disabled={busy}
+                title={aiCategoryProfile(id).description}
+                onClick={() => {
+                  setImageCategory(id);
+                  setImageMode("model");
+                  setSymmetrize(aiCategoryProfile(id).symmetrize);
+                  if (frontFile && !sideFile) {
+                    notify(`${id.toUpperCase()} · ADD SIDE PNG FOR FULL HULL`);
+                  }
+                  if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
+                }}
+              >
+                {id.toUpperCase()}
+              </button>
+            ))}
+          </div>
           <div className="viewRow">
             {(["solid", "flat", "relief", "model"] as LocalImageMode[]).map((mode) => (
               <button
@@ -1110,6 +1153,8 @@ export default function Builder() {
                 disabled={busy}
                 onClick={() => {
                   setImageMode(mode);
+                  // Manual mode overrides category-forced model unless staying on model.
+                  if (mode !== "model") setImageCategory(null);
                   setSymmetrize(mode === "model" ? symmetrize : false);
                   if (mode === "model" && frontFile && !sideFile) {
                     notify("MODEL · ADD SIDE PNG FOR FULL 3D HULL");
