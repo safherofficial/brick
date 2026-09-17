@@ -1,9 +1,8 @@
 /**
- * 1) Download lightweight ONNX models into public/models
- * 2) Copy onnxruntime-web WASM binaries into public/ort (self-host, no CDN)
+ * Download lightweight ONNX models into public/models for offline/in-browser AI.
  */
-import { createWriteStream, createReadStream, existsSync } from "node:fs";
-import { mkdir, access, copyFile, readdir } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { mkdir, access } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import path from "node:path";
@@ -11,8 +10,6 @@ import { fileURLToPath } from "node:url";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(root, "public", "models");
-const ortOut = path.join(root, "public", "ort");
-const ortSrc = path.join(root, "node_modules", "onnxruntime-web", "dist");
 
 const FILES = [
   {
@@ -68,29 +65,4 @@ for (const file of FILES) {
   if (!ok) console.error("MISSING", file.name);
 }
 
-// Copy ORT wasm/mjs assets for self-host under /ort/
-await mkdir(ortOut, { recursive: true });
-if (existsSync(ortSrc)) {
-  const entries = await readdir(ortSrc);
-  const want = entries.filter(
-    (f) =>
-      f.endsWith(".wasm") ||
-      f.startsWith("ort-wasm") ||
-      f.includes("wasm")
-  );
-  for (const f of want) {
-    const src = path.join(ortSrc, f);
-    const dest = path.join(ortOut, f);
-    try {
-      await copyFile(src, dest);
-      console.log("ort copy", f);
-    } catch (e) {
-      console.warn("ort skip", f, String(e.message || e));
-    }
-  }
-  console.log("ORT wasm → public/ort/");
-} else {
-  console.warn("onnxruntime-web dist not found — run npm install first");
-}
-
-console.log("Done. Models in public/models/ ; WASM in public/ort/");
+console.log("Done. Models in public/models/");
