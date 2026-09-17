@@ -4,7 +4,8 @@ export type AiModelId = "segment" | "depth";
 
 /** Local-first. Remote URLs only outside production (dev fallback). */
 const LOCAL_MODELS: Record<AiModelId, string[]> = {
-  segment: ["/models/u2netp.onnx", "/models/rmbg.onnx"],
+  // Prefer stronger cutout first when present; u2netp remains fast fallback.
+  segment: ["/models/rmbg.onnx", "/models/u2netp.onnx"],
   depth: ["/models/midas-small.onnx", "/models/depth-small.onnx"]
 };
 
