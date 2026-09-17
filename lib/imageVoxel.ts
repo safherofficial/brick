@@ -1265,8 +1265,25 @@ export async function imageToVoxels(
   );
   const paletteValues = paletteRgb(palette);
 
+  // Single-view: MODEL needs a SIDE image for visual-hull. Fall back to relief
+  // so the UI can still preview FRONT while waiting for SIDE (no hard crash).
   if (normalized.mode === "model") {
-    throw new Error("MODEL MODE REQUIRES FRONT + SIDE");
+    const reliefOpts: NormalizedImageVoxelOptions = {
+      ...normalized,
+      mode: "relief",
+      heightMax: Math.max(normalized.heightMax, 8)
+    };
+    const result = buildNonModel(
+      raster,
+      mask,
+      bounds,
+      undefined,
+      null,
+      reliefOpts,
+      paletteValues,
+      palette
+    );
+    return useLocalAi ? await finalizeLocalAi(result, normalized.volumeSize, mask) : result;
   }
 
   const result = buildNonModel(
