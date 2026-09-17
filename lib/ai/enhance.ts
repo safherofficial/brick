@@ -32,31 +32,57 @@ type MatteParams = {
 };
 
 const DEFAULT_MATTE: MatteParams = {
-  threshold: 0.42,
-  softness: 0.1,
-  minKeepRatio: 0.008,
-  acceptFloor: 0.32
+  threshold: 0.4,
+  softness: 0.09,
+  minKeepRatio: 0.007,
+  acceptFloor: 0.3
 };
 
+/** (A) Category-calibrated matte — swords keep tips; objects cut bleed. */
 function matteParamsFor(category?: AiCategory): MatteParams {
   if (!category) return DEFAULT_MATTE;
-  const p = aiCategoryProfile(category);
-  if (p.thinFeatures) {
-    // Blades / barrels: keep weak tips, slightly softer acceptance.
-    return {
-      threshold: 0.38,
-      softness: 0.09,
-      minKeepRatio: 0.005,
-      acceptFloor: 0.28
-    };
+  switch (category) {
+    case "swords":
+      return {
+        threshold: 0.36,
+        softness: 0.11,
+        minKeepRatio: 0.004,
+        acceptFloor: 0.25
+      };
+    case "guns":
+      return {
+        threshold: 0.38,
+        softness: 0.1,
+        minKeepRatio: 0.005,
+        acceptFloor: 0.27
+      };
+    case "rifles":
+      return {
+        threshold: 0.37,
+        softness: 0.1,
+        minKeepRatio: 0.0045,
+        acceptFloor: 0.26
+      };
+    case "objects":
+      return {
+        threshold: 0.44,
+        softness: 0.08,
+        minKeepRatio: 0.01,
+        acceptFloor: 0.34
+      };
+    default:
+      return DEFAULT_MATTE;
   }
-  // Props: tighter matte, less background bleed.
-  return {
-    threshold: 0.45,
-    softness: 0.08,
-    minKeepRatio: 0.01,
-    acceptFloor: 0.35
-  };
+}
+
+export type EnhanceDiagnostics = {
+  segment: "ok" | "weak-fallback" | "skip" | "fail" | "cutout";
+  depth: "ok" | "skip" | "fail";
+  segmentSize: string;
+};
+
+function emptyDiag(): EnhanceDiagnostics {
+  return { segment: "skip", depth: "skip", segmentSize: "-" };
 }
 
 function clamp(n: number, lo: number, hi: number) {
@@ -275,14 +301,15 @@ export function hasCutoutAlpha(raster: AiRaster) {
   return transparent / total >= 0.08 && opaque / total >= 0.08 && mid / total <= 0.14;
 }
 
-async function runMap(id: "segment" | "depth", raster: AiRaster) {
+async function runMap(
+  id: "segment" | "depth",
+  raster: AiRaster
+): Promise<{ map: Float32Array; sizeLabel: string } | null> {
   const session = await loadModel(id);
   if (!session) return null;
   const ort = await import("onnxruntime-web");
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
-  // Higher segment input when dynamic; fixed models keep native size (usually 320).
-  // Cap 512 for WASM stability.
   let fallback = id === "segment" ? 320 : 256;
   if (id === "segment") {
     const edge = Math.max(raster.width, raster.height);
@@ -318,22 +345,81 @@ async function runMap(id: "segment" | "depth", raster: AiRaster) {
     data: Float32Array;
   };
   const plane = planeFromOutput(output.data, output.dims);
-  return resizeMap(
+  const map = resizeMap(
     normalizeMap(Float32Array.from(plane.map)),
     plane.width,
     plane.height,
     raster.width,
     raster.height
   );
+  return { map, sizeLabel: `${width}×${height}` };
+}
+
+/** (B) Luma/chroma heuristic matte when ONNX segment is missing or too weak. */
+function heuristicMatte(raster: AiRaster, category?: AiCategory): Float32Array {
+  const { width, height, rgba } = raster;
+  const out = new Float32Array(width * height);
+  // Weapons: slightly more permissive on dark steel; objects: stricter on white bg.
+  const whiteCut = category === "objects" ? 242 : 248;
+  const darkBoost = category === "swords" || category === "rifles" ? 1.08 : 1;
+  for (let i = 0; i < width * height; i += 1) {
+    const o = i * 4;
+    const r = rgba[o];
+    const g = rgba[o + 1];
+    const b = rgba[o + 2];
+    const a = rgba[o + 3] / 255;
+    if (a < 0.08) {
+      out[i] = 0;
+      continue;
+    }
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    // Near-white low-chroma → background
+    if (lum >= whiteCut && chroma < 18) {
+      out[i] = 0;
+      continue;
+    }
+    // Subject score
+    const inv = 1 - lum / 255;
+    const score = clamp(inv * darkBoost + chroma / 255 * 0.35, 0, 1) * a;
+    out[i] = score;
+  }
+  return out;
+}
+
+function writeAlpha(next: AiRaster, alpha: Float32Array) {
+  for (let i = 0; i < alpha.length; i += 1) {
+    const a = alpha[i];
+    const byte = a <= 0.04 ? 0 : a >= 0.96 ? 255 : clamp(Math.round(a * 255), 0, 255);
+    next.rgba[i * 4 + 3] = byte;
+  }
 }
 
 export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = {}) {
+  const diag = emptyDiag();
   const cutout = hasCutoutAlpha(raster);
   const available = await aiAvailable();
   const wantSegment = Boolean(available.segment) && !cutout;
   const wantDepth = options.depth === true && Boolean(available.depth);
+
+  if (cutout) diag.segment = "cutout";
+
   if (!wantSegment && !wantDepth) {
-    return { raster, depth: null as Float32Array | null };
+    if (!cutout && !available.segment) {
+      // (B) No ONNX segment available → heuristic matte so mask is still usable.
+      const next: AiRaster = {
+        width: raster.width,
+        height: raster.height,
+        rgba: new Uint8ClampedArray(raster.rgba)
+      };
+      const matte = matteParamsFor(options.category);
+      let alpha = refineAlphaMap(heuristicMatte(raster, options.category), matte);
+      alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.22);
+      writeAlpha(next, alpha);
+      diag.segment = "weak-fallback";
+      return { raster: next, depth: null as Float32Array | null, diagnostics: diag };
+    }
+    return { raster, depth: null as Float32Array | null, diagnostics: diag };
   }
 
   const next: AiRaster = {
@@ -345,25 +431,54 @@ export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = 
   const matte = matteParamsFor(options.category);
 
   if (wantSegment) {
-    const raw = await runMap("segment", raster);
-    if (raw) {
-      let kept = 0;
-      for (let i = 0; i < raw.length; i += 1) if (raw[i] >= matte.acceptFloor) kept += 1;
-      if (kept >= raster.width * raster.height * matte.minKeepRatio) {
-        let alpha = refineAlphaMap(raw, matte);
-        alpha = guidedAlphaRefine(alpha, raster, 1, 0.012);
-        alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.28);
-        for (let i = 0; i < alpha.length; i += 1) {
-          // Near-binary write: crush residual haze outside the soft band.
-          const a = alpha[i];
-          const byte =
-            a <= 0.04 ? 0 : a >= 0.96 ? 255 : clamp(Math.round(a * 255), 0, 255);
-          next.rgba[i * 4 + 3] = byte;
+    try {
+      const raw = await runMap("segment", raster);
+      if (raw) {
+        diag.segmentSize = raw.sizeLabel;
+        let kept = 0;
+        for (let i = 0; i < raw.map.length; i += 1) {
+          if (raw.map[i] >= matte.acceptFloor) kept += 1;
         }
+        const minKeep = raster.width * raster.height * matte.minKeepRatio;
+        if (kept >= minKeep) {
+          let alpha = refineAlphaMap(raw.map, matte);
+          alpha = guidedAlphaRefine(alpha, raster, 1, 0.012);
+          alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.28);
+          writeAlpha(next, alpha);
+          diag.segment = "ok";
+        } else {
+          // (B) ONNX too weak → heuristic fallback
+          let alpha = refineAlphaMap(heuristicMatte(raster, options.category), matte);
+          alpha = guidedAlphaRefine(alpha, raster, 1, 0.01);
+          alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.24);
+          writeAlpha(next, alpha);
+          diag.segment = "weak-fallback";
+        }
+      } else {
+        let alpha = refineAlphaMap(heuristicMatte(raster, options.category), matte);
+        alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.22);
+        writeAlpha(next, alpha);
+        diag.segment = "weak-fallback";
       }
+    } catch {
+      diag.segment = "fail";
     }
   }
 
-  const depth = wantDepth ? await runMap("depth", raster) : null;
-  return { raster: next, depth };
+  let depth: Float32Array | null = null;
+  if (wantDepth) {
+    try {
+      const d = await runMap("depth", raster);
+      if (d) {
+        depth = d.map;
+        diag.depth = "ok";
+      } else {
+        diag.depth = "fail";
+      }
+    } catch {
+      diag.depth = "fail";
+    }
+  }
+
+  return { raster: next, depth, diagnostics: diag };
 }
