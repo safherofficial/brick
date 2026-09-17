@@ -178,7 +178,7 @@ function refineAlphaMap(alpha: Float32Array, params: MatteParams): Float32Array 
 
 /**
  * Mild 3×3 unsharp on alpha after refine — recovers edge acuity lost to
- * 320→full bilinear upscale without reintroducing speckles.
+ * model→full bilinear upscale without reintroducing speckles.
  */
 function sharpenAlphaMap(alpha: Float32Array, width: number, height: number, amount = 0.35): Float32Array {
   if (width < 3 || height < 3 || amount <= 0) return alpha;
@@ -199,6 +199,61 @@ function sharpenAlphaMap(alpha: Float32Array, width: number, height: number, amo
           c) /
         5;
       out[i] = clamp(c + (c - blur) * amount, 0, 1);
+    }
+  }
+  return out;
+}
+
+/**
+ * (2) Joint bilateral-ish refine: smooth alpha only where RGB guide is flat.
+ * Keeps hard edges of the subject (guided by luminance of the source raster).
+ */
+function guidedAlphaRefine(
+  alpha: Float32Array,
+  raster: AiRaster,
+  radius = 1,
+  eps = 0.01
+): Float32Array {
+  const { width: w, height: h, rgba } = raster;
+  if (w < 3 || h < 3) return alpha;
+  const guide = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i += 1) {
+    const o = i * 4;
+    guide[i] = (0.299 * rgba[o] + 0.587 * rgba[o + 1] + 0.114 * rgba[o + 2]) / 255;
+  }
+  const out = new Float32Array(alpha.length);
+  const r = Math.max(1, radius);
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const i = y * w + x;
+      let sumA = 0;
+      let sumG = 0;
+      let sumAG = 0;
+      let sumGG = 0;
+      let n = 0;
+      for (let oy = -r; oy <= r; oy += 1) {
+        for (let ox = -r; ox <= r; ox += 1) {
+          const xx = x + ox;
+          const yy = y + oy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const j = yy * w + xx;
+          const g = guide[j];
+          const a = alpha[j];
+          sumA += a;
+          sumG += g;
+          sumAG += a * g;
+          sumGG += g * g;
+          n += 1;
+        }
+      }
+      const inv = 1 / Math.max(1, n);
+      const meanA = sumA * inv;
+      const meanG = sumG * inv;
+      const covAG = sumAG * inv - meanA * meanG;
+      const varG = sumGG * inv - meanG * meanG;
+      const A = covAG / (varG + eps);
+      const B = meanA - A * meanG;
+      out[i] = clamp(A * guide[i] + B, 0, 1);
     }
   }
   return out;
@@ -226,12 +281,28 @@ async function runMap(id: "segment" | "depth", raster: AiRaster) {
   const ort = await import("onnxruntime-web");
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
-  const size = modelSize(dims, id === "segment" ? 320 : 256);
-  const tensor = new ort.Tensor("float32", toNchw(raster, size.width, size.height, true), [
+  // (4) Prefer higher segment resolution when the model allows (cap 512 for WASM).
+  let fallback = id === "segment" ? 320 : 256;
+  if (id === "segment") {
+    const edge = Math.max(raster.width, raster.height);
+    const dyn = dims?.[2] === -1 || dims?.[3] === -1 || dims?.[2] === 0 || dims?.[3] === 0;
+    if (dyn || !dims?.[2] || !dims?.[3]) {
+      fallback = Math.min(512, Math.max(320, edge));
+    } else {
+      const fixed = Math.max(Number(dims[2]) || 0, Number(dims[3]) || 0);
+      fallback = fixed > 0 ? fixed : 320;
+    }
+  }
+  const size = modelSize(dims, fallback);
+  // Hard cap — large tensors hurt ort-wasm on low-end devices.
+  const cap = id === "segment" ? 512 : 384;
+  const width = Math.min(cap, size.width);
+  const height = Math.min(cap, size.height);
+  const tensor = new ort.Tensor("float32", toNchw(raster, width, height, true), [
     1,
     3,
-    size.height,
-    size.width
+    height,
+    width
   ]);
   const result = await session.run({ [inputName]: tensor });
   const output = result[session.outputNames[0]] as unknown as {
@@ -272,7 +343,8 @@ export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = 
       for (let i = 0; i < raw.length; i += 1) if (raw[i] >= matte.acceptFloor) kept += 1;
       if (kept >= raster.width * raster.height * matte.minKeepRatio) {
         let alpha = refineAlphaMap(raw, matte);
-        alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.32);
+        alpha = guidedAlphaRefine(alpha, raster, 1, 0.012);
+        alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.28);
         for (let i = 0; i < alpha.length; i += 1) {
           // Near-binary write: crush residual haze outside the soft band.
           const a = alpha[i];
