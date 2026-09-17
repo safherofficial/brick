@@ -75,8 +75,7 @@ export const CATALOG: CatalogItem[] = [
       "Orthographic front view, ornate gold key, white background, flat colors, no shadow.",
     promptSide:
       "Orthographic side view of the same gold key, white background, no shadow."
-  }
-
+  },
   {
     id: "crate",
     name: "Crate",
