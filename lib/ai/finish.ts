@@ -82,11 +82,20 @@ export function stabilizeBase(voxels: ImageVoxel[]): ImageVoxel[] {
 export function evenPack(voxels: ImageVoxel[], volumeSize: number): ImageVoxel[] {
   if (!voxels.length) return voxels;
   const b = boundsOf(voxels);
+  if (
+    b.minY === 0 &&
+    b.minX >= 0 &&
+    b.minZ >= 0 &&
+    b.maxX < volumeSize &&
+    b.maxZ < volumeSize
+  ) {
+    return voxels;
+  }
   let width = b.maxX - b.minX + 1;
   let depth = b.maxZ - b.minZ + 1;
   if (width % 2) width += 1;
   if (depth % 2) depth += 1;
-  const pad = 1;
+  const pad = 0;
   width = Math.min(volumeSize, width + pad * 2);
   depth = Math.min(volumeSize, depth + pad * 2);
   const xOffset = Math.floor((volumeSize - width) / 2) - b.minX + pad;
