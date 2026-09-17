@@ -198,6 +198,18 @@ export function dropSpikes(voxels: ImageVoxel[]): ImageVoxel[] {
   return kept.length ? kept : voxels;
 }
 
-export function lintVoxels(voxels: ImageVoxel[]): ImageVoxel[] {
+export type LintOptions = {
+  /** Weapons / thin props: skip cavity fill & color merges that erase 1-voxel features. */
+  thinFeatures?: boolean;
+};
+
+export function lintVoxels(
+  voxels: ImageVoxel[],
+  options: LintOptions = {}
+): ImageVoxel[] {
+  if (options.thinFeatures) {
+    // Preserve blades, barrels, triggers — only close 1-voxel axis gaps + drop true spikes.
+    return dropSpikes(fillAxisGaps(voxels));
+  }
   return mergeTinyColorRegions(dropSpikes(fillTinyCavities(fillAxisGaps(voxels))));
 }
