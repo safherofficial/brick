@@ -285,6 +285,54 @@ function guidedAlphaRefine(
   return out;
 }
 
+function estimateCornerBg(raster: AiRaster): [number, number, number] {
+  const { width: w, height: h, rgba } = raster;
+  const pts = [
+    [0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1],
+    [Math.floor(w / 2), 0], [0, Math.floor(h / 2)]
+  ];
+  let r = 0, g = 0, b = 0, n = 0;
+  for (const [x, y] of pts) {
+    const i = (y * w + x) * 4;
+    if (rgba[i + 3] < 12) continue;
+    r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2]; n += 1;
+  }
+  if (!n) return [255, 255, 255];
+  return [r / n, g / n, b / n];
+}
+
+/** Pull subject RGB off the studio backdrop (JPEG fringe / green-screen bleed). */
+function despillRgb(raster: AiRaster, alpha: Float32Array) {
+  const bg = estimateCornerBg(raster);
+  const { width, height, rgba } = raster;
+  for (let i = 0; i < width * height; i += 1) {
+    const a = alpha[i];
+    if (a <= 0.04 || a >= 0.92) continue;
+    const o = i * 4;
+    const t = 1 - a;
+    rgba[o] = Math.max(0, Math.min(255, rgba[o] - (bg[0] - 128) * t * 0.35));
+    rgba[o + 1] = Math.max(0, Math.min(255, rgba[o + 1] - (bg[1] - 128) * t * 0.35));
+    rgba[o + 2] = Math.max(0, Math.min(255, rgba[o + 2] - (bg[2] - 128) * t * 0.35));
+  }
+}
+
+/** MiDaS outputs are sometimes inverted; flip if the subject core is farther than the rim. */
+function orientDepth(depth: Float32Array, alpha: Float32Array | null): Float32Array {
+  if (!alpha || depth.length !== alpha.length) return depth;
+  let core = 0, coreN = 0, rim = 0, rimN = 0;
+  for (let i = 0; i < depth.length; i += 1) {
+    if (alpha[i] >= 0.85) { core += depth[i]; coreN += 1; }
+    else if (alpha[i] >= 0.2 && alpha[i] < 0.55) { rim += depth[i]; rimN += 1; }
+  }
+  if (coreN < 16 || rimN < 16) return depth;
+  if (core / coreN + 0.06 < rim / rimN) {
+    const out = new Float32Array(depth.length);
+    for (let i = 0; i < depth.length; i += 1) out[i] = 1 - depth[i];
+    return out;
+  }
+  return depth;
+}
+
 export function hasCutoutAlpha(raster: AiRaster) {
   const total = raster.width * raster.height;
   if (!total) return false;
@@ -445,6 +493,7 @@ export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = 
           alpha = guidedAlphaRefine(alpha, raster, 1, 0.012);
           alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.28);
           writeAlpha(next, alpha);
+          despillRgb(next, alpha);
           diag.segment = "ok";
         } else {
           // (B) ONNX too weak → heuristic fallback
@@ -470,7 +519,9 @@ export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = 
     try {
       const d = await runMap("depth", raster);
       if (d) {
-        depth = d.map;
+        const alphaPlane = new Float32Array(next.width * next.height);
+        for (let i = 0; i < alphaPlane.length; i += 1) alphaPlane[i] = next.rgba[i * 4 + 3] / 255;
+        depth = orientDepth(d.map, alphaPlane);
         diag.depth = "ok";
       } else {
         diag.depth = "fail";
