@@ -83,6 +83,19 @@ export const ENGINE_PROFILES: Record<EngineId, EngineProfile> = {
   }
 };
 
+/** Unity 2D / pixel tilemap handoff. Not an EngineId — keeps 3D profiles unchanged. */
+export const UNITY_2D_PIXEL = {
+  id: "unity-2d-pixel" as const,
+  label: "Unity 2D (pixel)",
+  unitMeters: 1,
+  pixelsPerUnit: 16,
+  pivot: "bottom-center" as const,
+  upAxis: "y" as const,
+  textureFilter: "nearest" as const,
+  doubleSided: true,
+  notes: "1 voxel = 1 unit · PPU 16 · Unlit + NEAREST · pivot bottom-center of content"
+};
+
 /** Default export = Unity-compatible (most common Brick target). */
 export const DEFAULT_ENGINE: EngineId = "unity";
 
@@ -191,14 +204,17 @@ export function buildGlbExtras(input: {
   volumeSize: number;
   engine?: EngineId;
   shape?: ShapeKind;
+  output?: "2d" | "25d";
+  pixelsPerUnit?: number;
 }) {
+  const twoD = input.output === "2d";
   const engine = input.engine ?? DEFAULT_ENGINE;
-  const profile = ENGINE_PROFILES[engine];
+  const profile = twoD ? UNITY_2D_PIXEL : ENGINE_PROFILES[engine];
   return {
     brick: {
       generator: GENERATOR_NAME,
       gameReady: true,
-      engine: profile.id,
+      engine: twoD ? UNITY_2D_PIXEL.id : profile.id,
       unitMeters: profile.unitMeters,
       pivot: profile.pivot,
       upAxis: profile.upAxis,
@@ -207,7 +223,9 @@ export function buildGlbExtras(input: {
       shape: input.shape ?? null,
       material: VOXEL_MATERIAL_CONTRACT.name,
       textureFilter: "nearest",
-      sockets: input.shape ? SHAPE_SOCKETS[input.shape].map((s) => s.name) : ["Socket_Grip"]
+      sockets: input.shape ? SHAPE_SOCKETS[input.shape].map((s) => s.name) : ["Socket_Grip"],
+      output: input.output ?? null,
+      pixelsPerUnit: twoD ? (input.pixelsPerUnit ?? UNITY_2D_PIXEL.pixelsPerUnit) : null
     }
   };
 }
@@ -220,7 +238,7 @@ export function gameReadyChecklist(): string[] {
     "Mesh: greedy quads (not one cube = one mesh)",
     "Material: single atlas, metallic 0, roughness 1, NEAREST filter",
     "Hierarchy: mesh root + Socket_* empty nodes",
-    "Formats: GLB textured (primary), VOX, OBJ archive",
+    "Formats: GLB textured (primary), VOX, OBJ archive, PNG ortho for 2D",
     "No editor-only lights baked into the file"
   ];
 }
