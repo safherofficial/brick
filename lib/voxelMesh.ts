@@ -8,6 +8,8 @@ export type MeshExportOptions = {
   pivot?: Pivot;
   upAxis?: UpAxis;
   name?: string;
+  /** Optional recognized shape — used for GLB Socket_* placement. */
+  shape?: string;
 };
 
 export type ResolvedExport = {
