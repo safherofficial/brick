@@ -39,8 +39,10 @@ import {
 } from "@/lib/voxelExport";
 import { exportGlb } from "@/lib/voxelGlb";
 import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxel";
-import { UNITY_EXPORT } from "@/lib/ai/unity";
+import { UNITY_EXPORT, unity2dPixelExportOptions } from "@/lib/ai/unity";
 import { buildImageOptions } from "@/lib/ai/buildOptions";
+import { exportVolumePngOrtho } from "@/lib/exportPngOrtho";
+import type { OutputLock } from "@/lib/imageVoxel";
 import {
   AI_CATEGORIES,
   aiCategoryProfile,
@@ -430,6 +432,7 @@ export default function Builder() {
   const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
   const [imageMode, setImageMode] = useState<LocalImageMode>("solid");
+  const [outputLock, setOutputLock] = useState<OutputLock | null>(null);
   const [imageHeight, setImageHeight] = useState(6);
   const [symmetrize, setSymmetrize] = useState(false);
   /** Optional AI category — drives ONNX depth, matte, 2.5D height presets. */
@@ -478,9 +481,11 @@ export default function Builder() {
         symmetrize: imageMode === "model" ? symmetrize : false,
         useLocalAi: true,
         mode: imageMode,
-        category: imageCategory ?? undefined
+        category: imageCategory ?? undefined,
+        output: outputLock ?? undefined,
+        outline: outputLock === "2d" ? true : undefined
       }),
-    [imageCategory, imageHeight, imageMode, symmetrize]
+    [imageCategory, imageHeight, imageMode, outputLock, symmetrize]
   );
 
   const commit = useCallback(
@@ -945,7 +950,7 @@ export default function Builder() {
   );
 
   const exportFiles = useCallback(
-    async (kind: "json" | "vox" | "glb" | "obj") => {
+    async (kind: "json" | "vox" | "glb" | "obj" | "png") => {
       const name = title.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "brick";
       if (kind === "json") {
         downloadText(
@@ -959,15 +964,32 @@ export default function Builder() {
         downloadBytes(exportVox(volumeRef.current, palette), `${name}.vox`, "application/octet-stream");
         return;
       }
+      if (kind === "png") {
+        const { png, pivot } = exportVolumePngOrtho(volumeRef.current, palette, 16);
+        downloadBytes(png, `${name}.png`, "image/png");
+        downloadText(JSON.stringify({
+          schema: "brick.unity-2d-pixel.v1",
+          engine: "unity-2d-pixel",
+          pixelsPerUnit: pivot.pixelsPerUnit,
+          pivot: { x: pivot.x, y: pivot.y },
+          width: pivot.width,
+          height: pivot.height
+        }, null, 2), `${name}.png.json`, "application/json");
+        return;
+      }
       if (kind === "glb") {
-        const bytes = await exportGlb(volumeRef.current, palette, UNITY_EXPORT);
+        const options = outputLock === "2d" ? unity2dPixelExportOptions() : UNITY_EXPORT;
+        const bytes = await exportGlb(volumeRef.current, palette, options);
         downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
         return;
       }
-      const archive = await exportObjArchive(volumeRef.current, palette, UNITY_EXPORT);
+      const archive = await exportObjArchive(
+        volumeRef.current, palette,
+        outputLock === "2d" ? unity2dPixelExportOptions() : UNITY_EXPORT
+      );
       downloadBytes(archive, `${name}-obj.zip`, "application/zip");
     },
-    [lastShape, palette, title]
+    [lastShape, outputLock, palette, title]
   );
 
   const publish = useCallback(async () => {
@@ -1035,6 +1057,7 @@ export default function Builder() {
           <button onClick={() => void exportFiles("json")} disabled={busy}>PROJECT</button>
           <button onClick={() => void exportFiles("vox")} disabled={busy}>VOX</button>
           <button onClick={() => void exportFiles("glb")} disabled={busy}>GLB</button>
+          <button onClick={() => void exportFiles("png")} disabled={busy}>PNG</button>
           <button onClick={() => void exportFiles("obj")} disabled={busy}>OBJ</button>
           <button className="primaryButton" onClick={() => void publish()} disabled={busy}>PUBLISH</button>
           <input
@@ -1279,28 +1302,38 @@ export default function Builder() {
               </button>
             ))}
           </div>
+          <p className="foldHint">Output lock (wins over category / solid)</p>
+          <div className="viewRow">
+            {([["2d", "2D"], ["25d", "2.5D"]] as const).map(([id, label]) => (
+              <button key={id} className={outputLock === id ? "modeOn" : ""} disabled={busy}
+                onClick={() => {
+                  setOutputLock(id);
+                  setImageMode(id === "2d" ? "flat" : "relief");
+                  if (id === "2d") setImageCategory(null);
+                  setSymmetrize(false);
+                  if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
+                }}>{label}</button>
+            ))}
+            <button className={outputLock === null ? "modeOn" : ""} disabled={busy}
+              onClick={() => {
+                setOutputLock(null);
+                if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
+              }}>FREE</button>
+          </div>
           <div className="viewRow">
             {(["solid", "flat", "relief", "model"] as LocalImageMode[]).map((mode) => (
-              <button
-                key={mode}
-                className={imageMode === mode ? "modeOn" : ""}
-                disabled={busy}
+              <button key={mode} className={imageMode === mode ? "modeOn" : ""} disabled={busy}
                 onClick={() => {
                   setImageMode(mode);
-                  // Manual mode overrides category-forced model unless staying on model.
+                  setOutputLock(mode === "flat" ? "2d" : mode === "relief" ? "25d" : null);
                   if (mode !== "model") setImageCategory(null);
                   setSymmetrize(mode === "model" ? symmetrize : false);
-                  if (mode === "model" && frontFile && !sideFile) {
-                    notify("MODEL · ADD SIDE PNG FOR FULL 3D HULL");
-                  }
+                  if (mode === "model" && frontFile && !sideFile) notify("MODEL · ADD SIDE PNG FOR FULL 3D HULL");
                   if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-                }}
-              >
-                {mode.toUpperCase()}
-              </button>
+                }}>{mode.toUpperCase()}</button>
             ))}
           </div>
-          {imageMode === "relief" && (
+          {(imageMode === "relief" || outputLock === "25d") && (
             <>
               <p className="foldHint">Relief depth</p>
               <div className="viewRow">
