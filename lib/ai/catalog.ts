@@ -4,7 +4,7 @@ import { STYLE_PROFILES, type StyleId } from "@/lib/ai/styleProfiles";
 export type CatalogItem = {
   id: string;
   name: string;
-  style: StyleId;
+  category: StyleId;
   depth: number;
   symmetrize: boolean;
   promptFront: string;
@@ -15,7 +15,7 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "tile-block",
     name: "Tile",
-    style: "tile",
+    category: "tile",
     depth: STYLE_PROFILES.tile.depth,
     symmetrize: STYLE_PROFILES.tile.symmetrize,
     promptFront: "Orthographic front view, game tile block, white background, flat colors, no shadow.",
@@ -24,7 +24,7 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "sword-short",
     name: "Short sword",
-    style: "sword",
+    category: "sword",
     depth: STYLE_PROFILES.sword.depth,
     symmetrize: STYLE_PROFILES.sword.symmetrize,
     promptFront:
@@ -35,7 +35,7 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "axe",
     name: "Axe",
-    style: "weapon",
+    category: "weapon",
     depth: STYLE_PROFILES.weapon.depth,
     symmetrize: STYLE_PROFILES.weapon.symmetrize,
     promptFront:
@@ -46,7 +46,7 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "potion",
     name: "Potion",
-    style: "pickup",
+    category: "pickup",
     depth: STYLE_PROFILES.pickup.depth,
     symmetrize: STYLE_PROFILES.pickup.symmetrize,
     promptFront:
@@ -57,7 +57,7 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "shield",
     name: "Shield",
-    style: "prop",
+    category: "prop",
     depth: STYLE_PROFILES.prop.depth,
     symmetrize: true,
     promptFront:
@@ -68,7 +68,7 @@ export const CATALOG: CatalogItem[] = [
   {
     id: "key",
     name: "Key",
-    style: "weapon",
+    category: "weapon",
     depth: STYLE_PROFILES.weapon.depth,
     symmetrize: false,
     promptFront:
@@ -76,6 +76,40 @@ export const CATALOG: CatalogItem[] = [
     promptSide:
       "Orthographic side view of the same gold key, white background, no shadow."
   }
+
+  {
+    id: "crate",
+    name: "Crate",
+    category: "prop",
+    depth: STYLE_PROFILES.prop.depth,
+    symmetrize: true,
+    promptFront:
+      "Orthographic front view, wooden supply crate, iron corners, white background, flat colors, no shadow.",
+    promptSide:
+      "Orthographic side view of the same wooden crate, white background, no shadow."
+  },
+  {
+    id: "helmet",
+    name: "Helmet",
+    category: "prop",
+    depth: STYLE_PROFILES.prop.depth,
+    symmetrize: true,
+    promptFront:
+      "Orthographic front view, medieval iron helmet, white background, flat colors, no shadow.",
+    promptSide:
+      "Orthographic side view of the same iron helmet, white background, no shadow."
+  },
+  {
+    id: "pistol",
+    name: "Pistol",
+    category: "weapon",
+    depth: STYLE_PROFILES.weapon.depth,
+    symmetrize: false,
+    promptFront:
+      "Orthographic front view, compact sidearm pistol, white background, flat colors, no shadow.",
+    promptSide:
+      "Orthographic side view of the same pistol, white background, no shadow."
+  },
 ];
 
 export function catalogById(id: string) {
