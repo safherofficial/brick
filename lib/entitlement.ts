@@ -105,3 +105,47 @@ export function setLocalPlan(plan: "free" | "monthly", wallet?: string) {
   state.plan = isDevWallet(state.wallet) ? "monthly" : plan;
   write(state);
 }
+
+export async function consumeImageApplyRemote(hash: string, wallet?: string) {
+  const local = consumeImageApply(hash);
+  if (!wallet) return local;
+  try {
+    const res = await fetch("/api/entitlement", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ wallet, hash })
+    });
+    const data = (await res.json()) as {
+      ok?: boolean;
+      remaining?: number | null;
+      reason?: string;
+      message?: string;
+      plan?: string;
+      offline?: boolean;
+    };
+    if (data.offline) return local;
+    if (data.ok === false) {
+      return {
+        ok: false as const,
+        reason: "blocked" as const,
+        remaining: 0,
+        message: data.message ?? "SUBSCRIBE TO APPLY"
+      };
+    }
+    if (typeof data.remaining === "number" && Number.isFinite(data.remaining)) {
+      if (data.plan === "monthly") setLocalPlan("monthly", wallet);
+      return {
+        ok: true as const,
+        reason: (data.reason === "repeat" ? "repeat" : data.reason === "subscribed" ? "subscribed" : "quota") as
+          | "repeat"
+          | "subscribed"
+          | "quota",
+        remaining: data.remaining,
+        message: data.reason === "repeat" ? "SAME IMAGE" : data.reason === "subscribed" ? "SUBSCRIBED" : `${data.remaining} LEFT`
+      };
+    }
+    return local;
+  } catch {
+    return local;
+  }
+}
