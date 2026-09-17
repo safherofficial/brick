@@ -103,11 +103,10 @@ export function assessSideView(
 ): SideViewAssessment {
   const aspectWH = frontBounds.width / Math.max(1, frontBounds.height);
   const aspectDH = sideBounds.width / Math.max(1, sideBounds.height);
-  // Strict: only treat as "second front" when SIDE is nearly as wide as FRONT
-  // and not thin. Previous 0.55× threshold forced flat extrusion on almost every
-  // valid SIDE (including real profiles) and ignored the visual hull.
+  // Second FRONT: SIDE is wide AND its aspect is close to FRONT (not merely wider).
+  const aspectRatio = aspectDH / Math.max(1e-6, aspectWH);
   const sideLooksLikeFront =
-    aspectDH >= Math.max(0.4, aspectWH * 0.9) && aspectDH >= aspectWH * 0.85;
+    aspectDH >= 0.35 && aspectRatio >= 0.8 && aspectRatio <= 1.25;
   const sideLooksLikeProfile = aspectDH < 0.28 && aspectDH < aspectWH * 0.55;
 
   let score = 1;
