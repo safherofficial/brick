@@ -639,7 +639,13 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
     }
   }
 
-  return dominantPalette([...buckets.values()], size);
+  const samples = [...buckets.values()];
+  // (6) Adaptive palette size: few unique colors → pixel-art path (smaller palette, exact).
+  const unique = samples.length;
+  let target = size;
+  if (unique > 0 && unique <= 24) target = Math.min(size, Math.max(12, unique + 4));
+  else if (unique >= 120) target = Math.min(96, size + 16);
+  return dominantPalette(samples, target);
 }
 
 function ditheredColor(
@@ -1054,11 +1060,23 @@ function reconstructVisualHull(
       const py = frontBounds.minY + ny * (frontBounds.maxY - frontBounds.minY);
       const depthSample = depthAt(frontDepth, frontRaster, px, py);
 
+      // (3) Soft depth clamp: if ONNX depth says the surface is thin, reject
+      // extreme Z from a wide SIDE without inventing voxels (hull still required).
+      const depthHalf =
+        frontDepth && dimensions.depth > 2
+          ? Math.max(1, Math.round(dimensions.depth * (0.2 + depthSample * 0.45)))
+          : dimensions.depth;
+      const zMid = (dimensions.depth - 1) * 0.5;
+
       for (let z = 0; z < dimensions.depth; z += 1) {
         const nz = dimensions.depth <= 1 ? 0.5 : z / (dimensions.depth - 1);
 
         // TRUE VISUAL HULL: FRONT = X/Y, SIDE = Z/Y (Y-aligned).
         if (side && !side[ySide]?.[z]) continue;
+
+        if (frontDepth && dimensions.depth > 2) {
+          if (Math.abs(z - zMid) > depthHalf) continue;
+        }
 
         let color: [number, number, number] = [
           frontColor.r,
@@ -1073,7 +1091,7 @@ function reconstructVisualHull(
           color = blendRgb(frontColor, sideColor, 0.1 + eased * 0.72);
         }
 
-        // Depth map: subtle volumetric shade only (geometry stays pure hull).
+        // Depth map: subtle volumetric shade (geometry still hull ∩ clamp).
         const shade = (0.98 - nz * 0.16) * (0.94 + depthSample * 0.1);
         color = [color[0] * shade, color[1] * shade, color[2] * shade];
 
@@ -1269,8 +1287,14 @@ async function finalizeLocalAi(
         import("@/lib/ai/aiCategories")
       ]);
     const guess = recognizeFromMask(mask);
-    const thinFeatures = aiCategory
-      ? aiCategoryProfile(aiCategory).thinFeatures
+    // (5) Auto-category from silhouette when UI left AUTO.
+    let resolvedCategory = aiCategory;
+    if (!resolvedCategory) {
+      if (guess.kind === "sword" || guess.kind === "axe") resolvedCategory = "swords";
+      else if (guess.kind === "bottle" || guess.kind === "prop") resolvedCategory = "objects";
+    }
+    const thinFeatures = resolvedCategory
+      ? aiCategoryProfile(resolvedCategory).thinFeatures
       : guess.kind === "sword" || guess.kind === "axe";
     let voxels = result.voxels;
     voxels = lintVoxels(voxels, { thinFeatures });
@@ -1437,6 +1461,40 @@ export async function imagesToVoxels(
 
     if (!sideRaster || !sideMask || !sideBounds) {
       throw new Error("MODEL MODE REQUIRES A VALID SIDE VIEW");
+    }
+
+    // (1) SIDE ≈ FRONT → 2.5D extrusion instead of a fat broken hull.
+    try {
+      const { assessSideView } = await import("@/lib/ai/viewAlign");
+      const quality = assessSideView(frontBounds, sideBounds);
+      if (quality.sideLooksLikeFront) {
+        const reliefOpts: NormalizedImageVoxelOptions = {
+          ...normalized,
+          mode: "relief",
+          heightMax: Math.max(normalized.heightMax, 6)
+        };
+        const extruded = buildNonModel(
+          frontRaster,
+          frontMask,
+          frontBounds,
+          sideMask,
+          sideBounds,
+          reliefOpts,
+          paletteValues,
+          palette,
+          frontDepth
+        );
+        return useLocalAi
+          ? await finalizeLocalAi(
+              extruded,
+              normalized.volumeSize,
+              frontMask,
+              normalized.aiCategory
+            )
+          : extruded;
+      }
+    } catch {
+      /* keep hull path */
     }
 
     // A: correlate FRONT/SIDE vertical profiles → small Y shift for hull sampling.
