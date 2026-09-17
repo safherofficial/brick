@@ -412,3 +412,4 @@ export async function exportGlbTextured(
   await new Promise((resolve) => window.setTimeout(resolve, 0));
   return writeGlb(json, bin);
 }
+
