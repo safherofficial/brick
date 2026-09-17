@@ -19,25 +19,71 @@ function pad4(n: number) {
   return (4 - (n % 4)) % 4;
 }
 
+function voxelMassCentroid(
+  volume: VoxelVolume,
+  pred: (x: number, y: number, z: number) => boolean
+): [number, number, number] | null {
+  let sx = 0, sy = 0, sz = 0, n = 0;
+  for (const key of volume.raw().keys()) {
+    const [x, y, z] = key.split(":").map(Number);
+    if (!pred(x, y, z)) continue;
+    sx += x + 0.5; sy += y + 0.5; sz += z + 0.5; n += 1;
+  }
+  if (!n) return null;
+  return [sx / n, sy / n, sz / n];
+}
+
 function socketNodes(
+  volume: VoxelVolume,
+  origin: { x: number; y: number; z: number },
+  unitMeters: number,
+  upAxis: "y" | "z",
   minPx: number, minPy: number, minPz: number,
   maxPx: number, maxPy: number, maxPz: number,
   shape?: string
 ) {
-  const cx = (minPx + maxPx) / 2;
-  const cy = (minPy + maxPy) / 2;
-  const cz = (minPz + maxPz) / 2;
+  const cells: [number, number, number][] = [];
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const key of volume.raw().keys()) {
+    const [x, y, z] = key.split(":").map(Number);
+    cells.push([x, y, z]);
+    minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
+  }
+  const world = (x: number, y: number, z: number): [number, number, number] =>
+    transformPoint(x, y, z, origin, unitMeters, upAxis);
+
+  const spanY = Math.max(1, maxY - minY);
+  const spanX = Math.max(1, maxX - minX);
+  const spanZ = Math.max(1, maxZ - minZ);
+  const ground = voxelMassCentroid(volume, (_x, y) => y <= minY + Math.max(0, spanY * 0.08));
+  const center = voxelMassCentroid(volume, () => true);
+  const grip = voxelMassCentroid(volume, (_x, y) => y <= minY + spanY * 0.2);
+  const tipY = voxelMassCentroid(volume, (_x, y) => y >= maxY - spanY * 0.12);
+  const muzzle = spanX >= spanZ
+    ? voxelMassCentroid(volume, (x) => x >= maxX - spanX * 0.12)
+    : voxelMassCentroid(volume, (_x, _y, z) => z >= maxZ - spanZ * 0.12);
+
+  const fallback = (a: [number, number, number] | null, b: [number, number, number]) => a ?? b;
+  const g = fallback(ground, [(minX + maxX) / 2, minY, (minZ + maxZ) / 2]);
+  const c = fallback(center, [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2]);
+  const gr = fallback(grip, [(minX + maxX) / 2, minY + spanY * 0.12, (minZ + maxZ) / 2]);
+  const tp = fallback(tipY, [(minX + maxX) / 2, maxY + 1, (minZ + maxZ) / 2]);
+  const mz = fallback(muzzle, spanX >= spanZ ? [maxX + 1, (minY + maxY) / 2, (minZ + maxZ) / 2] : [(minX + maxX) / 2, (minY + maxY) / 2, maxZ + 1]);
+
   const nodes: { name: string; translation: [number, number, number] }[] = [
-    { name: "Socket_Ground", translation: [cx, minPy, cz] },
-    { name: "Socket_Center", translation: [cx, cy, cz] }
+    { name: "Socket_Ground", translation: world(g[0], g[1], g[2]) },
+    { name: "Socket_Center", translation: world(c[0], c[1], c[2]) }
   ];
   if (shape === "sword" || shape === "axe" || shape === "capsule") {
-    nodes.push({ name: "Socket_Grip", translation: [cx, minPy + (maxPy - minPy) * 0.12, cz] });
-    nodes.push({ name: "Socket_Tip", translation: [cx, maxPy, cz] });
+    nodes.push({ name: "Socket_Grip", translation: world(gr[0], gr[1], gr[2]) });
+    nodes.push({ name: "Socket_Tip", translation: world(tp[0], tp[1], tp[2]) });
   } else {
-    nodes.push({ name: "Socket_Grip", translation: [cx, cy, minPz] });
-    nodes.push({ name: "Socket_Muzzle", translation: [cx, cy, maxPz] });
+    nodes.push({ name: "Socket_Grip", translation: world(gr[0], gr[1], gr[2]) });
+    nodes.push({ name: "Socket_Muzzle", translation: world(mz[0], mz[1], mz[2]) });
   }
+  void minPx; void minPy; void minPz; void maxPx; void maxPy; void maxPz;
   return nodes;
 }
 
@@ -346,7 +392,7 @@ export async function exportGlbTextured(
     scenes: [{ nodes: [0, 1, 2, 3, 4], name: resolved.name }],
     nodes: [
       { mesh: 0, name: resolved.name },
-      ...socketNodes(minPx, minPy, minPz, maxPx, maxPy, maxPz, options?.shape)
+      ...socketNodes(volume, origin, resolved.unitMeters, resolved.upAxis, minPx, minPy, minPz, maxPx, maxPy, maxPz, options?.shape)
     ],
     meshes: [
       {
