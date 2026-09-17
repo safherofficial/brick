@@ -379,14 +379,25 @@ export default function Builder() {
       const job = ++imageJobRef.current;
       setBusy(true);
       try {
-        notify(views.side ? "REBUILD FRONT + SIDE" : "REBUILD FRONT");
+        const opts = imageOptions();
+        if (opts.mode === "model" && !views.side) {
+          notify("MODEL · ADD SIDE PNG FOR FULL 3D");
+        } else {
+          notify(views.side ? "REBUILD FRONT + SIDE" : "REBUILD FRONT");
+        }
         const result = views.side
-          ? await imagesToVoxels(views, imageOptions())
-          : await imageToVoxels(views.front, imageOptions());
+          ? await imagesToVoxels(views, opts)
+          : await imageToVoxels(views.front, opts);
         if (job !== imageJobRef.current) return;
         if (!result.voxels.length) throw new Error("Empty image");
         setPendingImage(result);
-        notify(`Preview ready · ${result.count ?? result.voxels.length} vx`);
+        const tag =
+          opts.mode === "model" && views.side
+            ? "MODEL hull"
+            : opts.mode === "model"
+              ? "MODEL preview (needs SIDE)"
+              : "Preview";
+        notify(`${tag} · ${result.count ?? result.voxels.length} vx`);
         setPaywall(false);
       } catch (error) {
         notify(error instanceof Error ? error.message.toUpperCase() : "IMAGE REBUILD FAILED");
@@ -427,13 +438,23 @@ export default function Builder() {
         setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
         setPendingHash(await hashImageFile(file));
         if (job !== imageJobRef.current) return;
+        const opts = imageOptions();
+        if (opts.mode === "model" && !sideFile) {
+          notify("MODEL · ADD SIDE PNG FOR FULL 3D");
+        }
         const result = sideFile
-          ? await imagesToVoxels({ front: file, side: sideFile }, imageOptions())
-          : await imageToVoxels(file, imageOptions());
+          ? await imagesToVoxels({ front: file, side: sideFile }, opts)
+          : await imageToVoxels(file, opts);
         if (job !== imageJobRef.current) return;
         if (!result.voxels.length) throw new Error("Empty image");
         setPendingImage(result);
-        notify(`Preview ready · ${result.count ?? result.voxels.length} vx`);
+        const tag =
+          opts.mode === "model" && sideFile
+            ? "MODEL hull"
+            : opts.mode === "model"
+              ? "MODEL preview (needs SIDE)"
+              : "Preview";
+        notify(`${tag} · ${result.count ?? result.voxels.length} vx`);
         setPaywall(false);
       } catch (error) {
         notify(error instanceof Error ? error.message.toUpperCase() : "FRONT IMPORT FAILED");
@@ -872,7 +893,13 @@ export default function Builder() {
           <p className="foldHint">
             {frontFile ? "Front image ready" : "Front image required"}
             <br />
-            {sideFile ? "Side image ready" : "Side image optional"}
+            {imageMode === "model"
+              ? sideFile
+                ? "Side image ready · MODEL hull active"
+                : "Side image required for MODEL (visual hull)"
+              : sideFile
+                ? "Side image ready"
+                : "Side image optional"}
           </p>
           <div className="viewRow">
             {(["solid", "flat", "relief", "model"] as LocalImageMode[]).map((mode) => (
@@ -883,6 +910,9 @@ export default function Builder() {
                 onClick={() => {
                   setImageMode(mode);
                   setSymmetrize(mode === "model" ? symmetrize : false);
+                  if (mode === "model" && frontFile && !sideFile) {
+                    notify("MODEL · ADD SIDE PNG FOR FULL 3D HULL");
+                  }
                   if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
                 }}
               >
@@ -890,9 +920,9 @@ export default function Builder() {
               </button>
             ))}
           </div>
-          {(imageMode === "relief" || imageMode === "model") && (
+          {imageMode === "relief" && (
             <>
-              <p className="foldHint">Maximum depth</p>
+              <p className="foldHint">Relief depth</p>
               <div className="viewRow">
                 {[4, 8, 12, 16].map((n) => (
                   <button
@@ -910,6 +940,29 @@ export default function Builder() {
               </div>
             </>
           )}
+          {imageMode === "model" && !sideFile && (
+            <>
+              <p className="foldHint">Preview depth until SIDE is added</p>
+              <div className="viewRow">
+                {[4, 8, 12, 16].map((n) => (
+                  <button
+                    key={n}
+                    className={imageHeight === n ? "modeOn" : ""}
+                    onClick={() => {
+                      setImageHeight(n);
+                      if (frontFile) void rebuildMultiView();
+                    }}
+                    disabled={busy}
+                  >
+                    D{n}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {imageMode === "model" && sideFile && (
+            <p className="foldHint">Depth comes from FRONT + SIDE silhouettes</p>
+          )}
           <button
             className={symmetrize ? "modeOn" : ""}
             onClick={() => {
@@ -925,8 +978,12 @@ export default function Builder() {
           <button onClick={() => frontRef.current?.click()} disabled={busy}>
             FRONT PNG
           </button>
-          <button onClick={() => sideRef.current?.click()} disabled={busy || !frontFile}>
-            SIDE PNG
+          <button
+            className={imageMode === "model" && !sideFile && frontFile ? "primaryButton" : ""}
+            onClick={() => sideRef.current?.click()}
+            disabled={busy || !frontFile}
+          >
+            {imageMode === "model" && !sideFile ? "SIDE PNG (REQUIRED)" : "SIDE PNG"}
           </button>
           <p className="foldHint">
             LOCAL AI · ONNX segment/depth when models are present · falls back to heuristics · 32–256
