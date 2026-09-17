@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "models": "node scripts/fetch-onnx.mjs"
+    "models": "node scripts/fetch-onnx.mjs",
+    "test:hull": "node scripts/regression-hull.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",
