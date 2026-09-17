@@ -810,13 +810,40 @@ export default function Builder() {
   }, [resize]);
 
   const clearAll = useCallback(() => {
+    // Cancel any in-flight image job so a late result cannot repopulate UI.
+    imageJobRef.current += 1;
+
     const deltas = applyCells(volumeRef.current, volumeRef.current.voxels(), null, {
       x: false,
       y: false,
       z: false
     });
     commit(deltas);
-  }, [commit]);
+
+    // Wipe import / preview UI leftovers from the previous image.
+    setPendingImage(null);
+    setPendingName("");
+    setPendingHash("");
+    setFrontFile(null);
+    setSideFile(null);
+    setSideMetricsLabel("");
+    setSideMetricsWarn(null);
+    setPaywall(false);
+    setBusy(false);
+    setSelected(new Set());
+    setBoxStart(null);
+    setHover(null);
+    setFocus(volumeCenter(volumeRef.current.size));
+
+    if (frontRef.current) frontRef.current.value = "";
+    if (sideRef.current) sideRef.current.value = "";
+    if (fileRef.current) fileRef.current.value = "";
+
+    historyRef.current = new History();
+    setCanUndo(false);
+    setCanRedo(false);
+    notify("CLEARED");
+  }, [commit, notify]);
 
   const onHit = useCallback(
     (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => {
