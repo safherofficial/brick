@@ -35,19 +35,15 @@ function voxelMassCentroid(
 
 function socketNodes(
   volume: VoxelVolume,
-  origin: { x: number; y: number; z: number },
+  origin: [number, number, number],
   unitMeters: number,
   upAxis: "y" | "z",
-  minPx: number, minPy: number, minPz: number,
-  maxPx: number, maxPy: number, maxPz: number,
   shape?: string
 ) {
-  const cells: [number, number, number][] = [];
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (const key of volume.raw().keys()) {
     const [x, y, z] = key.split(":").map(Number);
-    cells.push([x, y, z]);
     minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
     maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
   }
@@ -83,7 +79,6 @@ function socketNodes(
     nodes.push({ name: "Socket_Grip", translation: world(gr[0], gr[1], gr[2]) });
     nodes.push({ name: "Socket_Muzzle", translation: world(mz[0], mz[1], mz[2]) });
   }
-  void minPx; void minPy; void minPz; void maxPx; void maxPy; void maxPz;
   return nodes;
 }
 
@@ -91,12 +86,6 @@ function encodeChunk(type: number, bytes: Uint8Array) {
   const padding = pad4(bytes.length);
   const out = new Uint8Array(8 + bytes.length + padding);
   const view = new DataView(out.buffer);
-  // Il campo chunkLength dell'header deve dichiarare la lunghezza REALE del
-  // chunk (padding incluso) — non quella del contenuto grezzo. Con solo
-  // bytes.length, un parser GLB conforme allo spec che naviga i chunk
-  // seguendo la lunghezza dichiarata finisce a leggere byte di padding
-  // come se fossero l'header del chunk successivo (verificato: succede
-  // ogni volta che il JSON non è già un multiplo di 4 byte).
   view.setUint32(0, bytes.length + padding, true);
   view.setUint32(4, type, true);
   out.set(bytes, 8);
@@ -119,10 +108,6 @@ function writeGlb(json: object, bin: Uint8Array) {
   return out.buffer;
 }
 
-// Variante vertex-color (leggera, nessuna texture incorporata). Funziona
-// "out of the box" solo se il motore/importer di destinazione applica
-// COLOR_0 al colore base senza configurazione — vedi exportGlbTextured per
-// la variante pensata per funzionare ovunque senza setup manuale.
 export async function exportGlb(
   volume: VoxelVolume,
   palette: string[],
@@ -265,12 +250,6 @@ export async function exportGlb(
   return writeGlb(json, bin);
 }
 
-// Variante con texture-atlas: un materiale PBR standard con
-// baseColorTexture, nessun vertex color, nessuna estensione richiesta.
-// Si apre correttamente con l'importer di default di qualunque motore
-// (Unity/glTFast, Unreal, Godot, Blender...) senza che chi la importa
-// debba configurare shader o materiali — è la variante raccomandata per
-// distribuire asset che "devono funzionare e basta".
 export async function exportGlbTextured(
   volume: VoxelVolume,
   palette: string[],
@@ -285,11 +264,6 @@ export async function exportGlbTextured(
   const quads = greedyQuads(volume);
   if (!quads.length) throw new Error("Empty volume");
 
-  // Texture-atlas: un texel per colore della palette, disposto in una
-  // griglia quadrata. La UV di ogni faccia punta al CENTRO del proprio
-  // texel; con filtro NEAREST e wrap CLAMP_TO_EDGE (impostati sotto nel
-  // sampler) i colori non si mescolano mai tra loro, nemmeno a distanza o
-  // con i mipmap.
   const atlasSize = Math.max(1, Math.ceil(Math.sqrt(palette.length)));
   const atlasRgba = new Uint8Array(atlasSize * atlasSize * 4);
   for (let i = 0; i < palette.length; i++) {
@@ -392,7 +366,7 @@ export async function exportGlbTextured(
     scenes: [{ nodes: [0, 1, 2, 3, 4], name: resolved.name }],
     nodes: [
       { mesh: 0, name: resolved.name },
-      ...socketNodes(volume, origin, resolved.unitMeters, resolved.upAxis, minPx, minPy, minPz, maxPx, maxPy, maxPz, options?.shape)
+      ...socketNodes(volume, origin, resolved.unitMeters, resolved.upAxis, options?.shape)
     ],
     meshes: [
       {
@@ -420,10 +394,10 @@ export async function exportGlbTextured(
     textures: [{ source: 0, sampler: 0 }],
     samplers: [
       {
-        magFilter: 9728, // NEAREST
-        minFilter: 9728, // NEAREST
-        wrapS: 33071, // CLAMP_TO_EDGE
-        wrapT: 33071 // CLAMP_TO_EDGE
+        magFilter: 9728,
+        minFilter: 9728,
+        wrapS: 33071,
+        wrapT: 33071
       }
     ],
     images: [{ mimeType: "image/png", bufferView: 4 }],
@@ -458,4 +432,3 @@ export async function exportGlbTextured(
   await new Promise((resolve) => window.setTimeout(resolve, 0));
   return writeGlb(json, bin);
 }
-
