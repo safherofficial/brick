@@ -130,10 +130,21 @@ function rgbDistance(
   a: [number, number, number],
   b: [number, number, number]
 ) {
+  // Rec.601 luma-weighted distance — greys and metals stay distinct.
   const dr = a[0] - b[0];
   const dg = a[1] - b[1];
   const db = a[2] - b[2];
-  return dr * dr + dg * dg + db * db;
+  return 0.3 * dr * dr + 0.59 * dg * dg + 0.11 * db * db;
+}
+
+function applySharpness(rgb: [number, number, number], sharpness: number): [number, number, number] {
+  if (sharpness <= 1) return rgb;
+  const l = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+  return [
+    clamp(l + (rgb[0] - l) * sharpness, 0, 255),
+    clamp(l + (rgb[1] - l) * sharpness, 0, 255),
+    clamp(l + (rgb[2] - l) * sharpness, 0, 255)
+  ];
 }
 
 function loadImage(file: File): Promise<Raster> {
@@ -1106,10 +1117,6 @@ function reconstructVisualHull(
           color = blendRgb(frontColor, sideColor, 0.1 + eased * 0.72);
         }
 
-        // Depth map: subtle volumetric shade (geometry still hull ∩ clamp).
-        const shade = (0.98 - nz * 0.16) * (0.94 + depthSample * 0.1);
-        color = [color[0] * shade, color[1] * shade, color[2] * shade];
-
         voxels.push({
           x,
           y,
@@ -1177,15 +1184,21 @@ function buildNonModel(
         finalDepth = Math.max(1, Math.round(depthBase * 1.18));
       }
 
-      // ONNX depth modulates extrusion so relief follows subject volume, not a slab.
-      if (useDepthRelief) {
-        const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
-        const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
-        const d = depthAt(depthMap, raster, px, py);
-        // Near-camera / brighter depth → more voxels; keep at least 1.
-        finalDepth = Math.max(1, Math.round(depthBase * (0.45 + d * 1.05)));
-        finalDepth = Math.min(finalDepth, Math.max(depthBase, options.heightMax));
-      }
+      const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
+      const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
+      const d = depthAt(depthMap, raster, px, py);
+
+      // Row slenderness: blades/barrels stay 1–2 voxels deep; bulky rows use heightMax.
+      let rowHits = 0;
+      for (let rx = 0; rx < width; rx += 1) if (sourceMask[y]?.[rx]) rowHits += 1;
+      const slenderness = rowHits / Math.max(1, width);
+      const profile = 0.22 + slenderness * 0.78;
+      const depthMix = useDepthRelief ? 0.4 + d * 0.7 : 1;
+      finalDepth = Math.max(
+        1,
+        Math.round(depthBase * profile * depthMix)
+      );
+      finalDepth = Math.min(finalDepth, Math.max(2, options.heightMax));
 
       for (let z = 0; z < finalDepth; z += 1) {
         const colorSample = frontColor;
@@ -1195,7 +1208,15 @@ function buildNonModel(
           y,
           z,
           c: nearestColor(
-            ditheredColor([colorSample.r, colorSample.g, colorSample.b], x, y + z),
+            ditheredColor(
+              applySharpness(
+                [colorSample.r, colorSample.g, colorSample.b],
+                options.aiCategory === "swords" ? 1.18 : options.aiCategory === "guns" ? 1.08 : 1
+              ),
+              x,
+              y + z,
+              options.aiCategory === "swords" || options.aiCategory === "guns" ? 4 : 10
+            ),
             paletteValues
           )
         });
@@ -1220,6 +1241,32 @@ function buildNonModel(
 
 function spatialBudget(voxels: ImageVoxel[], budget: number) {
   if (voxels.length <= budget) return voxels;
+
+  // Prefer a watertight shell over a holey first-voxel-in-cell downsample.
+  const key = (v: ImageVoxel) => `${v.x}:${v.y}:${v.z}`;
+  const map = new Map(voxels.map((v) => [key(v), v]));
+  const surface: ImageVoxel[] = [];
+  const interior: ImageVoxel[] = [];
+  for (const v of voxels) {
+    const exposed =
+      !map.has(`${v.x + 1}:${v.y}:${v.z}`) ||
+      !map.has(`${v.x - 1}:${v.y}:${v.z}`) ||
+      !map.has(`${v.x}:${v.y + 1}:${v.z}`) ||
+      !map.has(`${v.x}:${v.y - 1}:${v.z}`) ||
+      !map.has(`${v.x}:${v.y}:${v.z + 1}`) ||
+      !map.has(`${v.x}:${v.y}:${v.z - 1}`);
+    if (exposed) surface.push(v);
+    else interior.push(v);
+  }
+  if (surface.length >= Math.min(budget, voxels.length * 0.35)) {
+    if (surface.length >= budget) {
+      const stride = Math.ceil(surface.length / budget);
+      return surface.filter((_, i) => i % stride === 0).slice(0, budget);
+    }
+    const room = budget - surface.length;
+    const stride = Math.max(1, Math.ceil(interior.length / Math.max(1, room)));
+    return surface.concat(interior.filter((_, i) => i % stride === 0).slice(0, room));
+  }
 
   const buckets = new Map<string, ImageVoxel>();
   const ratio = Math.max(1, voxels.length / budget);
@@ -1326,8 +1373,16 @@ async function finalizeLocalAi(
     // (5) Auto-category from silhouette when UI left AUTO.
     let resolvedCategory = aiCategory;
     if (!resolvedCategory) {
-      if (guess.kind === "sword" || guess.kind === "axe") resolvedCategory = "swords";
-      else if (guess.kind === "bottle" || guess.kind === "prop") resolvedCategory = "objects";
+      if (guess.kind === "sword" && guess.style === "weapon" && guess.confidence >= 0.77) {
+        // Portrait blades vs landscape long-arms (see recognize landscape branch).
+        resolvedCategory = "swords";
+      } else if (guess.kind === "axe" && guess.style === "weapon") {
+        resolvedCategory = "guns";
+      } else if (guess.kind === "sword" && guess.style === "weapon") {
+        resolvedCategory = "rifles";
+      } else if (guess.kind === "bottle" || guess.kind === "prop" || guess.kind === "sphere" || guess.kind === "cylinder") {
+        resolvedCategory = "objects";
+      }
     }
     const thinFeatures = resolvedCategory
       ? aiCategoryProfile(resolvedCategory).thinFeatures
@@ -1371,7 +1426,10 @@ export async function imageToVoxels(
     depthMap = ai.depth;
     aiDiag = ai.diagnostics;
   }
-  const mask = buildMask(raster, normalized.mode);
+  let mask = buildMask(raster, normalized.mode);
+  if (normalized.mode === "model" || useLocalAi) {
+    mask = cleanModelMask(mask, raster, normalized.aiCategory);
+  }
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
 
