@@ -40,7 +40,6 @@ import {
 import { exportGlb } from "@/lib/voxelGlb";
 import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxel";
 import { UNITY_EXPORT } from "@/lib/ai/unity";
-import { CATALOG, catalogById } from "@/lib/ai/catalog";
 import { buildImageOptions } from "@/lib/ai/buildOptions";
 import {
   consumeImageApply,
@@ -65,7 +64,6 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
 ];
 
 type LocalImageMode = "solid" | "flat" | "relief" | "model";
-
 type ContentBounds = {
   minX: number;
   minY: number;
@@ -294,7 +292,6 @@ export default function Builder() {
   const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
   const [imageMode, setImageMode] = useState<LocalImageMode>("solid");
-  const [catalogId, setCatalogId] = useState(CATALOG[2]?.id ?? CATALOG[0].id);
   const [imageHeight, setImageHeight] = useState(6);
   const [symmetrize, setSymmetrize] = useState(false);
   const [pendingImage, setPendingImage] = useState<ImageImport | null>(null);
@@ -315,7 +312,6 @@ export default function Builder() {
   const cx = (volume.size - 1) / 2;
   const cz = (volume.size - 1) / 2;
   const creditLabel = creditsLeft < 0 ? "PRO" : `${creditsLeft} LEFT`;
-  const catalogItem = catalogById(catalogId) ?? CATALOG[0];
 
   const bump = useCallback(() => {
     setRev((n) => n + 1);
@@ -338,9 +334,9 @@ export default function Builder() {
         maxVoxels: MAX_SAFE,
         symmetrize: imageMode === "model" ? symmetrize : false,
         useLocalAi: true,
-        catalog: catalogItem
+        mode: imageMode
       }),
-    [catalogItem, imageHeight, imageMode, symmetrize]
+    [imageHeight, imageMode, symmetrize]
   );
 
   const commit = useCallback(
@@ -408,6 +404,7 @@ export default function Builder() {
     }
     await regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
   }, [frontFile, notify, regenerateMultiView, sideFile]);
+
 
   const attachFront = useCallback(
     async (file: File) => {
@@ -872,23 +869,6 @@ export default function Builder() {
             />
           )}
           <p className="category">IMAGE IMPORT</p>
-          <label className="foldHint" htmlFor="ai-catalog">AI CATALOG</label>
-          <select
-            id="ai-catalog"
-            value={catalogId}
-            disabled={busy}
-            onChange={(e) => {
-              const nextId = e.target.value;
-              setCatalogId(nextId);
-              if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-            }}
-          >
-            {CATALOG.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
           <p className="foldHint">
             {frontFile ? "Front image ready" : "Front image required"}
             <br />
@@ -899,6 +879,7 @@ export default function Builder() {
               <button
                 key={mode}
                 className={imageMode === mode ? "modeOn" : ""}
+                disabled={busy}
                 onClick={() => {
                   setImageMode(mode);
                   setSymmetrize(mode === "model" ? symmetrize : false);
@@ -921,6 +902,7 @@ export default function Builder() {
                       setImageHeight(n);
                       if (frontFile) void rebuildMultiView();
                     }}
+                    disabled={busy}
                   >
                     D{n}
                   </button>
@@ -936,7 +918,7 @@ export default function Builder() {
                 window.setTimeout(() => void rebuildMultiView(), 0);
               }
             }}
-            disabled={imageMode !== "model"}
+            disabled={imageMode !== "model" || busy}
           >
             SYMMETRY {symmetrize ? "ON" : "OFF"}
           </button>
@@ -946,6 +928,9 @@ export default function Builder() {
           <button onClick={() => sideRef.current?.click()} disabled={busy || !frontFile}>
             SIDE PNG
           </button>
+          <p className="foldHint">
+            LOCAL AI · ONNX segment/depth when models are present · falls back to heuristics · 32–256
+          </p>
           <p className="category">PALETTE</p>
           <div className="viewRow">
             {palette.slice(0, 16).map((hex, i) => (
