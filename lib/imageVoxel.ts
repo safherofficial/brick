@@ -1382,13 +1382,19 @@ async function finalizeLocalAi(
     voxels = lintVoxels(voxels, { thinFeatures });
     voxels = finishVoxels(voxels, volumeSize, guess.kind !== "tile", {
       thinFeatures,
-      shell: resolvedCategory === "swords" || resolvedCategory === "rifles"
+      shell: resolvedCategory === "swords"
     });
+    const shape =
+      resolvedCategory === "swords"
+        ? "sword"
+        : resolvedCategory === "guns" || resolvedCategory === "rifles"
+          ? "prop"
+          : guess.kind;
     return {
       ...result,
       voxels,
       count: voxels.length,
-      shape: guess.kind,
+      shape,
       category: resolvedCategory
     };
   } catch {
