@@ -1,7 +1,10 @@
 import {
+  aiCategoryHeightMax,
   aiCategoryPrecision,
-  aiCategoryWantsDepth
+  aiCategoryWantsDepth,
+  styleFromCategory
 } from "@/lib/ai/aiCategories";
+import { profileById } from "@/lib/ai/styleProfiles";
 
 export type ImageMode =
   | "solid"
@@ -1393,6 +1396,19 @@ async function finalizeLocalAi(
   }
 }
 
+
+function applyCategoryProfile(normalized: NormalizedImageVoxelOptions) {
+  const category = normalized.aiCategory;
+  if (!category) return;
+  const style = styleFromCategory(category);
+  const profile = profileById(style);
+  normalized.heightMax = aiCategoryHeightMax(category, normalized.volumeSize);
+  normalized.useDepthThickness = profile.useDepthHint && category !== "swords";
+  if (profile.symmetrize && normalized.mode === "model") {
+    normalized.symmetrize = true;
+  }
+}
+
 async function resolveCategoryAndDepth(
   raster: Raster,
   mask: boolean[][],
@@ -1415,7 +1431,10 @@ async function resolveCategoryAndDepth(
     }
   }
   normalized.aiCategory = category;
-  const want = useLocalAi && aiCategoryWantsDepth(category, normalized.mode);
+  applyCategoryProfile(normalized);
+  const want =
+    useLocalAi &&
+    (aiCategoryWantsDepth(category, normalized.mode) || normalized.useDepthThickness === true);
   if (!want || depthMap) return { category, depthMap, raster };
   const again = await applyLocalAiRaster(raster, { depth: true, category });
   return {
@@ -1445,7 +1464,8 @@ export async function imageToVoxels(
   let aiDiag: LocalAiResult["diagnostics"];
   if (useLocalAi) {
     const ai = await applyLocalAiRaster(raster, {
-      depth: aiCategoryWantsDepth(normalized.aiCategory, normalized.mode),
+      depth: Boolean(normalized.aiCategory) &&
+        aiCategoryWantsDepth(normalized.aiCategory, normalized.mode),
       category: normalized.aiCategory
     });
     raster = ai.raster;
@@ -1460,6 +1480,7 @@ export async function imageToVoxels(
   raster = resolved.raster;
   depthMap = resolved.depthMap;
   normalized.aiCategory = resolved.category;
+  applyCategoryProfile(normalized);
   if (resolved.extraDiag) aiDiag = resolved.extraDiag;
   if (normalized.mode === "model" || useLocalAi) {
     mask = cleanModelMask(buildMask(raster, normalized.mode), raster, normalized.aiCategory);
@@ -1579,9 +1600,8 @@ export async function imagesToVoxels(
       normalized.aiCategory
     );
   }
-  const cat = normalized.aiCategory;
-  normalized.useDepthThickness =
-    Boolean(frontDepth) && (cat === "guns" || cat === "rifles" || cat === "objects");
+  applyCategoryProfile(normalized);
+  normalized.useDepthThickness = Boolean(frontDepth) && normalized.useDepthThickness === true;
 
   const palette = createPalette(
     rasters,
