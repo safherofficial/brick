@@ -1463,35 +1463,16 @@ export async function imagesToVoxels(
       throw new Error("MODEL MODE REQUIRES A VALID SIDE VIEW");
     }
 
-    // (1) SIDE ≈ FRONT → 2.5D extrusion instead of a fat broken hull.
+    // (1) Only skip hull when SIDE is clearly a second FRONT (strict assess).
+    // Default path always uses FRONT ∩ SIDE visual hull.
     try {
       const { assessSideView } = await import("@/lib/ai/viewAlign");
       const quality = assessSideView(frontBounds, sideBounds);
       if (quality.sideLooksLikeFront) {
-        const reliefOpts: NormalizedImageVoxelOptions = {
-          ...normalized,
-          mode: "relief",
-          heightMax: Math.max(normalized.heightMax, 6)
-        };
-        const extruded = buildNonModel(
-          frontRaster,
-          frontMask,
-          frontBounds,
-          sideMask,
-          sideBounds,
-          reliefOpts,
-          paletteValues,
-          palette,
-          frontDepth
-        );
-        return useLocalAi
-          ? await finalizeLocalAi(
-              extruded,
-              normalized.volumeSize,
-              frontMask,
-              normalized.aiCategory
-            )
-          : extruded;
+        // Soft fallback: still build hull but depth is already limited by
+        // heightMax in adaptiveModelDimensions — do NOT replace with flat
+        // extrusion (that ignored SIDE entirely and looked "flat").
+        // Keep hull path; warning is available via assessSideView.message.
       }
     } catch {
       /* keep hull path */
