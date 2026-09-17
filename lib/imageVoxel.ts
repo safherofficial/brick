@@ -41,6 +41,8 @@ export type ImageViews = {
 
 type NormalizedImageVoxelOptions = Omit<Required<ImageVoxelOptions>, "aiCategory" | "useLocalAi"> & {
   aiCategory?: ImageVoxelOptions["aiCategory"];
+  /** When true, ONNX depth may soft-clamp Z (ambiguous SIDE only). */
+  sideAmbiguous?: boolean;
 };
 
 type Raster = {
@@ -1060,12 +1062,15 @@ function reconstructVisualHull(
       const py = frontBounds.minY + ny * (frontBounds.maxY - frontBounds.minY);
       const depthSample = depthAt(frontDepth, frontRaster, px, py);
 
-      // (3) Soft depth clamp: if ONNX depth says the surface is thin, reject
-      // extreme Z from a wide SIDE without inventing voxels (hull still required).
-      const depthHalf =
-        frontDepth && dimensions.depth > 2
-          ? Math.max(1, Math.round(dimensions.depth * (0.2 + depthSample * 0.45)))
-          : dimensions.depth;
+      // (3) Soft depth clamp ONLY when SIDE is ambiguous (mid aspect) and
+      // ONNX depth is present — never on thin profiles or clear second-fronts.
+      const useDepthClamp =
+        Boolean(frontDepth) &&
+        dimensions.depth > 2 &&
+        options.sideAmbiguous === true;
+      const depthHalf = useDepthClamp
+        ? Math.max(1, Math.round(dimensions.depth * (0.22 + depthSample * 0.4)))
+        : dimensions.depth;
       const zMid = (dimensions.depth - 1) * 0.5;
 
       for (let z = 0; z < dimensions.depth; z += 1) {
@@ -1074,9 +1079,7 @@ function reconstructVisualHull(
         // TRUE VISUAL HULL: FRONT = X/Y, SIDE = Z/Y (Y-aligned).
         if (side && !side[ySide]?.[z]) continue;
 
-        if (frontDepth && dimensions.depth > 2) {
-          if (Math.abs(z - zMid) > depthHalf) continue;
-        }
+        if (useDepthClamp && Math.abs(z - zMid) > depthHalf) continue;
 
         let color: [number, number, number] = [
           frontColor.r,
@@ -1463,25 +1466,13 @@ export async function imagesToVoxels(
       throw new Error("MODEL MODE REQUIRES A VALID SIDE VIEW");
     }
 
-    // (1) Only skip hull when SIDE is clearly a second FRONT (strict assess).
-    // Default path always uses FRONT ∩ SIDE visual hull.
-    try {
-      const { assessSideView } = await import("@/lib/ai/viewAlign");
-      const quality = assessSideView(frontBounds, sideBounds);
-      if (quality.sideLooksLikeFront) {
-        // Soft fallback: still build hull but depth is already limited by
-        // heightMax in adaptiveModelDimensions — do NOT replace with flat
-        // extrusion (that ignored SIDE entirely and looked "flat").
-        // Keep hull path; warning is available via assessSideView.message.
-      }
-    } catch {
-      /* keep hull path */
-    }
-
-    // A: correlate FRONT/SIDE vertical profiles → small Y shift for hull sampling.
+    // Metrics + Y-align + optional depth clamp flag (ambiguous SIDE only).
     let sideYOffset = 0;
     try {
+      const { computeHullMetrics } = await import("@/lib/ai/importMetrics");
       const { bestSideYShiftBins, sideYOffsetFromShift } = await import("@/lib/ai/viewAlign");
+      const metrics = computeHullMetrics(frontBounds, sideBounds);
+      normalized.sideAmbiguous = metrics.sideAmbiguous;
       const align = bestSideYShiftBins(frontMask, frontBounds, sideMask, sideBounds);
       sideYOffset = sideYOffsetFromShift(align.shiftBins);
     } catch {
