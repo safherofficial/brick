@@ -99,11 +99,22 @@ export function evenPack(voxels: ImageVoxel[], volumeSize: number): ImageVoxel[]
   }));
 }
 
+export type FinishOptions = {
+  /** Skip interior color flattening (keeps multi-tone blades / painted details). */
+  thinFeatures?: boolean;
+};
+
 export function finishVoxels(
   voxels: ImageVoxel[],
   volumeSize: number,
-  flatten = true
+  flatten = true,
+  options: FinishOptions = {}
 ): ImageVoxel[] {
-  const prepared = flatten ? flattenColumnColors(voxels) : voxels;
+  const doFlatten = flatten && !options.thinFeatures;
+  const prepared = doFlatten ? flattenColumnColors(voxels) : voxels;
+  // Thin weapons: skip stabilizeBase ground fill that can thicken the pommel/tip.
+  if (options.thinFeatures) {
+    return evenPack(prepared, volumeSize);
+  }
   return evenPack(stabilizeBase(prepared), volumeSize);
 }
