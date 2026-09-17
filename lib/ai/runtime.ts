@@ -1,28 +1,144 @@
-$VOXIE thesis:
+import type { InferenceSession } from "onnxruntime-web";
 
-This isn’t just another Solana meme coin.
+export type AiModelId = "segment" | "depth";
 
-VOXIE is building a playable crime MMO directly in the browser, with 144 sectors, 4 gangs, player-owned territory and a finite supply of in-game assets.
+/** Local-first. Remote URLs only outside production (dev fallback). */
+const LOCAL_MODELS: Record<AiModelId, string[]> = {
+  segment: ["/models/u2netp.onnx", "/models/rmbg.onnx"],
+  depth: ["/models/midas-small.onnx", "/models/depth-small.onnx"]
+};
 
-The interesting part is the loop:
+const REMOTE_MODELS: Record<AiModelId, string[]> = {
+  segment: [
+    "https://huggingface.co/Heliosoph/u2net-onnx/resolve/main/u2netp.onnx",
+    "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
+  ],
+  depth: ["https://huggingface.co/Heliosoph/midas-small-onnx/resolve/main/midas_v21_small_256.onnx"]
+};
 
-Players → game activity → ownership → trading → economy.
+function modelCandidates(id: AiModelId): string[] {
+  const local = LOCAL_MODELS[id];
+  if (process.env.NODE_ENV === "production") return local;
+  return [...local, ...REMOTE_MODELS[id]];
+}
 
-And the project has stated that 100% of creator fees are being allocated to $VOXIE buybacks, with the intention of feeding that value back into the ecosystem, player onboarding and competitions.
+export const MODEL_FILES: Record<AiModelId, string[]> = {
+  segment: modelCandidates("segment"),
+  depth: modelCandidates("depth")
+};
 
-The bet is simple:
+const sessions = new Map<AiModelId, Promise<InferenceSession | null>>();
+const resolved = new Map<AiModelId, Promise<string | null>>();
 
-If the game attracts players, the economy has something real to build on.
+const ORT_WASM_LOCAL = "/ort/";
+const ORT_WASM_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
 
-If the economy grows, $VOXIE has a reason to matter beyond pure speculation.
+async function probe(url: string) {
+  try {
+    const head = await fetch(url, { method: "HEAD", mode: "cors", cache: "force-cache" });
+    if (head.ok) return true;
+  } catch {
+    /* some hosts reject HEAD */
+  }
+  try {
+    const get = await fetch(url, {
+      method: "GET",
+      mode: "cors",
+      cache: "force-cache",
+      headers: { Range: "bytes=0-64" }
+    });
+    return get.ok || get.status === 206;
+  } catch {
+    return false;
+  }
+}
 
-Early Solana gaming is still incredibly asymmetric.
+export async function resolveModel(id: AiModelId) {
+  const cached = resolved.get(id);
+  if (cached) return cached;
+  const job = (async () => {
+    for (const url of modelCandidates(id)) {
+      if (await probe(url)) return url;
+    }
+    return null;
+  })();
+  resolved.set(id, job);
+  return job;
+}
 
-Research it. Play the game. Watch the builders.
+type WasmEnv = {
+  wasmPaths?: string;
+  numThreads?: number;
+  simd?: boolean;
+};
 
-Then decide whether the thesis makes sense to you.
+function configureWasm(
+  ort: typeof import("onnxruntime-web"),
+  wasmPaths: string
+) {
+  const wasm = ort.env.wasm as WasmEnv;
+  wasm.wasmPaths = wasmPaths;
+  try {
+    const cores =
+      typeof navigator !== "undefined" && navigator.hardwareConcurrency
+        ? navigator.hardwareConcurrency
+        : 2;
+    wasm.numThreads = Math.min(4, Math.max(1, Math.floor(cores / 2)));
+  } catch {
+    /* ignore */
+  }
+  try {
+    wasm.simd = true;
+  } catch {
+    /* ignore */
+  }
+}
 
-$VOXIE
-Solana
-GTA-style MMO
-On-chain economy
+async function createSession(
+  ort: typeof import("onnxruntime-web"),
+  url: string,
+  wasmPaths: string
+): Promise<InferenceSession> {
+  configureWasm(ort, wasmPaths);
+  const options = {
+    executionProviders: ["wasm"] as string[],
+    graphOptimizationLevel: "all" as const,
+    enableCpuMemArena: true,
+    enableMemPattern: true
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ort.InferenceSession.create(url, options as any);
+}
+
+export async function loadModel(id: AiModelId) {
+  const existing = sessions.get(id);
+  if (existing) return existing;
+
+  const job = (async () => {
+    const url = await resolveModel(id);
+    if (!url) return null;
+    try {
+      const ort = await import("onnxruntime-web");
+      try {
+        return await createSession(ort, url, ORT_WASM_LOCAL);
+      } catch {
+        return await createSession(ort, url, ORT_WASM_CDN);
+      }
+    } catch {
+      return null;
+    }
+  })();
+
+  sessions.set(id, job);
+  return job;
+}
+
+export async function aiAvailable() {
+  const [segment, depth] = await Promise.all([resolveModel("segment"), resolveModel("depth")]);
+  return { segment: Boolean(segment), depth: Boolean(depth) };
+}
+
+export function preloadAiModels() {
+  if (typeof window === "undefined") return;
+  void loadModel("segment");
+}
