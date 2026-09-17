@@ -1,11 +1,63 @@
 // lib/ai/enhance.ts
+/**
+ * Local ONNX enhance: U2Net segment → alpha matte, optional MiDaS depth.
+ * Tuned for 2.5D voxel fidelity (sharp silhouettes, less halo, thin-feature safe).
+ */
 import { aiAvailable, loadModel } from "@/lib/ai/runtime";
+import type { AiCategory } from "@/lib/ai/aiCategories";
+import { aiCategoryProfile } from "@/lib/ai/aiCategories";
 
 export type AiRaster = {
   width: number;
   height: number;
   rgba: Uint8ClampedArray;
 };
+
+export type EnhanceOptions = {
+  depth?: boolean;
+  /** Guides matte hardness / acceptance thresholds. */
+  category?: AiCategory;
+};
+
+/** Matte refinement knobs (derived from category when present). */
+type MatteParams = {
+  /** Soft-threshold center for alpha contrast (higher = tighter subject). */
+  threshold: number;
+  /** Transition width around threshold (lower = harder edge). */
+  softness: number;
+  /** Min fraction of pixels above soft-high to accept the ONNX map. */
+  minKeepRatio: number;
+  /** Soft-high used only for the acceptance count. */
+  acceptFloor: number;
+};
+
+const DEFAULT_MATTE: MatteParams = {
+  threshold: 0.42,
+  softness: 0.1,
+  minKeepRatio: 0.008,
+  acceptFloor: 0.32
+};
+
+function matteParamsFor(category?: AiCategory): MatteParams {
+  if (!category) return DEFAULT_MATTE;
+  const p = aiCategoryProfile(category);
+  if (p.thinFeatures) {
+    // Blades / barrels: keep weak tips, slightly softer acceptance.
+    return {
+      threshold: 0.38,
+      softness: 0.09,
+      minKeepRatio: 0.005,
+      acceptFloor: 0.28
+    };
+  }
+  // Props: tighter matte, less background bleed.
+  return {
+    threshold: 0.45,
+    softness: 0.08,
+    minKeepRatio: 0.01,
+    acceptFloor: 0.35
+  };
+}
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
@@ -35,6 +87,13 @@ function toNchw(raster: AiRaster, width: number, height: number, imagenet: boole
   canvas.height = height;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Canvas unavailable");
+  // High-quality downscale into model input (better than default when available).
+  try {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+  } catch {
+    /* ignore */
+  }
   ctx.drawImage(rasterToCanvas(raster), 0, 0, width, height);
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const plane = width * height;
@@ -99,6 +158,52 @@ function normalizeMap(values: Float32Array) {
   return out;
 }
 
+/**
+ * Smoothstep contrast around threshold → cleaner game-ready matte.
+ * Preserves a thin AA band (softness) so thin blades are not hard-clipped.
+ */
+function refineAlphaMap(alpha: Float32Array, params: MatteParams): Float32Array {
+  const lo = clamp(params.threshold - params.softness, 0, 1);
+  const hi = clamp(params.threshold + params.softness, 0, 1);
+  const span = Math.max(1e-6, hi - lo);
+  const out = new Float32Array(alpha.length);
+  for (let i = 0; i < alpha.length; i += 1) {
+    const t = clamp((alpha[i] - lo) / span, 0, 1);
+    // Smoothstep: 3t² − 2t³
+    const s = t * t * (3 - 2 * t);
+    out[i] = s;
+  }
+  return out;
+}
+
+/**
+ * Mild 3×3 unsharp on alpha after refine — recovers edge acuity lost to
+ * 320→full bilinear upscale without reintroducing speckles.
+ */
+function sharpenAlphaMap(alpha: Float32Array, width: number, height: number, amount = 0.35): Float32Array {
+  if (width < 3 || height < 3 || amount <= 0) return alpha;
+  const out = new Float32Array(alpha.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
+        out[i] = alpha[i];
+        continue;
+      }
+      const c = alpha[i];
+      const blur =
+        (alpha[i - 1] +
+          alpha[i + 1] +
+          alpha[i - width] +
+          alpha[i + width] +
+          c) /
+        5;
+      out[i] = clamp(c + (c - blur) * amount, 0, 1);
+    }
+  }
+  return out;
+}
+
 export function hasCutoutAlpha(raster: AiRaster) {
   const total = raster.width * raster.height;
   if (!total) return false;
@@ -111,7 +216,8 @@ export function hasCutoutAlpha(raster: AiRaster) {
     else if (a >= 240) opaque += 1;
     else mid += 1;
   }
-  return transparent / total >= 0.08 && opaque / total >= 0.08 && mid / total <= 0.18;
+  // Slightly stricter mid cap → prefer ONNX re-matte when alpha is mushy.
+  return transparent / total >= 0.08 && opaque / total >= 0.08 && mid / total <= 0.14;
 }
 
 async function runMap(id: "segment" | "depth", raster: AiRaster) {
@@ -133,10 +239,16 @@ async function runMap(id: "segment" | "depth", raster: AiRaster) {
     data: Float32Array;
   };
   const plane = planeFromOutput(output.data, output.dims);
-  return resizeMap(normalizeMap(Float32Array.from(plane.map)), plane.width, plane.height, raster.width, raster.height);
+  return resizeMap(
+    normalizeMap(Float32Array.from(plane.map)),
+    plane.width,
+    plane.height,
+    raster.width,
+    raster.height
+  );
 }
 
-export async function enhanceRaster(raster: AiRaster, options: { depth?: boolean } = {}) {
+export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = {}) {
   const cutout = hasCutoutAlpha(raster);
   const available = await aiAvailable();
   const wantSegment = Boolean(available.segment) && !cutout;
@@ -151,14 +263,22 @@ export async function enhanceRaster(raster: AiRaster, options: { depth?: boolean
     rgba: new Uint8ClampedArray(raster.rgba)
   };
 
+  const matte = matteParamsFor(options.category);
+
   if (wantSegment) {
-    const alpha = await runMap("segment", raster);
-    if (alpha) {
+    const raw = await runMap("segment", raster);
+    if (raw) {
       let kept = 0;
-      for (let i = 0; i < alpha.length; i += 1) if (alpha[i] >= 0.35) kept += 1;
-      if (kept >= raster.width * raster.height * 0.01) {
+      for (let i = 0; i < raw.length; i += 1) if (raw[i] >= matte.acceptFloor) kept += 1;
+      if (kept >= raster.width * raster.height * matte.minKeepRatio) {
+        let alpha = refineAlphaMap(raw, matte);
+        alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.32);
         for (let i = 0; i < alpha.length; i += 1) {
-          next.rgba[i * 4 + 3] = clamp(Math.round(alpha[i] * 255), 0, 255);
+          // Near-binary write: crush residual haze outside the soft band.
+          const a = alpha[i];
+          const byte =
+            a <= 0.04 ? 0 : a >= 0.96 ? 255 : clamp(Math.round(a * 255), 0, 255);
+          next.rgba[i * 4 + 3] = byte;
         }
       }
     }
