@@ -1383,7 +1383,14 @@ function buildNonModel(
 
       const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
       const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
-      const d = depthAt(depthMap, raster, px, py);
+      const d = adaptiveDepthAt(
+        depthMap,
+        raster,
+        mask,
+        px,
+        py,
+        options.aiCategory
+      );
 
       // Row slenderness: blades/barrels stay 1–2 voxels deep; bulky rows use heightMax.
       let rowHits = 0;
@@ -1540,6 +1547,79 @@ function depthAt(depth: Float32Array | null, raster: Raster, x: number, y: numbe
   const xx = clamp(Math.round(x), 0, raster.width - 1);
   const yy = clamp(Math.round(y), 0, raster.height - 1);
   return clamp(depth[yy * raster.width + xx] ?? 0.55, 0, 1);
+}
+
+/**
+ * Stabilise local depth before converting it into voxel thickness.
+ *
+ * MiDaS is intentionally treated as a relative depth hint, not ground-truth
+ * geometry. A small neighbourhood median suppresses isolated spikes, while
+ * edge-aware blending prevents the contour from becoming thicker than the
+ * surrounding body. Category-specific bias is deliberately tiny so the
+ * existing heightMax/category budgets remain authoritative.
+ */
+function adaptiveDepthAt(
+  depth: Float32Array | null,
+  raster: Raster,
+  mask: boolean[][],
+  x: number,
+  y: number,
+  category: ImageVoxelOptions["aiCategory"]
+): number {
+  const base = depthAt(depth, raster, x, y);
+  if (!depth || !raster.width || !raster.height) return base;
+
+  const cx = clamp(Math.round(x), 0, raster.width - 1);
+  const cy = clamp(Math.round(y), 0, raster.height - 1);
+  const values: number[] = [];
+  let validNeighbours = 0;
+  let foregroundNeighbours = 0;
+
+  for (let dy = -1; dy <= 1; dy += 1) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      const xx = cx + dx;
+      const yy = cy + dy;
+      if (xx < 0 || yy < 0 || xx >= raster.width || yy >= raster.height) continue;
+      if (!mask[yy]?.[xx]) continue;
+      foregroundNeighbours += 1;
+      values.push(depthAt(depth, raster, xx, yy));
+      if (dx !== 0 || dy !== 0) validNeighbours += 1;
+    }
+  }
+
+  if (values.length < 2) return base;
+
+  values.sort((a, b) => a - b);
+  const median = values[Math.floor(values.length / 2)];
+  const smoothed = base * 0.58 + median * 0.42;
+
+  // Pull edge pixels gently towards the local median. This keeps thin
+  // silhouettes from inheriting an isolated high-depth spike.
+  const neighbourCoverage = validNeighbours / 8;
+  const edgeWeight = 1 - neighbourCoverage;
+  const edgeSafe = smoothed * (1 - edgeWeight * 0.18) + 0.5 * edgeWeight * 0.18;
+
+  // Relative depth is useful, but a completely linear mapping exaggerates
+  // noisy extremes. Keep the mid-range stable and compress the tails.
+  const centred = edgeSafe - 0.5;
+  const compressed = centred >= 0
+    ? 0.5 + centred * 0.92
+    : 0.5 + centred * 0.84;
+
+  // Tiny category bias only; geometry limits still come from the existing
+  // category height/depth profile.
+  const categoryBias =
+    category === "rifles" ? 0.015 :
+    category === "guns" ? -0.01 :
+    category === "objects" ? 0.005 :
+    0;
+
+  // Very sparse local support is more likely to be a thin feature. Keep its
+  // depth closer to the neutral midpoint rather than inflating it.
+  const sparseWeight = foregroundNeighbours <= 3 ? 0.08 : 0;
+  const sparseSafe = compressed * (1 - sparseWeight) + 0.5 * sparseWeight;
+
+  return clamp(sparseSafe + categoryBias, 0, 1);
 }
 
 async function finalizeLocalAi(
