@@ -314,6 +314,8 @@ export function exportObj(
 
   let vi = 1;
   let ni = 1;
+  const vertexCache = new Map<string, number>();
+  const normalCache = new Map<string, number>();
   const byColor = new Map<number, typeof quads>();
   for (const quad of quads) {
     const list = byColor.get(quad.c) ?? [];
@@ -329,7 +331,14 @@ export function exportObj(
     for (const face of faces) {
       const corners = quadCorners(face);
       const n = transformNormal(...quadNormal(face), resolved.upAxis);
-      lines.push(`vn ${n[0]} ${n[1]} ${n[2]}`);
+      const normalKey = `${n[0]}:${n[1]}:${n[2]}`;
+      let normalIndex = normalCache.get(normalKey);
+      if (normalIndex === undefined) {
+        normalIndex = ni++;
+        normalCache.set(normalKey, normalIndex);
+        lines.push(`vn ${n[0]} ${n[1]} ${n[2]}`);
+      }
+      const faceIndices: number[] = [];
       for (const corner of corners) {
         const p = transformPoint(
           corner[0],
@@ -339,21 +348,26 @@ export function exportObj(
           resolved.unitMeters,
           resolved.upAxis
         );
-        lines.push(`v ${p[0].toFixed(6)} ${p[1].toFixed(6)} ${p[2].toFixed(6)}`);
+        const positionKey = `${p[0].toFixed(6)}:${p[1].toFixed(6)}:${p[2].toFixed(6)}`;
+        let vertexIndex = vertexCache.get(positionKey);
+        if (vertexIndex === undefined) {
+          vertexIndex = vi++;
+          vertexCache.set(positionKey, vertexIndex);
+          lines.push(`v ${p[0].toFixed(6)} ${p[1].toFixed(6)} ${p[2].toFixed(6)}`);
+        }
+        faceIndices.push(vertexIndex);
       }
       if (face.dir === 1) {
         lines.push(
-          `f ${vi}//${ni} ${vi + 1}//${ni} ${vi + 2}//${ni}`,
-          `f ${vi}//${ni} ${vi + 2}//${ni} ${vi + 3}//${ni}`
+          `f ${faceIndices[0]}//${normalIndex} ${faceIndices[1]}//${normalIndex} ${faceIndices[2]}//${normalIndex}`,
+          `f ${faceIndices[0]}//${normalIndex} ${faceIndices[2]}//${normalIndex} ${faceIndices[3]}//${normalIndex}`
         );
       } else {
         lines.push(
-          `f ${vi}//${ni} ${vi + 3}//${ni} ${vi + 2}//${ni}`,
-          `f ${vi}//${ni} ${vi + 2}//${ni} ${vi + 1}//${ni}`
+          `f ${faceIndices[0]}//${normalIndex} ${faceIndices[3]}//${normalIndex} ${faceIndices[2]}//${normalIndex}`,
+          `f ${faceIndices[0]}//${normalIndex} ${faceIndices[2]}//${normalIndex} ${faceIndices[1]}//${normalIndex}`
         );
       }
-      vi += 4;
-      ni += 1;
     }
   }
 
