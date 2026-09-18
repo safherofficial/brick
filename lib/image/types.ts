@@ -54,6 +54,7 @@ export type NormalizedImageVoxelOptions = Omit<
   outline?: boolean;
   sideAmbiguous?: boolean;
   useDepthThickness?: boolean;
+  maxVoxelsExplicit?: boolean;
 };
 
 export type Raster = {

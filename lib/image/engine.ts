@@ -20,6 +20,7 @@ import type {
   AiPrecisionProfile,
   LocalAiResult
 } from "@/lib/image/types";
+import { dynamicVoxelBudget } from "@/lib/image/budget";
 import {
   DEFAULT_PALETTE,
   MAX_RASTER_EDGE,
@@ -1011,24 +1012,44 @@ function adaptiveModelDimensions(
   };
 }
 
+function maskFillRatio(mask: boolean[][], bounds?: Bounds | null) {
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return 0;
+  let hits = 0;
+  const minX = Math.max(0, bounds.minX);
+  const maxX = Math.min(mask[0]?.length ?? 0, bounds.maxX + 1);
+  const minY = Math.max(0, bounds.minY);
+  const maxY = Math.min(mask.length, bounds.maxY + 1);
+  for (let y = minY; y < maxY; y += 1) {
+    for (let x = minX; x < maxX; x += 1) {
+      if (mask[y]?.[x]) hits += 1;
+    }
+  }
+  return hits / Math.max(1, bounds.width * bounds.height);
+}
+
 function effectiveBudget(
   volumeSize: number,
   requested: number | undefined,
-  mode: ImageMode
-) {
-  const physical = volumeSize * volumeSize * volumeSize;
-  if (mode === "model") {
-    return Math.max(
-      4096,
-      Math.min(requested ?? Math.floor(physical * 0.30), Math.floor(physical * MODEL_BUDGET_FILL))
-    );
+  mode: ImageMode,
+  geometry?: {
+    width: number;
+    height: number;
+    depth: number;
+    projectedFill?: number;
+    category?: ImageVoxelOptions["aiCategory"];
   }
-
-  const safety = mode === "relief" ? 0.12 : mode === "flat" ? 0.06 : 0.16;
-  return Math.max(
-    4096,
-    Math.min(requested ?? Math.floor(physical * safety), Math.floor(physical * 0.42))
-  );
+) {
+  return dynamicVoxelBudget({
+    volumeSize,
+    mode,
+    requested,
+    defaultCap: 100000,
+    width: geometry?.width ?? volumeSize,
+    height: geometry?.height ?? volumeSize,
+    depth: geometry?.depth ?? (mode === "model" ? 8 : 1),
+    projectedFill: geometry?.projectedFill,
+    category: geometry?.category
+  });
 }
 
 function keepLargestComponents(voxels: ImageVoxel[]) {
@@ -1361,7 +1382,18 @@ function buildFlatSprite(
   }
   if (!voxels.length) throw new Error("No voxels reconstructed");
   if (options.outline !== false) outlineFront1px(voxels, pickOutlineIndex(palette));
-  const budget = effectiveBudget(options.volumeSize, options.maxVoxels, "flat");
+  const budget = effectiveBudget(
+    options.volumeSize,
+    options.maxVoxelsExplicit ? options.maxVoxels : undefined,
+    "flat",
+    {
+      width,
+      height,
+      depth: 1,
+      projectedFill: maskFillRatio(sourceMask, { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height }),
+      category: options.aiCategory
+    }
+  );
   const limited = voxels.length <= budget ? voxels : spatialBudget(voxels, budget);
   const packed = normalizeToVolume(limited, options.volumeSize);
   return { width: raster.width, height: raster.height, voxels: packed, palette, count: packed.length };
@@ -1485,7 +1517,18 @@ function buildNonModel(
       }
     }
     if (!voxels.length) throw new Error("No voxels reconstructed");
-    const budgetQ = effectiveBudget(options.volumeSize, options.maxVoxels, options.mode);
+    const budgetQ = effectiveBudget(
+      options.volumeSize,
+      options.maxVoxelsExplicit ? options.maxVoxels : undefined,
+      options.mode,
+      {
+        width,
+        height,
+        depth: Math.max(1, options.heightMax),
+        projectedFill: maskFillRatio(sourceMask, { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height }),
+        category: options.aiCategory
+      }
+    );
     const limitedQ = voxels.length <= budgetQ ? voxels : spatialBudget(voxels, budgetQ);
     const packedQ = normalizeToVolume(limitedQ, options.volumeSize);
     return { width: raster.width, height: raster.height, voxels: packedQ, palette, count: packedQ.length };
@@ -1552,7 +1595,18 @@ function buildNonModel(
 
   if (!voxels.length) throw new Error("No voxels reconstructed");
 
-  const budget = effectiveBudget(options.volumeSize, options.maxVoxels, options.mode);
+  const budget = effectiveBudget(
+    options.volumeSize,
+    options.maxVoxelsExplicit ? options.maxVoxels : undefined,
+    options.mode,
+    {
+      width,
+      height,
+      depth: Math.max(1, options.heightMax),
+      projectedFill: maskFillRatio(sourceMask, { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height }),
+      category: options.aiCategory
+    }
+  );
   const limited = voxels.length <= budget ? voxels : spatialBudget(voxels, budget);
   const normalized = normalizeToVolume(limited, options.volumeSize);
 
@@ -1897,6 +1951,7 @@ export async function imageToVoxels(
     mode: options.mode ?? "solid",
     heightMax: options.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
+    maxVoxelsExplicit: options.maxVoxels !== undefined,
     symmetrize: options.symmetrize ?? false,
     aiCategory: options.aiCategory,
     output: options.output,
@@ -1988,6 +2043,7 @@ export async function imagesToVoxels(
     mode: options.mode ?? "solid",
     heightMax: options.heightMax ?? 16,
     maxVoxels: options.maxVoxels ?? 100000,
+    maxVoxelsExplicit: options.maxVoxels !== undefined,
     symmetrize: options.symmetrize ?? false,
     aiCategory: options.aiCategory,
     output: options.output,
@@ -2059,8 +2115,15 @@ export async function imagesToVoxels(
   if (normalized.mode === "model") {
     const budget = effectiveBudget(
       normalized.volumeSize,
-      normalized.maxVoxels,
-      "model"
+      normalized.maxVoxelsExplicit ? normalized.maxVoxels : undefined,
+      "model",
+      {
+        width: frontBounds.width,
+        height: frontBounds.height,
+        depth: sideBounds?.width ?? Math.max(1, normalized.heightMax),
+        projectedFill: maskFillRatio(frontMask, frontBounds),
+        category: normalized.aiCategory
+      }
     );
 
     const dimensions = adaptiveModelDimensions(
