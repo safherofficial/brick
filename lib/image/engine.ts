@@ -5,6 +5,7 @@ import {
   styleFromCategory
 } from "@/lib/ai/aiCategories";
 import { profileById } from "@/lib/ai/styleProfiles";
+import { guessRevolve } from "@/lib/ai/revolve";
 import type {
   ImageMode,
   OutputLock,
@@ -1234,7 +1235,14 @@ function reconstructVisualHull(
       const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
       const px = frontBounds.minX + nx * (frontBounds.maxX - frontBounds.minX);
       const py = frontBounds.minY + ny * (frontBounds.maxY - frontBounds.minY);
-      const depthSample = depthAt(frontDepth, frontRaster, px, py);
+      const depthSample = adaptiveDepthAt(
+        frontDepth,
+        frontRaster,
+        frontMask,
+        px,
+        py,
+        options.aiCategory
+      );
 
       // Depth soft-clamp: ambiguous SIDE (legacy) OR (C) guns/rifles/objects
       // per-row thickness from MiDaS. Swords never use this path.
@@ -1451,6 +1459,190 @@ function componentMedianZ(mask: boolean[][], zGrid: number[][], minZ: number, ma
   return out;
 }
 
+function buildColumnRunRatios(mask: boolean[][]): number[][] {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const ratios = Array.from({ length: h }, () => Array(w).fill(0));
+  if (!w || !h) return ratios;
+
+  for (let x = 0; x < w; x += 1) {
+    let y = 0;
+    while (y < h) {
+      while (y < h && !mask[y]?.[x]) y += 1;
+      if (y >= h) break;
+
+      const start = y;
+      while (y < h && mask[y]?.[x]) y += 1;
+      const run = Math.max(1, y - start);
+      const ratio = run / Math.max(1, h);
+      for (let ry = start; ry < y; ry += 1) ratios[ry][x] = ratio;
+    }
+  }
+
+  return ratios;
+}
+
+function buildRowRunRatios(mask: boolean[][]): number[][] {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const ratios = Array.from({ length: h }, () => Array(w).fill(0));
+  if (!w || !h) return ratios;
+
+  for (let y = 0; y < h; y += 1) {
+    let x = 0;
+    while (x < w) {
+      while (x < w && !mask[y]?.[x]) x += 1;
+      if (x >= w) break;
+
+      const start = x;
+      while (x < w && mask[y]?.[x]) x += 1;
+      const run = Math.max(1, x - start);
+      const ratio = run / Math.max(1, w);
+      for (let rx = start; rx < x; rx += 1) ratios[y][rx] = ratio;
+    }
+  }
+
+  return ratios;
+}
+
+function buildSingleViewModel(
+  raster: Raster,
+  mask: boolean[][],
+  bounds: Bounds,
+  options: NormalizedImageVoxelOptions,
+  paletteValues: [number, number, number][],
+  palette: string[],
+  depthMap: Float32Array | null
+): ImageImport {
+  const maxAxis = Math.max(4, options.volumeSize - 8);
+  const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
+  const width = Math.max(1, Math.round(bounds.width * scale));
+  const height = Math.max(1, Math.round(bounds.height * scale));
+  const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
+
+  // Hidden-surface inference is deliberately conservative. Only high-confidence
+  // rotational objects in the generic OBJECTS category are eligible; weapon
+  // categories always retain the normal silhouette/depth pipeline.
+  const revolve = options.aiCategory === "objects" ? guessRevolve(sourceMask) : null;
+  if (!revolve || revolve.confidence < 0.82) {
+    return buildNonModel(
+      raster,
+      mask,
+      bounds,
+      undefined,
+      null,
+      { ...options, mode: "solid" },
+      paletteValues,
+      palette,
+      depthMap
+    );
+  }
+
+  const rowRatios = buildRowRunRatios(sourceMask);
+  const columnRatios = buildColumnRunRatios(sourceMask);
+  let maxRatio = 0;
+  for (const row of revolve.axis === "y" ? rowRatios : columnRatios) {
+    for (const ratio of row) maxRatio = Math.max(maxRatio, ratio);
+  }
+  if (maxRatio <= 0) {
+    return buildNonModel(
+      raster,
+      mask,
+      bounds,
+      undefined,
+      null,
+      { ...options, mode: "solid" },
+      paletteValues,
+      palette,
+      depthMap
+    );
+  }
+
+  const voxels: ImageVoxel[] = [];
+  const depthCap = Math.max(2, Math.min(options.heightMax, Math.round(maxAxis * 0.22)));
+  const sharpness = options.aiCategory === "objects" ? 1.02 : 1;
+
+  for (let y = 0; y < height; y += 1) {
+    const ny = height <= 1 ? 0.5 : y / (height - 1);
+    for (let x = 0; x < width; x += 1) {
+      if (!sourceMask[y]?.[x]) continue;
+      const nx = width <= 1 ? 0.5 : x / (width - 1);
+      const frontColor = sampleMapped(raster, bounds, nx, ny);
+      const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
+      const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
+      const d = adaptiveDepthAt(depthMap, raster, mask, px, py, options.aiCategory);
+      const supportRatio = revolve.axis === "y"
+        ? rowRatios[y]?.[x] ?? 0
+        : columnRatios[y]?.[x] ?? 0;
+
+      // The silhouette supplies the revolved radius. MiDaS is only a gentle
+      // modulation, so a noisy depth map cannot destroy the inferred shape.
+      const depthModulation = 0.88 + d * 0.24;
+      const rawDepth = depthCap * (supportRatio / Math.max(maxRatio, 1)) * depthModulation;
+      const finalDepth = Math.max(1, Math.min(depthCap, Math.round(rawDepth)));
+      const colorIndex = nearestColor(
+        ditheredColor(
+          applySharpness([frontColor.r, frontColor.g, frontColor.b], sharpness),
+          x,
+          y,
+          8
+        ),
+        paletteValues
+      );
+
+      for (let z = 0; z < finalDepth; z += 1) {
+        voxels.push({ x, y, z, c: colorIndex });
+      }
+    }
+  }
+
+  if (!voxels.length) {
+    return buildNonModel(
+      raster,
+      mask,
+      bounds,
+      undefined,
+      null,
+      { ...options, mode: "solid" },
+      paletteValues,
+      palette,
+      depthMap
+    );
+  }
+
+  const budget = effectiveBudget(
+    options.volumeSize,
+    options.maxVoxelsExplicit ? options.maxVoxels : undefined,
+    "model",
+    {
+      width,
+      height,
+      depth: depthCap,
+      projectedFill: maskFillRatio(sourceMask, {
+        minX: 0,
+        minY: 0,
+        maxX: width - 1,
+        maxY: height - 1,
+        width,
+        height
+      }),
+      category: options.aiCategory
+    }
+  );
+
+  const limited = voxels.length <= budget ? voxels : spatialBudget(voxels, budget);
+  const packed = normalizeToVolume(limited, options.volumeSize);
+  return {
+    width: raster.width,
+    height: raster.height,
+    voxels: packed,
+    palette,
+    count: packed.length,
+    shape: revolve.kind,
+    category: options.aiCategory
+  };
+}
+
 function buildNonModel(
   raster: Raster,
   mask: boolean[][],
@@ -1467,6 +1659,7 @@ function buildNonModel(
   const width = Math.max(1, Math.round(bounds.width * scale));
   const height = Math.max(1, Math.round(bounds.height * scale));
   const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
+  const rowRunRatios = buildRowRunRatios(sourceMask);
 
   if (options.output === "2d" || options.mode === "flat") {
     return buildFlatSprite(raster, mask, bounds, options, paletteValues, palette);
@@ -1557,11 +1750,11 @@ function buildNonModel(
         options.aiCategory
       );
 
-      // Row slenderness: blades/barrels stay 1–2 voxels deep; bulky rows use heightMax.
-      let rowHits = 0;
-      for (let rx = 0; rx < width; rx += 1) if (sourceMask[y]?.[rx]) rowHits += 1;
-      const slenderness = rowHits / Math.max(1, width);
-      const profile = 0.22 + slenderness * 0.78;
+      // Local thickness: use the connected foreground run containing this
+      // pixel, not the entire row. This preserves thin barrels, blades, handles
+      // and protrusions even when a separate bulky part exists on the same Y.
+      const localRunRatio = rowRunRatios[y]?.[x] ?? 0;
+      const profile = 0.16 + localRunRatio * 0.84;
       const depthMix = useDepthRelief ? 0.4 + d * 0.7 : 1;
       finalDepth = Math.max(
         1,
@@ -1783,48 +1976,60 @@ function adaptiveDepthAt(
   const cx = clamp(Math.round(x), 0, raster.width - 1);
   const cy = clamp(Math.round(y), 0, raster.height - 1);
   const values: number[] = [];
-  let validNeighbours = 0;
   let foregroundNeighbours = 0;
+  let ringSupport = 0;
 
-  for (let dy = -1; dy <= 1; dy += 1) {
-    for (let dx = -1; dx <= 1; dx += 1) {
+  // Use a 5×5 robust neighbourhood. The inner samples stabilize the body;
+  // the outer ring tells us when a depth discontinuity is real or simply a
+  // MiDaS spike near an anti-aliased contour.
+  for (let dy = -2; dy <= 2; dy += 1) {
+    for (let dx = -2; dx <= 2; dx += 1) {
       const xx = cx + dx;
       const yy = cy + dy;
       if (xx < 0 || yy < 0 || xx >= raster.width || yy >= raster.height) continue;
       if (!mask[yy]?.[xx]) continue;
-      foregroundNeighbours += 1;
       values.push(depthAt(depth, raster, xx, yy));
-      if (dx !== 0 || dy !== 0) validNeighbours += 1;
+      foregroundNeighbours += 1;
+      if (Math.abs(dx) === 2 || Math.abs(dy) === 2) ringSupport += 1;
     }
   }
 
-  if (values.length < 2) return base;
+  if (values.length < 3) return base;
 
   values.sort((a, b) => a - b);
   const median = values[Math.floor(values.length / 2)];
-  const smoothed = base * 0.58 + median * 0.42;
+  const deviations = values.map((value) => Math.abs(value - median)).sort((a, b) => a - b);
+  const mad = deviations[Math.floor(deviations.length / 2)] ?? 0;
+  const robustNoise = clamp(mad / 0.12, 0, 1);
 
-  // Pull edge pixels gently towards the local median. This keeps thin
-  // silhouettes from inheriting an isolated high-depth spike.
-  const neighbourCoverage = validNeighbours / 8;
-  const edgeWeight = 1 - neighbourCoverage;
-  const edgeSafe = smoothed * (1 - edgeWeight * 0.18) + 0.5 * edgeWeight * 0.18;
+  // High local dispersion means the raw depth is unreliable. Trust the
+  // neighbourhood more in those areas, but keep a substantial contribution
+  // from the original pixel so real gradients do not get flattened.
+  const robustBlend = 0.28 + robustNoise * 0.38;
+  const smoothed = base * (1 - robustBlend) + median * robustBlend;
 
-  // Relative depth is useful, but a completely linear mapping exaggerates
-  // noisy extremes. Keep the mid-range stable and compress the tails.
+  const neighbourCoverage = foregroundNeighbours / 25;
+  const sparseWeight = neighbourCoverage < 0.24 ? 0.12 : neighbourCoverage < 0.40 ? 0.06 : 0;
+  const sparseSafe = smoothed * (1 - sparseWeight) + 0.5 * sparseWeight;
+
+  // Edge-aware stabilization: a contour pixel with little foreground support
+  // must not inherit a deep interior value from a single noisy neighbour.
+  const ringCoverage = ringSupport / Math.max(1, foregroundNeighbours);
+  const edgeWeight = clamp((0.72 - neighbourCoverage) * 1.35 + ringCoverage * 0.08, 0, 1);
+  const edgeSafe = sparseSafe * (1 - edgeWeight * 0.16) + 0.5 * edgeWeight * 0.16;
+
+  // Compress extreme tails only when the local field itself is noisy. This
+  // preserves real broad gradients while preventing exaggerated thickness.
   const centred = edgeSafe - 0.5;
+  const tailCompression = 0.82 + (1 - robustNoise) * 0.12;
   const compressed = centred >= 0
-    ? 0.5 + centred * 0.92
-    : 0.5 + centred * 0.84;
+    ? 0.5 + centred * tailCompression
+    : 0.5 + centred * (tailCompression - 0.04);
 
-  // Very sparse local support is more likely to be a thin feature. Keep its
-  // depth closer to the neutral midpoint rather than inflating it.
-  const sparseWeight = foregroundNeighbours <= 3 ? 0.08 : 0;
-  const sparseSafe = compressed * (1 - sparseWeight) + 0.5 * sparseWeight;
-
-  // Category-specific geometry remains handled by the existing profile layer;
-  // keep the depth signal itself neutral to avoid biasing thickness by label.
-  return clamp(sparseSafe, 0, 1);
+  // Category geometry remains outside the depth sampler. Keep the category
+  // parameter in the signature for API stability and future profile tuning.
+  void category;
+  return clamp(compressed, 0, 1);
 }
 
 async function finalizeLocalAi(
@@ -2007,13 +2212,11 @@ export async function imageToVoxels(
   // Single-view MODEL: keep MODEL volumetric while using the existing solid
   // reconstruction as a conservative FRONT-only depth estimate.
   if (normalized.mode === "model") {
-    const result = buildNonModel(
+    const result = buildSingleViewModel(
       raster,
       mask,
       bounds,
-      undefined,
-      null,
-      { ...normalized, mode: "solid" },
+      normalized,
       paletteValues,
       palette,
       depthMap
