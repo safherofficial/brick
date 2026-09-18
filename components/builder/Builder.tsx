@@ -315,7 +315,7 @@ function BoxPreview({ a, b }: { a: Cell; b: Cell }) {
   return (
     <mesh position={[x0 + (sx - 1) / 2, y0 + (sy - 1) / 2, z0 + (sz - 1) / 2]} raycast={() => {}}>
       <boxGeometry args={[sx, sy, sz]} />
-      <meshBasicMaterial color="#14f195" wireframe transparent opacity={0.85} />
+      <meshBasicMaterial color="#5b6ef5" wireframe transparent opacity={0.85} />
     </mesh>
   );
 }
@@ -326,7 +326,7 @@ function OffsetGhost({ items, origin }: { items: ClipboardVoxel[]; origin: Cell 
       {items.slice(0, 800).map((item, i) => (
         <mesh key={i} position={[origin.x + item.dx, origin.y + item.dy, origin.z + item.dz]}>
           <boxGeometry args={[1.02, 1.02, 1.02]} />
-          <meshBasicMaterial color="#9945ff" transparent opacity={0.28} depthWrite={false} />
+          <meshBasicMaterial color="#5b6ef5" transparent opacity={0.28} depthWrite={false} />
         </mesh>
       ))}
     </group>
