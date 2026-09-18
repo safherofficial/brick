@@ -1844,7 +1844,12 @@ async function finalizeLocalAi(
     const guess = recognizeFromMask(mask);
     const resolvedCategory = aiCategory ?? guess.category;
     const profile = resolvedCategory ? aiCategoryProfile(resolvedCategory) : null;
-    const thinFeatures = profile?.thinFeatures ?? (guess.kind === "sword" || guess.kind === "axe");
+    const thinFeatures = Boolean(
+      profile?.thinFeatures ||
+      guess.features.thin ||
+      guess.kind === "sword" ||
+      guess.kind === "axe"
+    );
     let voxels = result.voxels;
     voxels = lintVoxels(voxels, { thinFeatures });
     const beforeFinish = voxels;
@@ -1912,15 +1917,13 @@ async function resolveCategoryAndDepth(
   raster: Raster;
   extraDiag?: LocalAiResult["diagnostics"];
 }> {
-  const locked = Boolean(normalized.aiCategory);
   let category = normalized.aiCategory;
-  if (!locked) {
-    try {
-      const { recognizeFromMask } = await import("@/lib/ai/recognize");
-      category = recognizeFromMask(mask).category;
-    } catch {
-      category = undefined;
-    }
+  try {
+    const { recognizeFromMask, resolveRecognizedCategory } = await import("@/lib/ai/recognize");
+    const guess = recognizeFromMask(mask);
+    category = resolveRecognizedCategory(guess, normalized.aiCategory).category;
+  } catch {
+    category = normalized.aiCategory ?? "objects";
   }
   normalized.aiCategory = category;
   applyCategoryProfile(normalized);
