@@ -197,7 +197,7 @@ export default function Builder() {
       try {
         const opts = imageOptions();
         if (opts.mode === "model" && !views.side) {
-          notify("MODEL · ADD SIDE PNG FOR FULL 3D");
+          notify("MODEL · FRONT-ONLY 3D ESTIMATE");
         } else {
           notify(views.side ? "REBUILD FRONT + SIDE" : "REBUILD FRONT");
         }
@@ -211,7 +211,7 @@ export default function Builder() {
           opts.mode === "model" && views.side
             ? "MODEL hull"
             : opts.mode === "model"
-              ? "MODEL preview (needs SIDE)"
+              ? "MODEL front"
               : "Preview";
         notify(`${tag} · ${result.count ?? result.voxels.length} vx`);
         setPaywall(false);
@@ -255,7 +255,7 @@ export default function Builder() {
         if (job !== imageJobRef.current) return;
         const opts = imageOptions();
         if (opts.mode === "model" && !sideFile) {
-          notify("MODEL · ADD SIDE PNG FOR FULL 3D");
+          notify("MODEL · FRONT-ONLY 3D ESTIMATE");
         }
         const result = sideFile
           ? await imagesToVoxels({ front: file, side: sideFile }, opts)
@@ -267,7 +267,7 @@ export default function Builder() {
           opts.mode === "model" && sideFile
             ? "MODEL hull"
             : opts.mode === "model"
-              ? "MODEL preview (needs SIDE)"
+              ? "MODEL front"
               : "Preview";
         notify(`${tag} · ${result.count ?? result.voxels.length} vx`);
         setPaywall(false);
