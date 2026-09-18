@@ -726,6 +726,29 @@ function blendRgb(a: Sample, b: Sample, t: number): [number, number, number] {
   ];
 }
 
+/**
+ * Blend FRONT/SIDE material information without letting the hidden-side
+ * sample arbitrarily darken or brighten the established FRONT luminance.
+ * This keeps hue/value continuity while preserving the source read of the
+ * object for 2.5D/voxel assets.
+ */
+function blendMaterialPreserveLuma(
+  front: Sample,
+  side: Sample,
+  t: number
+): [number, number, number] {
+  const blended = blendRgb(front, side, t);
+  const frontLuma = 0.299 * front.r + 0.587 * front.g + 0.114 * front.b;
+  const blendedLuma = 0.299 * blended[0] + 0.587 * blended[1] + 0.114 * blended[2];
+  if (blendedLuma < 1) return blended;
+  const scale = clamp(frontLuma / blendedLuma, 0.82, 1.18);
+  return [
+    clamp(blended[0] * scale, 0, 255),
+    clamp(blended[1] * scale, 0, 255),
+    clamp(blended[2] * scale, 0, 255)
+  ];
+}
+
 function sampleMapped(raster: Raster, bounds: Bounds, nx: number, ny: number) {
   return sampleAt(
     raster,
@@ -1227,9 +1250,15 @@ function reconstructVisualHull(
 
         if (sideRaster && sideBounds && side?.[ySide]?.[z]) {
           const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny + sideYOffset);
-          const surfaceT = clamp((nz - 0.14) / 0.72, 0, 1);
-          const eased = surfaceT * surfaceT * (3 - 2 * surfaceT);
-          color = blendRgb(frontColor, sideColor, 0.1 + eased * 0.72);
+          // SIDE contributes most near the lateral surfaces and less through
+          // the volume center, where FRONT is the strongest material signal.
+          const edgeProximity = 1 - Math.min(nz, 1 - nz) * 2;
+          const eased = edgeProximity * edgeProximity * (3 - 2 * edgeProximity);
+          color = blendMaterialPreserveLuma(
+            frontColor,
+            sideColor,
+            0.08 + eased * 0.54
+          );
         }
 
         voxels.push({
@@ -1557,8 +1586,43 @@ function spatialBudget(voxels: ImageVoxel[], budget: number) {
   }
   if (surface.length >= Math.min(budget, voxels.length * 0.35)) {
     if (surface.length >= budget) {
-      const stride = Math.ceil(surface.length / budget);
-      return surface.filter((_, i) => i % stride === 0).slice(0, budget);
+      // Preserve high-information surface voxels first (corners, tips, thin
+      // edges and exposed feature turns), then distribute the remaining
+      // budget deterministically across the rest of the shell.
+      const scored = surface.map((voxel) => {
+        let neighbours = 0;
+        if (map.has(`${voxel.x + 1}:${voxel.y}:${voxel.z}`)) neighbours += 1;
+        if (map.has(`${voxel.x - 1}:${voxel.y}:${voxel.z}`)) neighbours += 1;
+        if (map.has(`${voxel.x}:${voxel.y + 1}:${voxel.z}`)) neighbours += 1;
+        if (map.has(`${voxel.x}:${voxel.y - 1}:${voxel.z}`)) neighbours += 1;
+        if (map.has(`${voxel.x}:${voxel.y}:${voxel.z + 1}`)) neighbours += 1;
+        if (map.has(`${voxel.x}:${voxel.y}:${voxel.z - 1}`)) neighbours += 1;
+        const xyBoundary =
+          (!map.has(`${voxel.x + 1}:${voxel.y}:${voxel.z}`) ? 1 : 0) +
+          (!map.has(`${voxel.x - 1}:${voxel.y}:${voxel.z}`) ? 1 : 0) +
+          (!map.has(`${voxel.x}:${voxel.y + 1}:${voxel.z}`) ? 1 : 0) +
+          (!map.has(`${voxel.x}:${voxel.y - 1}:${voxel.z}`) ? 1 : 0);
+        const score = (6 - neighbours) * 2 + xyBoundary * 1.5;
+        return { voxel, score };
+      });
+      scored.sort(
+        (a, b) =>
+          b.score - a.score ||
+          voxelKey(a.voxel).localeCompare(voxelKey(b.voxel))
+      );
+      const reserve = Math.min(
+        Math.max(1, Math.floor(budget * 0.18)),
+        scored.length
+      );
+      const preserved = scored.slice(0, reserve).map((item) => item.voxel);
+      const preservedKeys = new Set(preserved.map(voxelKey));
+      const remaining = surface.filter((voxel) => !preservedKeys.has(voxelKey(voxel)));
+      const room = budget - preserved.length;
+      const stride = Math.max(1, Math.ceil(remaining.length / Math.max(1, room)));
+      const distributed = remaining
+        .filter((_, i) => i % stride === 0)
+        .slice(0, room);
+      return preserved.concat(distributed).slice(0, budget);
     }
     const room = budget - surface.length;
     const stride = Math.max(1, Math.ceil(interior.length / Math.max(1, room)));
@@ -1716,7 +1780,7 @@ async function finalizeLocalAi(
   aiCategory?: ImageVoxelOptions["aiCategory"]
 ): Promise<ImageImport> {
   try {
-    const [{ recognizeFromMask }, { finishVoxels }, { lintVoxels }, { aiCategoryProfile }] =
+    const [{ recognizeFromMask }, { finishVoxels, evenPack }, { lintVoxels }, { aiCategoryProfile }] =
       await Promise.all([
         import("@/lib/ai/recognize"),
         import("@/lib/ai/finish"),
@@ -1729,10 +1793,20 @@ async function finalizeLocalAi(
     const thinFeatures = profile?.thinFeatures ?? (guess.kind === "sword" || guess.kind === "axe");
     let voxels = result.voxels;
     voxels = lintVoxels(voxels, { thinFeatures });
-    voxels = finishVoxels(voxels, volumeSize, guess.kind !== "tile", {
+    const beforeFinish = voxels;
+    const finished = finishVoxels(beforeFinish, volumeSize, guess.kind !== "tile", {
       thinFeatures,
       shell: resolvedCategory === "swords"
     });
+    // Non-destructive finishing: if the finishing pass unexpectedly removes
+    // a large fraction of a non-sword asset, keep the linted geometry and only
+    // apply the established packing step. Sword shell behaviour is preserved.
+    const finishKeepRatio = resolvedCategory === "swords" ? 0 : 0.62;
+    voxels =
+      finishKeepRatio > 0 &&
+      finished.length < Math.max(8, Math.floor(beforeFinish.length * finishKeepRatio))
+        ? evenPack(beforeFinish, volumeSize)
+        : finished;
     const shape =
       resolvedCategory === "swords"
         ? "sword"
