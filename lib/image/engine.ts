@@ -459,15 +459,95 @@ function cleanModelMask(
     }
   }
 
-  const largest = Math.max(...componentSizes);
+  const largestIndex = componentSizes.reduce(
+    (best, size, index) => (size > componentSizes[best] ? index : best),
+    0
+  );
+  const largest = componentSizes[largestIndex];
   const precision = aiPrecisionProfile(aiCategory);
   const minComponent = Math.max(
     precision?.minComponentPixels ?? MODEL_MIN_COMPONENT_PIXELS,
     Math.round(largest * (precision?.minComponentRatio ?? MODEL_MIN_COMPONENT_RATIO))
   );
 
+  // A real asset detail can arrive as a tiny disconnected mask component
+  // (trigger, muzzle tip, guard, stock/end-cap, thin prop handle) after
+  // segmentation. Do not let the generic component-size filter erase it
+  // when it is close to the main subject, has meaningful foreground
+  // contrast, and has a feature-like shape. This is intentionally a local
+  // preservation rule: large detached background noise is still removed.
+  const mainComponent = components[largestIndex] ?? [];
+  const mainSet = new Set(mainComponent.map(([x, y]) => `${x}:${y}`));
+  const featureGap = precision?.preserveThinContour ? 4 : 3;
+
+  const isSilhouetteFeature = (cells: [number, number][]) => {
+    if (cells.length < 2 || !mainComponent.length) return false;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let contrastTotal = 0;
+    let contrastHits = 0;
+    const step = Math.max(1, Math.floor(cells.length / 48));
+
+    for (let i = 0; i < cells.length; i += step) {
+      const [x, y] = cells[i];
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+
+      const sample = sampleAt(raster, x, y);
+      const distanceToBg = Math.sqrt(
+        (sample.r - bg[0]) ** 2 +
+        (sample.g - bg[1]) ** 2 +
+        (sample.b - bg[2]) ** 2
+      );
+      contrastTotal += distanceToBg;
+      if (distanceToBg >= (precision?.preserveThinContour ? 38 : 48)) {
+        contrastHits += 1;
+      }
+    }
+
+    const width = Math.max(1, maxX - minX + 1);
+    const height = Math.max(1, maxY - minY + 1);
+    const slenderness = Math.max(width, height) / Math.min(width, height);
+    const averageContrast = contrastTotal / Math.max(1, Math.ceil(cells.length / step));
+
+    let nearMain = false;
+    for (const [x, y] of cells) {
+      let found = false;
+      for (let dy = -featureGap; dy <= featureGap && !found; dy += 1) {
+        for (let dx = -featureGap; dx <= featureGap; dx += 1) {
+          if (Math.abs(dx) + Math.abs(dy) > featureGap) continue;
+          if (mainSet.has(`${x + dx}:${y + dy}`)) {
+            found = true;
+            break;
+          }
+        }
+      }
+      if (found) {
+        nearMain = true;
+        break;
+      }
+    }
+
+    const elongated = slenderness >= 2.2;
+    const compactDetail = cells.length <= Math.max(24, Math.round(minComponent * 1.5));
+    const contrastRatio = contrastHits / Math.max(1, Math.ceil(cells.length / step));
+
+    return (
+      nearMain &&
+      averageContrast >= (precision?.preserveThinContour ? 34 : 44) &&
+      contrastRatio >= 0.5 &&
+      (elongated || compactDetail)
+    );
+  };
+
   for (let i = 0; i < components.length; i += 1) {
     if (componentSizes[i] >= minComponent) continue;
+    if (i !== largestIndex && isSilhouetteFeature(components[i])) continue;
     for (const [x, y] of components[i]) output[y][x] = false;
   }
 
