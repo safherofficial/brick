@@ -126,6 +126,22 @@ export async function exportGlb(
   const normals: number[] = [];
   const colors: number[] = [];
   const indices: number[] = [];
+  const vertexCache = new Map<string, number>();
+  const addVertex = (
+    p: [number, number, number],
+    n: [number, number, number],
+    color: [number, number, number, number]
+  ) => {
+    const key = `${p[0]}:${p[1]}:${p[2]}|${n[0]}:${n[1]}:${n[2]}|${color[0]}:${color[1]}:${color[2]}:${color[3]}`;
+    const existing = vertexCache.get(key);
+    if (existing !== undefined) return existing;
+    const index = positions.length / 3;
+    positions.push(p[0], p[1], p[2]);
+    normals.push(n[0], n[1], n[2]);
+    colors.push(color[0], color[1], color[2], color[3]);
+    vertexCache.set(key, index);
+    return index;
+  };
 
   let minPx = Infinity;
   let minPy = Infinity;
@@ -135,12 +151,10 @@ export async function exportGlb(
   let maxPz = -Infinity;
 
   for (const face of quads) {
-    const base = positions.length / 3;
     const n = transformNormal(...quadNormal(face), resolved.upAxis);
     const [r, g, b] = hexRgb(palette[face.c] ?? "#e6e6e6");
-    const cr = r / 255;
-    const cg = g / 255;
-    const cb = b / 255;
+    const color: [number, number, number, number] = [r / 255, g / 255, b / 255, 1];
+    const quadIndices: number[] = [];
     for (const corner of quadCorners(face)) {
       const p = transformPoint(
         corner[0],
@@ -150,9 +164,8 @@ export async function exportGlb(
         resolved.unitMeters,
         resolved.upAxis
       );
-      positions.push(p[0], p[1], p[2]);
-      normals.push(n[0], n[1], n[2]);
-      colors.push(cr, cg, cb, 1);
+      const index = addVertex(p, n, color);
+      quadIndices.push(index);
       minPx = Math.min(minPx, p[0]);
       minPy = Math.min(minPy, p[1]);
       minPz = Math.min(minPz, p[2]);
@@ -161,17 +174,18 @@ export async function exportGlb(
       maxPz = Math.max(maxPz, p[2]);
     }
     if (face.dir === 1) {
-      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      indices.push(quadIndices[0], quadIndices[1], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[3]);
     } else {
-      indices.push(base, base + 3, base + 2, base, base + 2, base + 1);
+      indices.push(quadIndices[0], quadIndices[3], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[1]);
     }
   }
 
   const pos = new Float32Array(positions);
   const nor = new Float32Array(normals);
   const col = new Float32Array(colors);
+  const vertexCount = pos.length / 3;
   const idx =
-    indices.length <= 65535 ? new Uint16Array(indices) : new Uint32Array(indices);
+    vertexCount <= 65535 ? new Uint16Array(indices) : new Uint32Array(indices);
 
   const posBytes = new Uint8Array(pos.buffer);
   const norBytes = new Uint8Array(nor.buffer);
@@ -190,7 +204,22 @@ export async function exportGlb(
   bin.set(idxPad, offsets[3]);
 
   const json = {
-    asset: { version: "2.0", generator: GENERATOR_NAME },
+    asset: {
+      version: "2.0",
+      generator: GENERATOR_NAME,
+      extras: buildGlbExtras({
+        name: resolved.name,
+        voxelCount: volume.count,
+        volumeSize: volume.size,
+        shape: options?.shape as never,
+        mesh: {
+          quads: quads.length,
+          triangles: indices.length / 3,
+          vertices: vertexCount,
+          indexComponentType: idx instanceof Uint16Array ? 5123 : 5125
+        }
+      })
+    },
     extensionsUsed: ["KHR_materials_unlit"],
     scene: 0,
     scenes: [{ nodes: [0], name: resolved.name }],
@@ -287,6 +316,22 @@ export async function exportGlbTextured(
   const normals: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
+  const vertexCache = new Map<string, number>();
+  const addVertex = (
+    p: [number, number, number],
+    n: [number, number, number],
+    uv: [number, number]
+  ) => {
+    const key = `${p[0]}:${p[1]}:${p[2]}|${n[0]}:${n[1]}:${n[2]}|${uv[0]}:${uv[1]}`;
+    const existing = vertexCache.get(key);
+    if (existing !== undefined) return existing;
+    const index = positions.length / 3;
+    positions.push(p[0], p[1], p[2]);
+    normals.push(n[0], n[1], n[2]);
+    uvs.push(uv[0], uv[1]);
+    vertexCache.set(key, index);
+    return index;
+  };
 
   let minPx = Infinity;
   let minPy = Infinity;
@@ -296,9 +341,9 @@ export async function exportGlbTextured(
   let maxPz = -Infinity;
 
   for (const face of quads) {
-    const base = positions.length / 3;
     const n = transformNormal(...quadNormal(face), resolved.upAxis);
-    const [u, v] = uvFor(face.c);
+    const uv: [number, number] = uvFor(face.c);
+    const quadIndices: number[] = [];
     for (const corner of quadCorners(face)) {
       const p = transformPoint(
         corner[0],
@@ -308,9 +353,8 @@ export async function exportGlbTextured(
         resolved.unitMeters,
         resolved.upAxis
       );
-      positions.push(p[0], p[1], p[2]);
-      normals.push(n[0], n[1], n[2]);
-      uvs.push(u, v);
+      const index = addVertex(p, n, uv);
+      quadIndices.push(index);
       minPx = Math.min(minPx, p[0]);
       minPy = Math.min(minPy, p[1]);
       minPz = Math.min(minPz, p[2]);
@@ -319,17 +363,18 @@ export async function exportGlbTextured(
       maxPz = Math.max(maxPz, p[2]);
     }
     if (face.dir === 1) {
-      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      indices.push(quadIndices[0], quadIndices[1], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[3]);
     } else {
-      indices.push(base, base + 3, base + 2, base, base + 2, base + 1);
+      indices.push(quadIndices[0], quadIndices[3], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[1]);
     }
   }
 
   const pos = new Float32Array(positions);
   const nor = new Float32Array(normals);
   const uv = new Float32Array(uvs);
+  const vertexCount = pos.length / 3;
   const idx =
-    indices.length <= 65535 ? new Uint16Array(indices) : new Uint32Array(indices);
+    vertexCount <= 65535 ? new Uint16Array(indices) : new Uint32Array(indices);
 
   const posBytes = new Uint8Array(pos.buffer);
   const norBytes = new Uint8Array(nor.buffer);
@@ -359,7 +404,13 @@ export async function exportGlbTextured(
         name: resolved.name,
         voxelCount: volume.count,
         volumeSize: volume.size,
-        shape: options?.shape as never
+        shape: options?.shape as never,
+        mesh: {
+          quads: quads.length,
+          triangles: indices.length / 3,
+          vertices: vertexCount,
+          indexComponentType: idx instanceof Uint16Array ? 5123 : 5125
+        }
       })
     },
     scene: 0,
