@@ -206,6 +206,12 @@ export function buildGlbExtras(input: {
   shape?: ShapeKind;
   output?: "2d" | "25d";
   pixelsPerUnit?: number;
+  mesh?: {
+    quads: number;
+    triangles: number;
+    vertices: number;
+    indexComponentType: 5123 | 5125;
+  };
 }) {
   const twoD = input.output === "2d";
   const engine = input.engine ?? DEFAULT_ENGINE;
@@ -225,7 +231,16 @@ export function buildGlbExtras(input: {
       textureFilter: "nearest",
       sockets: input.shape ? SHAPE_SOCKETS[input.shape].map((s) => s.name) : ["Socket_Grip"],
       output: input.output ?? null,
-      pixelsPerUnit: twoD ? (input.pixelsPerUnit ?? UNITY_2D_PIXEL.pixelsPerUnit) : null
+      pixelsPerUnit: twoD ? (input.pixelsPerUnit ?? UNITY_2D_PIXEL.pixelsPerUnit) : null,
+      mesh: input.mesh
+        ? {
+            quads: input.mesh.quads,
+            triangles: input.mesh.triangles,
+            vertices: input.mesh.vertices,
+            indexComponentType: input.mesh.indexComponentType,
+            indexFormat: input.mesh.indexComponentType === 5123 ? "UNSIGNED_SHORT" : "UNSIGNED_INT"
+          }
+        : null
     }
   };
 }
