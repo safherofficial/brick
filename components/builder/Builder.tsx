@@ -1,10 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
-import { Canvas, useThree } from "@react-three/fiber";
-import { Grid, OrbitControls } from "@react-three/drei";
-import * as THREE from "three";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThreeEvent } from "@react-three/fiber";
 import {
   applyCells,
@@ -19,7 +15,6 @@ import {
   MAX_SAFE,
   projectFromVolume,
   saveDraft,
-  SIZES,
   volumeCenter,
   VoxelVolume,
   type BoxMode,
@@ -43,11 +38,7 @@ import { UNITY_EXPORT, unity2dPixelExportOptions } from "@/lib/ai/unity";
 import { buildImageOptions } from "@/lib/ai/buildOptions";
 import { exportVolumePngOrtho } from "@/lib/exportPngOrtho";
 import type { OutputLock } from "@/lib/imageVoxel";
-import {
-  AI_CATEGORIES,
-  aiCategoryProfile,
-  type AiCategory
-} from "@/lib/ai/aiCategories";
+import { type AiCategory } from "@/lib/ai/aiCategories";
 import {
   consumeImageApplyRemote,
   FREE_IMAGE_APPLIES,
@@ -55,355 +46,15 @@ import {
   readEntitlement,
   remainingApplies
 } from "@/lib/entitlement";
-import { MONTHLY_SOL, restorePlan, subscribeWithSol } from "@/lib/solanaCheckout";
+import { restorePlan } from "@/lib/solanaCheckout";
 import { connectWallet } from "@/lib/wallet";
 import { publishCreation } from "@/lib/creationsApi";
-import { VoxelCloud, type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
+import { type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
+import { boundsOfCells, fitSizeFor, type LocalImageMode } from "@/components/builder/builderHelpers";
+import { BuilderHeader } from "@/components/builder/BuilderHeader";
+import { BuilderPanel } from "@/components/builder/BuilderPanel";
+import { BuilderViewport } from "@/components/builder/BuilderViewport";
 import "./builder.css";
-
-const TOOLS: { id: Tool; label: string; key: string }[] = [
-  { id: "attach", label: "ATTACH", key: "B" },
-  { id: "erase", label: "ERASE", key: "E" },
-  { id: "paint", label: "PAINT", key: "P" },
-  { id: "fill", label: "FILL", key: "G" },
-  { id: "eyedrop", label: "PICK", key: "I" },
-  { id: "select", label: "SELECT", key: "Q" },
-  { id: "box", label: "BOX", key: "U" }
-];
-
-type LocalImageMode = "solid" | "flat" | "relief" | "model";
-type ContentBounds = {
-  minX: number;
-  minY: number;
-  minZ: number;
-  maxX: number;
-  maxY: number;
-  maxZ: number;
-};
-
-function boundsOfCells(list: { x: number; y: number; z: number }[]): ContentBounds | null {
-  if (!list.length) return null;
-  let minX = Infinity;
-  let minY = Infinity;
-  let minZ = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  let maxZ = -Infinity;
-  for (const v of list) {
-    minX = Math.min(minX, v.x);
-    minY = Math.min(minY, v.y);
-    minZ = Math.min(minZ, v.z);
-    maxX = Math.max(maxX, v.x);
-    maxY = Math.max(maxY, v.y);
-    maxZ = Math.max(maxZ, v.z);
-  }
-  return { minX, minY, minZ, maxX, maxY, maxZ };
-}
-
-function fitSizeFor(bounds: ContentBounds) {
-  const span = Math.max(
-    bounds.maxX - bounds.minX + 1,
-    bounds.maxY - bounds.minY + 1,
-    bounds.maxZ - bounds.minZ + 1
-  );
-  return (SIZES.find((n) => n >= span + 2) ?? 256) as number;
-}
-
-function CameraRig({
-  view,
-  size,
-  focus
-}: {
-  view: ViewMode;
-  size: number;
-  focus: [number, number, number];
-}) {
-  const { camera, controls } = useThree();
-  // Preset angles only when view or volume size changes — never fight user orbit.
-  useEffect(() => {
-    const [cx, cy, cz] = focus;
-    const dist = Math.max(8, size * 0.88);
-    const elev = Math.max(1.5, size * 0.1);
-    // Bias look/target upward so the model sits in the upper half of the frame
-    const lookY = cy + Math.max(2, size * 0.08);
-    if (view === "top") camera.position.set(cx, dist, cz + 0.01);
-    else if (view === "front") camera.position.set(cx, lookY + elev, cz + dist);
-    else if (view === "side") camera.position.set(cx + dist, lookY + elev, cz);
-    else camera.position.set(cx + dist * 0.74, lookY + dist * 0.48, cz + dist * 0.74);
-    camera.near = 0.05;
-    camera.far = Math.max(2000, size * 12);
-    camera.lookAt(cx, lookY, cz);
-    camera.updateProjectionMatrix();
-    const orbit = controls as unknown as { target?: THREE.Vector3; update?: () => void } | null;
-    if (orbit?.target) {
-      orbit.target.set(cx, lookY, cz);
-      orbit.update?.();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: do not re-run on focus alone
-  }, [camera, controls, size, view]);
-
-  // When focus moves (APPLY / FRAME), only move the orbit target — keep current camera pose.
-  useEffect(() => {
-    const [cx, cy, cz] = focus;
-    const lookY = cy + Math.max(2, size * 0.08);
-    const orbit = controls as unknown as { target?: THREE.Vector3; update?: () => void } | null;
-    if (orbit?.target) {
-      orbit.target.set(cx, lookY, cz);
-      orbit.update?.();
-    }
-  }, [controls, focus, size]);
-
-  return null;
-}
-
-
-/** Studio key aimed at the built subject (focus). Toggle with L. */
-function SubjectLights({
-  on,
-  focus,
-  size
-}: {
-  on: boolean;
-  focus: [number, number, number];
-  size: number;
-}) {
-  const [cx, cy, cz] = focus;
-  const reach = Math.max(12, size * 0.75);
-  // Soft "occhio di bue" always on the subject (diffuse cone)
-  const bullHeight = cy + Math.max(10, size * 0.55);
-  const bullDist = Math.max(18, size * 1.1);
-  const bullAngle = on ? 0.42 : 0.55;
-  const bullPenumbra = on ? 0.55 : 0.75;
-
-  if (!on) {
-    return (
-      <>
-        <ambientLight intensity={1.55} color="#e0e6f4" />
-        <hemisphereLight intensity={1.0} color="#eef2ff" groundColor="#2a303c" />
-        <spotLight
-          position={[cx, bullHeight, cz]}
-          intensity={3.8}
-          color="#fff8f0"
-          angle={bullAngle}
-          penumbra={bullPenumbra}
-          distance={bullDist}
-          decay={1.2}
-          castShadow={false}
-        >
-          <object3D attach="target" position={[cx, cy, cz]} />
-        </spotLight>
-        <pointLight
-          position={[cx, cy + Math.max(3, size * 0.18), cz]}
-          intensity={1.8}
-          distance={Math.max(24, size * 1.15)}
-          decay={1.4}
-          color="#f2f5ff"
-        />
-      </>
-    );
-  }
-
-  return (
-    <>
-      <ambientLight intensity={0.65} color="#c8d2ea" />
-      <hemisphereLight intensity={0.7} color="#e8eeff" groundColor="#18141e" />
-      <directionalLight
-        position={[cx + reach * 0.55, cy + reach * 0.95, cz + reach * 0.4]}
-        intensity={7.5}
-        color="#fff6ec"
-        castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-near={0.5}
-        shadow-camera-far={reach * 8}
-        shadow-camera-left={-reach}
-        shadow-camera-right={reach}
-        shadow-camera-top={reach}
-        shadow-camera-bottom={-reach}
-        shadow-bias={-0.00015}
-      >
-        <object3D attach="target" position={[cx, cy, cz]} />
-      </directionalLight>
-      <directionalLight
-        position={[cx - reach * 0.7, cy + reach * 0.45, cz - reach * 0.25]}
-        intensity={2.2}
-        color="#a8bcff"
-      >
-        <object3D attach="target" position={[cx, cy, cz]} />
-      </directionalLight>
-      <directionalLight
-        position={[cx - reach * 0.15, cy + reach * 0.55, cz - reach * 1.0]}
-        intensity={3.8}
-        color="#ffc9a0"
-      >
-        <object3D attach="target" position={[cx, cy, cz]} />
-      </directionalLight>
-      <spotLight
-        position={[cx + reach * 0.12, bullHeight, cz + reach * 0.08]}
-        intensity={10}
-        color="#fffaf4"
-        angle={bullAngle}
-        penumbra={bullPenumbra}
-        distance={bullDist}
-        decay={1.1}
-        castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
-      >
-        <object3D attach="target" position={[cx, cy, cz]} />
-      </spotLight>
-      <pointLight
-        position={[cx, cy + Math.max(5, size * 0.3), cz]}
-        intensity={3.4}
-        distance={Math.max(28, size * 1.3)}
-        decay={1.3}
-        color="#ffe9d4"
-      />
-    </>
-  );
-}
-
-function Ground({
-  size,
-  onHit,
-  onHover
-}: {
-  size: number;
-  onHit: (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => void;
-  onHover: (hit: VoxelHit | null) => void;
-}) {
-  return (
-    <mesh
-      rotation={[-Math.PI / 2, 0, 0]}
-      position={[(size - 1) / 2, -0.5, (size - 1) / 2]}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        onHit(
-          { kind: "empty", cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) } },
-          e
-        );
-      }}
-      onPointerMove={(e) => {
-        onHover({
-          kind: "empty",
-          cell: { x: Math.round(e.point.x), y: 0, z: Math.round(e.point.z) }
-        });
-      }}
-    >
-      <planeGeometry args={[size + 12, size + 12]} />
-      <shadowMaterial opacity={0.32} color="#05060a" />
-    </mesh>
-  );
-}
-
-function Ghost({ cell, color, valid }: { cell: Cell; color: string; valid: boolean }) {
-  return (
-    <mesh position={[cell.x, cell.y, cell.z]} raycast={() => {}}>
-      <boxGeometry args={[0.98, 0.98, 0.98]} />
-      <meshBasicMaterial color={valid ? color : "#ff3347"} transparent opacity={0.38} depthWrite={false} />
-    </mesh>
-  );
-}
-
-function BoxPreview({ a, b }: { a: Cell; b: Cell }) {
-  const x0 = Math.min(a.x, b.x);
-  const y0 = Math.min(a.y, b.y);
-  const z0 = Math.min(a.z, b.z);
-  const sx = Math.abs(a.x - b.x) + 1;
-  const sy = Math.abs(a.y - b.y) + 1;
-  const sz = Math.abs(a.z - b.z) + 1;
-  return (
-    <mesh position={[x0 + (sx - 1) / 2, y0 + (sy - 1) / 2, z0 + (sz - 1) / 2]} raycast={() => {}}>
-      <boxGeometry args={[sx, sy, sz]} />
-      <meshBasicMaterial color="#5b6ef5" wireframe transparent opacity={0.85} />
-    </mesh>
-  );
-}
-
-function OffsetGhost({ items, origin }: { items: ClipboardVoxel[]; origin: Cell }) {
-  return (
-    <group raycast={() => {}}>
-      {items.slice(0, 800).map((item, i) => (
-        <mesh key={i} position={[origin.x + item.dx, origin.y + item.dy, origin.z + item.dz]}>
-          <boxGeometry args={[1.02, 1.02, 1.02]} />
-          <meshBasicMaterial color="#5b6ef5" transparent opacity={0.28} depthWrite={false} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-function VolumeFrame({ size }: { size: number }) {
-  const points = useMemo(() => {
-    const s = size - 1;
-    return [
-      0, 0, 0, s, 0, 0, s, 0, s, 0, 0, s, 0, 0, 0, 0, s, 0, s, s, 0, s, 0, 0, s, 0, s,
-      s, s, s, s, s, 0, s, 0, 0, s, s, 0, 0, s, 0, 0, 0, 0, 0, 0, s, 0, s, s, 0, s, 0,
-      s, s, 0, s, s, s, 0, s, s, s, s, s, s, 0, s
-    ];
-  }, [size]);
-  return (
-    <line>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[new Float32Array(points), 3]} />
-      </bufferGeometry>
-      <lineBasicMaterial color="#9945FF" />
-    </line>
-  );
-}
-
-function InstancedPreview({
-  cells,
-  color
-}: {
-  cells: { x: number; y: number; z: number }[];
-  color: string;
-}) {
-  const mesh = useRef<THREE.InstancedMesh>(null);
-  useLayoutEffect(() => {
-    if (!mesh.current) return;
-    const dummy = new THREE.Object3D();
-    for (let i = 0; i < cells.length; i += 1) {
-      dummy.position.set(cells[i].x, cells[i].y, cells[i].z);
-      dummy.updateMatrix();
-      mesh.current.setMatrixAt(i, dummy.matrix);
-    }
-    mesh.current.instanceMatrix.needsUpdate = true;
-  }, [cells]);
-  return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, cells.length]}>
-      <boxGeometry args={[0.96, 0.96, 0.96]} />
-      <meshBasicMaterial color={color} />
-    </instancedMesh>
-  );
-}
-
-function PendingPreview({
-  voxels,
-  palette
-}: {
-  voxels: { x: number; y: number; z: number; c: number }[];
-  palette: string[];
-}) {
-  const groups = useMemo(() => {
-    const map = new Map<number, { x: number; y: number; z: number }[]>();
-    const step = voxels.length > 16000 ? 2 : 1;
-    for (let i = 0; i < voxels.length; i += step) {
-      const v = voxels[i];
-      const list = map.get(v.c) ?? [];
-      list.push(v);
-      map.set(v.c, list);
-    }
-    return [...map.entries()];
-  }, [voxels]);
-  return (
-    <group raycast={() => {}}>
-      {groups.map(([c, cells]) => (
-        <InstancedPreview key={c} cells={cells} color={palette[c] ?? "#e6e6e6"} />
-      ))}
-    </group>
-  );
-}
 
 export default function Builder() {
   const volumeRef = useRef(new VoxelVolume(128));
@@ -455,8 +106,6 @@ export default function Builder() {
 
   const volume = volumeRef.current;
   const count = volume.count;
-  const cx = (volume.size - 1) / 2;
-  const cz = (volume.size - 1) / 2;
   const creditLabel = creditsLeft < 0 ? "PRO" : `${creditsLeft} LEFT`;
 
   const bump = useCallback(() => {
@@ -583,7 +232,6 @@ export default function Builder() {
     await regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
   }, [frontFile, notify, regenerateMultiView, sideFile]);
 
-
   const attachFront = useCallback(
     async (file: File) => {
       const job = ++imageJobRef.current;
@@ -632,13 +280,19 @@ export default function Builder() {
     [imageOptions, notify, sideFile]
   );
 
-  const refreshSideMetrics = useCallback(async (front: File, side: File) => {
-    try {
-      const { computeHullMetrics } = await import("@/lib/ai/importMetrics");
-      // Lightweight bounds from decoded images (alpha/luma threshold).
-      const loadBounds = (file: File) =>
-        new Promise<{ width: number; height: number; minX: number; minY: number; maxX: number; maxY: number }>(
-          (resolve, reject) => {
+  const refreshSideMetrics = useCallback(
+    async (front: File, side: File) => {
+      try {
+        const { computeHullMetrics } = await import("@/lib/ai/importMetrics");
+        const loadBounds = (file: File) =>
+          new Promise<{
+            width: number;
+            height: number;
+            minX: number;
+            minY: number;
+            maxX: number;
+            maxY: number;
+          }>((resolve, reject) => {
             const url = URL.createObjectURL(file);
             const img = new Image();
             img.onload = () => {
@@ -695,18 +349,19 @@ export default function Builder() {
               reject(new Error("image"));
             };
             img.src = url;
-          }
-        );
-      const [fb, sb] = await Promise.all([loadBounds(front), loadBounds(side)]);
-      const m = computeHullMetrics(fb, sb);
-      setSideMetricsLabel(m.label);
-      setSideMetricsWarn(m.warning);
-      if (m.warning) notify(m.warning.toUpperCase());
-    } catch {
-      setSideMetricsLabel("");
-      setSideMetricsWarn(null);
-    }
-  }, [notify]);
+          });
+        const [fb, sb] = await Promise.all([loadBounds(front), loadBounds(side)]);
+        const m = computeHullMetrics(fb, sb);
+        setSideMetricsLabel(m.label);
+        setSideMetricsWarn(m.warning);
+        if (m.warning) notify(m.warning.toUpperCase());
+      } catch {
+        setSideMetricsLabel("");
+        setSideMetricsWarn(null);
+      }
+    },
+    [notify]
+  );
 
   const attachSide = useCallback(
     async (file: File) => {
@@ -742,7 +397,6 @@ export default function Builder() {
       volumeRef.current.resize(nextSize);
       setClip({ axis: null, value: nextSize - 1 });
     }
-    // Orbit target = content centroid (fixes “always looking at the floor”).
     {
       const midY = (bounds.minY + bounds.maxY) * 0.5;
       const height = Math.max(1, bounds.maxY - bounds.minY);
@@ -821,7 +475,6 @@ export default function Builder() {
   }, [resize]);
 
   const clearAll = useCallback(() => {
-    // Cancel any in-flight image job so a late result cannot repopulate UI.
     imageJobRef.current += 1;
 
     const deltas = applyCells(volumeRef.current, volumeRef.current.voxels(), null, {
@@ -831,7 +484,6 @@ export default function Builder() {
     });
     commit(deltas);
 
-    // Wipe import / preview UI leftovers from the previous image.
     setPendingImage(null);
     setPendingName("");
     setPendingHash("");
@@ -908,7 +560,7 @@ export default function Builder() {
   );
 
   const onHover = useCallback((hit: VoxelHit | null) => setHover(hit), []);
-  const ghost = hover?.kind === "voxel" && tool === "attach" ? hover.place : hover?.cell ?? null;
+  const ghost = hover?.kind === "voxel" && tool === "attach" ? hover.place : (hover?.cell ?? null);
   const ghostValid = Boolean(ghost && !volumeRef.current.has(ghost.x, ghost.y, ghost.z));
 
   const openProject = useCallback(
@@ -967,14 +619,22 @@ export default function Builder() {
       if (kind === "png") {
         const { png, pivot } = exportVolumePngOrtho(volumeRef.current, palette, 16);
         downloadBytes(png, `${name}.png`, "image/png");
-        downloadText(JSON.stringify({
-          schema: "brick.unity-2d-pixel.v1",
-          engine: "unity-2d-pixel",
-          pixelsPerUnit: pivot.pixelsPerUnit,
-          pivot: { x: pivot.x, y: pivot.y },
-          width: pivot.width,
-          height: pivot.height
-        }, null, 2), `${name}.png.json`, "application/json");
+        downloadText(
+          JSON.stringify(
+            {
+              schema: "brick.unity-2d-pixel.v1",
+              engine: "unity-2d-pixel",
+              pixelsPerUnit: pivot.pixelsPerUnit,
+              pivot: { x: pivot.x, y: pivot.y },
+              width: pivot.width,
+              height: pivot.height
+            },
+            null,
+            2
+          ),
+          `${name}.png.json`,
+          "application/json"
+        );
         return;
       }
       if (kind === "glb") {
@@ -984,7 +644,8 @@ export default function Builder() {
         return;
       }
       const archive = await exportObjArchive(
-        volumeRef.current, palette,
+        volumeRef.current,
+        palette,
         outputLock === "2d" ? unity2dPixelExportOptions() : UNITY_EXPORT
       );
       downloadBytes(archive, `${name}-obj.zip`, "application/zip");
@@ -1021,477 +682,109 @@ export default function Builder() {
     }
   }, [notify, refreshCredits]);
 
+  const commitHollow = useCallback(() => {
+    commit(applyCells(volumeRef.current, hollowCells(volumeRef.current), null, mirror));
+  }, [commit, mirror]);
+
   return (
     <main className="builderShell">
-      <header className="builderHeader">
-        <div className="headerLeft">
-          <Link href="/" className="brand">
-            <span className="brandMark">◆</span> VOXEL
-          </Link>
-        </div>
-        <div className="creationTitle">
-          {editingTitle ? (
-            <input
-              autoFocus
-              className="titleInput"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={() => setEditingTitle(false)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") setEditingTitle(false);
-              }}
-            />
-          ) : (
-            <>
-              <span>{title}</span>
-              <button className="titleEditBtn" onClick={() => setEditingTitle(true)}>
-                EDIT
-              </button>
-            </>
-          )}
-        </div>
-        <div className="builderActions">
-          <button onClick={undo} disabled={!canUndo || busy}>UNDO</button>
-          <button onClick={redo} disabled={!canRedo || busy}>REDO</button>
-          <button onClick={() => fileRef.current?.click()} disabled={busy}>OPEN</button>
-          <button onClick={() => void exportFiles("json")} disabled={busy}>PROJECT</button>
-          <button onClick={() => void exportFiles("vox")} disabled={busy}>VOX</button>
-          <button onClick={() => void exportFiles("glb")} disabled={busy}>GLB</button>
-          <button onClick={() => void exportFiles("png")} disabled={busy}>PNG</button>
-          <button onClick={() => void exportFiles("obj")} disabled={busy}>OBJ</button>
-          <button className="primaryButton" onClick={() => void publish()} disabled={busy}>PUBLISH</button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".json,.vox,.png,.jpg,.jpeg,.webp,application/json,image/png,image/jpeg,image/webp"
-            hidden
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void openProject(file);
-              e.target.value = "";
-            }}
-          />
-          <input
-            ref={frontRef}
-            type="file"
-            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-            hidden
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void attachFront(file);
-              e.target.value = "";
-            }}
-          />
-          <input
-            ref={sideRef}
-            type="file"
-            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-            hidden
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void attachSide(file);
-              e.target.value = "";
-            }}
-          />
-        </div>
-      </header>
+      <BuilderHeader
+        title={title}
+        editingTitle={editingTitle}
+        setTitle={setTitle}
+        setEditingTitle={setEditingTitle}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        busy={busy}
+        undo={undo}
+        redo={redo}
+        exportFiles={exportFiles}
+        publish={publish}
+        openProject={openProject}
+        attachFront={attachFront}
+        attachSide={attachSide}
+        fileRef={fileRef}
+        frontRef={frontRef}
+        sideRef={sideRef}
+      />
 
       <div className="builderBody voxelBody">
-        <aside className="brickPanel">
-          <p className="panelLabel">TOOLS</p>
-          <div className="toolStack">
-            {TOOLS.map((item) => (
-              <button
-                key={item.id}
-                className={tool === item.id ? "modeOn" : ""}
-                onClick={() => setTool(item.id)}
-              >
-                {item.label}
-                <small>{item.key}</small>
-              </button>
-            ))}
-          </div>
-          {tool === "box" && (
-            <div className="viewRow">
-              {(["fill", "erase", "select"] as BoxMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  className={boxMode === mode ? "modeOn" : ""}
-                  onClick={() => setBoxMode(mode)}
-                >
-                  {mode.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          )}
-          <details className="fold">
-            <summary>STATUS · {creditLabel}</summary>
-            <div className="foldBody">
-              <p className="foldHint">
-                {tool.toUpperCase()} · {count} VX · {volume.size}³
-                {pendingImage ? " · PREVIEW" : ""}
-                {sideFile ? " · SIDE" : ""}
-                {busy ? " · BUSY" : ""}
-              </p>
-              <button onClick={() => void syncPlan()} disabled={busy}>SYNC WALLET</button>
-            </div>
-          </details>
-          <p className="category">BRUSH {brush}</p>
-          <div className="viewRow">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} className={brush === n ? "modeOn" : ""} onClick={() => setBrush(n)}>
-                {n}
-              </button>
-            ))}
-          </div>
-          <p className="category">MIRROR</p>
-          <div className="viewRow">
-            {(["x", "y", "z"] as const).map((axis) => (
-              <button
-                key={axis}
-                className={mirror[axis] ? "modeOn" : ""}
-                onClick={() => setMirror((m) => ({ ...m, [axis]: !m[axis] }))}
-              >
-                {axis.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          <p className="category">VOLUME</p>
-          <div className="viewRow">
-            {SIZES.map((size) => (
-              <button
-                key={size}
-                className={volume.size === size ? "modeOn" : ""}
-                onClick={() => resize(size)}
-              >
-                {size}
-              </button>
-            ))}
-          </div>
-          <button onClick={packVolume} disabled={!count}>FIT</button>
-          <button
-            onClick={() =>
-              commit(applyCells(volumeRef.current, hollowCells(volumeRef.current), null, mirror))
-            }
-          >
-            HOLLOW
-          </button>
-          <button onClick={clearAll}>CLEAR</button>
-          <p className="category">VIEW</p>
-          <div className="viewRow">
-            {(["iso", "top", "front", "side"] as ViewMode[]).map((mode) => (
-              <button key={mode} className={view === mode ? "modeOn" : ""} onClick={() => setView(mode)}>
-                {mode.toUpperCase()}
-              </button>
-            ))}
-            <button type="button" onClick={frameContent} title="Frame content center">
-              FRAME
-            </button>
-          </div>
-          <p className="foldHint">RMB orbit · MMB pan · scroll zoom · L studio light · FRAME centers model</p>
-          <button className={grid ? "modeOn" : ""} onClick={() => setGrid((g) => !g)}>
-            GRID {grid ? "ON" : "OFF"}
-          </button>
-          <button
-            className={studioLight ? "modeOn" : ""}
-            onClick={() => {
-              setStudioLight((v) => {
-                const next = !v;
-                notify(next ? "STUDIO LIGHT · ON" : "STUDIO LIGHT · OFF");
-                return next;
-              });
-            }}
-            title="Toggle studio light (L)"
-          >
-            LIGHT {studioLight ? "ON" : "OFF"} · L
-          </button>
-          <p className="category">CLIP</p>
-          <div className="viewRow">
-            {([null, "x", "y", "z"] as const).map((axis) => (
-              <button
-                key={String(axis)}
-                className={clip.axis === axis ? "modeOn" : ""}
-                onClick={() =>
-                  setClip({
-                    axis,
-                    value: axis ? Math.floor(volume.size / 2) : volume.size - 1
-                  })
-                }
-              >
-                {axis ? axis.toUpperCase() : "OFF"}
-              </button>
-            ))}
-          </div>
-          {clip.axis && (
-            <input
-              type="range"
-              min={0}
-              max={volume.size - 1}
-              value={clip.value}
-              onChange={(e) =>
-                setClip((current) => ({ ...current, value: Number(e.target.value) }))
-              }
-            />
-          )}
-          <p className="category">IMAGE IMPORT</p>
-          <p className="foldHint">
-            {frontFile ? "Front image ready" : "Front image required"}
-            <br />
-            {imageMode === "model"
-              ? sideFile
-                ? "Side image ready · MODEL hull active"
-                : "Side image required for MODEL (visual hull)"
-              : sideFile
-                ? "Side image ready"
-                : "Side image optional"}
-          </p>
-          <p className="foldHint">
-            SIDE guide · edge-on profile (thin), white bg, tip up, same height as FRONT — not a second front view
-          </p>
-          {imageMode === "model" && sideFile && frontFile && (
-            <>
-              {sideMetricsLabel && <p className="foldHint">{sideMetricsLabel}</p>}
-              {sideMetricsWarn ? (
-                <p className="foldHint" style={{ color: "#f0a0a0" }}>
-                  {sideMetricsWarn}
-                </p>
-              ) : (
-                <p className="foldHint">
-                  Tip: if the mesh is fat or short, re-export SIDE as a true side silhouette
-                </p>
-              )}
-            </>
-          )}
-          {pendingImage?.aiStatus && (
-            <p className="foldHint" title="Local ONNX diagnostics">
-              AI · {pendingImage.aiStatus}
-            </p>
-          )}
-          <p className="foldHint">
-            AI category · ONNX matte + depth presets
-            {imageCategory ? ` · ${aiCategoryProfile(imageCategory).label}` : " · auto"}
-          </p>
-          <div className="viewRow">
-            <button
-              className={imageCategory === null ? "modeOn" : ""}
-              disabled={busy}
-              onClick={() => {
-                setImageCategory(null);
-                if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-              }}
-            >
-              AUTO
-            </button>
-            {AI_CATEGORIES.map((id) => (
-              <button
-                key={id}
-                className={imageCategory === id ? "modeOn" : ""}
-                disabled={busy}
-                title={aiCategoryProfile(id).description}
-                onClick={() => {
-                  setImageCategory(id);
-                  setImageMode("model");
-                  setSymmetrize(aiCategoryProfile(id).symmetrize);
-                  if (frontFile && !sideFile) {
-                    notify(`${id.toUpperCase()} · ADD SIDE PNG FOR FULL HULL`);
-                  }
-                  if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-                }}
-              >
-                {id.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          <p className="foldHint">Output lock (wins over category / solid)</p>
-          <div className="viewRow">
-            {([["2d", "2D"], ["25d", "2.5D"]] as const).map(([id, label]) => (
-              <button key={id} className={outputLock === id ? "modeOn" : ""} disabled={busy}
-                onClick={() => {
-                  setOutputLock(id);
-                  setImageMode(id === "2d" ? "flat" : "relief");
-                  if (id === "2d") setImageCategory(null);
-                  setSymmetrize(false);
-                  if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-                }}>{label}</button>
-            ))}
-            <button className={outputLock === null ? "modeOn" : ""} disabled={busy}
-              onClick={() => {
-                setOutputLock(null);
-                if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-              }}>FREE</button>
-          </div>
-          <div className="viewRow">
-            {(["solid", "flat", "relief", "model"] as LocalImageMode[]).map((mode) => (
-              <button key={mode} className={imageMode === mode ? "modeOn" : ""} disabled={busy}
-                onClick={() => {
-                  setImageMode(mode);
-                  setOutputLock(mode === "flat" ? "2d" : mode === "relief" ? "25d" : null);
-                  if (mode !== "model") setImageCategory(null);
-                  setSymmetrize(mode === "model" ? symmetrize : false);
-                  if (mode === "model" && frontFile && !sideFile) notify("MODEL · ADD SIDE PNG FOR FULL 3D HULL");
-                  if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
-                }}>{mode.toUpperCase()}</button>
-            ))}
-          </div>
-          {(imageMode === "relief" || outputLock === "25d") && (
-            <>
-              <p className="foldHint">Relief depth</p>
-              <div className="viewRow">
-                {[4, 8, 12, 16].map((n) => (
-                  <button
-                    key={n}
-                    className={imageHeight === n ? "modeOn" : ""}
-                    onClick={() => {
-                      setImageHeight(n);
-                      if (frontFile) void rebuildMultiView();
-                    }}
-                    disabled={busy}
-                  >
-                    D{n}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          {imageMode === "model" && !sideFile && (
-            <>
-              <p className="foldHint">Preview depth until SIDE is added</p>
-              <div className="viewRow">
-                {[4, 8, 12, 16].map((n) => (
-                  <button
-                    key={n}
-                    className={imageHeight === n ? "modeOn" : ""}
-                    onClick={() => {
-                      setImageHeight(n);
-                      if (frontFile) void rebuildMultiView();
-                    }}
-                    disabled={busy}
-                  >
-                    D{n}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          {imageMode === "model" && sideFile && (
-            <p className="foldHint">Depth comes from FRONT + SIDE silhouettes</p>
-          )}
-          <button
-            className={symmetrize ? "modeOn" : ""}
-            onClick={() => {
-              setSymmetrize((value) => !value);
-              if (frontFile && imageMode === "model") {
-                window.setTimeout(() => void rebuildMultiView(), 0);
-              }
-            }}
-            disabled={imageMode !== "model" || busy}
-          >
-            SYMMETRY {symmetrize ? "ON" : "OFF"}
-          </button>
-          <button onClick={() => frontRef.current?.click()} disabled={busy}>
-            FRONT PNG
-          </button>
-          <button
-            className={imageMode === "model" && !sideFile && frontFile ? "primaryButton" : ""}
-            onClick={() => sideRef.current?.click()}
-            disabled={busy || !frontFile}
-          >
-            {imageMode === "model" && !sideFile ? "SIDE PNG (REQUIRED)" : "SIDE PNG"}
-          </button>
-          <p className="foldHint">
-            LOCAL AI · ONNX segment/depth when models are present · falls back to heuristics · 32–256
-          </p>
-          <p className="category">PALETTE</p>
-          <div className="viewRow">
-            {palette.slice(0, 16).map((hex, i) => (
-              <button
-                key={`${hex}-${i}`}
-                className={color === i ? "modeOn" : ""}
-                style={{ background: hex, minWidth: 18, minHeight: 18 }}
-                onClick={() => setColor(i)}
-              />
-            ))}
-          </div>
-        </aside>
+        <BuilderPanel
+          tool={tool}
+          setTool={setTool}
+          boxMode={boxMode}
+          setBoxMode={setBoxMode}
+          brush={brush}
+          setBrush={setBrush}
+          color={color}
+          setColor={setColor}
+          palette={palette}
+          mirror={mirror}
+          setMirror={setMirror}
+          view={view}
+          setView={setView}
+          grid={grid}
+          setGrid={setGrid}
+          studioLight={studioLight}
+          setStudioLight={setStudioLight}
+          clip={clip}
+          setClip={setClip}
+          volumeSize={volume.size}
+          count={count}
+          creditLabel={creditLabel}
+          busy={busy}
+          pendingImage={pendingImage}
+          sideFile={sideFile}
+          frontFile={frontFile}
+          imageMode={imageMode}
+          setImageMode={setImageMode}
+          outputLock={outputLock}
+          setOutputLock={setOutputLock}
+          imageHeight={imageHeight}
+          setImageHeight={setImageHeight}
+          symmetrize={symmetrize}
+          setSymmetrize={setSymmetrize}
+          imageCategory={imageCategory}
+          setImageCategory={setImageCategory}
+          sideMetricsLabel={sideMetricsLabel}
+          sideMetricsWarn={sideMetricsWarn}
+          notify={notify}
+          resize={resize}
+          packVolume={packVolume}
+          clearAll={clearAll}
+          frameContent={frameContent}
+          syncPlan={syncPlan}
+          rebuildMultiView={rebuildMultiView}
+          commitHollow={commitHollow}
+          frontRef={frontRef}
+          sideRef={sideRef}
+        />
 
-        <section className="viewport">
-          <Canvas
-            shadows
-            dpr={[1, 2]}
-            camera={{ position: [48, 36, 48], fov: 40, near: 0.05, far: 4000 }}
-            gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}
-          >
-            <color attach="background" args={["#0d1018"]} />
-            <fog attach="fog" args={["#0d1018", volume.size * 1.35, volume.size * 4.2]} />
-            <SubjectLights on={studioLight} focus={focus} size={volume.size} />
-            {grid && (
-              <Grid
-                args={[volume.size, volume.size]}
-                position={[cx, -0.49, cz]}
-                cellSize={1}
-                cellThickness={0.55}
-                cellColor="#3c3457"
-                sectionSize={8}
-                sectionThickness={1.1}
-                sectionColor="#a678ff"
-                fadeDistance={volume.size * 2}
-              />
-            )}
-            <Ground size={volume.size} onHit={onHit} onHover={onHover} />
-            <VolumeFrame size={volume.size} />
-            <VoxelCloud
-              volume={volume}
-              palette={palette}
-              revision={rev}
-              selected={selected}
-              clip={clip}
-              onHit={onHit}
-              onHover={onHover}
-            />
-            {pendingImage && (
-              <PendingPreview voxels={pendingImage.voxels} palette={pendingImage.palette} />
-            )}
-            {ghost && tool !== "box" && (tool === "attach" || brush > 1) && (
-              <Ghost cell={ghost} color={palette[color]} valid={ghostValid || tool !== "attach"} />
-            )}
-            {tool === "box" && boxStart && ghost && <BoxPreview a={boxStart} b={ghost} />}
-            {tool !== "box" && clipboard.length > 0 && ghost && (
-              <OffsetGhost items={clipboard} origin={ghost} />
-            )}
-            <CameraRig view={view} size={volume.size} focus={focus} />
-            <OrbitControls
-              makeDefault
-              enableDamping
-              dampingFactor={0.08}
-              target={focus}
-              mouseButtons={{ LEFT: undefined, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }}
-              enablePan
-              screenSpacePanning
-              enableRotate={view === "iso"}
-              minDistance={4}
-              maxDistance={volume.size * 4}
-            />
-          </Canvas>
-          {toast && <div className="toast">{toast}</div>}
-          {pendingImage && !paywall && (
-            <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
-              <div style={{ marginBottom: 8 }}>
-                APPLY IMAGE · {pendingImage.count ?? pendingImage.voxels.length} VX
-              </div>
-              <button className="primaryButton" onClick={applyImage} disabled={busy}>
-                APPLY
-              </button>
-            </div>
-          )}
-          {paywall && (
-            <div className="toast" style={{ bottom: 24, minWidth: 300 }}>
-              <div style={{ marginBottom: 8 }}>PRO · {MONTHLY_SOL} SOL / month</div>
-              <button className="primaryButton" onClick={() => void subscribeWithSol()} disabled={busy}>
-                SUBSCRIBE
-              </button>
-            </div>
-          )}
-        </section>
+        <BuilderViewport
+          volume={volume}
+          palette={palette}
+          rev={rev}
+          selected={selected}
+          clip={clip}
+          focus={focus}
+          view={view}
+          grid={grid}
+          studioLight={studioLight}
+          tool={tool}
+          brush={brush}
+          color={color}
+          boxStart={boxStart}
+          clipboard={clipboard}
+          ghost={ghost}
+          ghostValid={ghostValid}
+          pendingImage={pendingImage}
+          paywall={paywall}
+          busy={busy}
+          toast={toast}
+          onHit={onHit}
+          onHover={onHover}
+          applyImage={applyImage}
+        />
       </div>
     </main>
   );
