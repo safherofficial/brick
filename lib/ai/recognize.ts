@@ -229,7 +229,7 @@ function ambiguityFor(
 
 function withEvidence(
   stats: ReturnType<typeof maskStats>,
-  guess: Omit<ShapeGuess, 'confidence' | 'evidence'>,
+  guess: Omit<ShapeGuess, 'confidence' | 'evidence' | 'features'>,
   baseConfidence: number,
   support: number
 ): ShapeGuess {
