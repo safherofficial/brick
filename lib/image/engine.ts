@@ -1052,6 +1052,99 @@ function keepLargestComponents(voxels: ImageVoxel[]) {
   return components.filter((c) => c.length >= threshold).flat();
 }
 
+
+function normalizedRowProfile(mask: boolean[][], bounds: Bounds, bins = 64): number[] {
+  const profile = Array.from({ length: bins }, () => 0);
+  if (!bounds.width || !bounds.height) return profile;
+
+  for (let bin = 0; bin < bins; bin += 1) {
+    const y0 = bounds.minY + (bin / bins) * bounds.height;
+    const y1 = bounds.minY + ((bin + 1) / bins) * bounds.height;
+    const startY = clamp(Math.floor(y0), bounds.minY, bounds.maxY);
+    const endY = clamp(Math.max(startY, Math.ceil(y1) - 1), bounds.minY, bounds.maxY);
+
+    let hits = 0;
+    let total = 0;
+    for (let y = startY; y <= endY; y += 1) {
+      const row = mask[y];
+      if (!row) continue;
+      for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+        total += 1;
+        if (row[x]) hits += 1;
+      }
+    }
+    profile[bin] = total > 0 ? hits / total : 0;
+  }
+
+  return profile;
+}
+
+function sampleProfile(profile: number[], normalizedY: number) {
+  if (!profile.length) return 0;
+  const y = clamp(normalizedY, 0, 1) * (profile.length - 1);
+  const y0 = Math.floor(y);
+  const y1 = Math.min(profile.length - 1, y0 + 1);
+  const t = y - y0;
+  return profile[y0] * (1 - t) + profile[y1] * t;
+}
+
+/**
+ * Refine the existing SIDE Y alignment without replacing the established
+ * viewAlign decision. The comparison is done on normalized silhouette-row
+ * occupancy, so FRONT and SIDE may have different source resolutions.
+ */
+function refineSideYOffset(
+  frontMask: boolean[][],
+  frontBounds: Bounds,
+  sideMask: boolean[][],
+  sideBounds: Bounds,
+  initialOffset: number
+) {
+  const frontProfile = normalizedRowProfile(frontMask, frontBounds);
+  const sideProfile = normalizedRowProfile(sideMask, sideBounds);
+  if (!frontProfile.some(Boolean) || !sideProfile.some(Boolean)) return initialOffset;
+
+  const clampOffset = (value: number) => clamp(value, -0.08, 0.08);
+  const base = clampOffset(initialOffset);
+  const candidates = new Set<number>();
+
+  // Keep the existing alignment as the anchor and only search a narrow band.
+  for (let step = -8; step <= 8; step += 1) {
+    candidates.add(clampOffset(base + step * 0.01));
+  }
+
+  let bestOffset = base;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    let error = 0;
+    let weight = 0;
+    let overlap = 0;
+
+    for (let i = 0; i < frontProfile.length; i += 1) {
+      const ny = frontProfile.length <= 1 ? 0.5 : i / (frontProfile.length - 1);
+      const side = sampleProfile(sideProfile, ny + candidate);
+      const front = frontProfile[i];
+      const localWeight = 0.35 + Math.max(front, side) * 1.8;
+      error += Math.abs(front - side) * localWeight;
+      weight += localWeight;
+      if (front > 0.06 && side > 0.06) overlap += Math.min(front, side);
+    }
+
+    const normalizedError = error / Math.max(1, weight);
+    const overlapBonus = overlap / Math.max(1, frontProfile.length) * 0.12;
+    const shiftPenalty = Math.abs(candidate - base) * 0.10;
+    const score = normalizedError + shiftPenalty - overlapBonus;
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestOffset = candidate;
+    }
+  }
+
+  return bestOffset;
+}
+
 function reconstructVisualHull(
   frontRaster: Raster,
   frontMask: boolean[][],
@@ -1606,20 +1699,14 @@ function adaptiveDepthAt(
     ? 0.5 + centred * 0.92
     : 0.5 + centred * 0.84;
 
-  // Tiny category bias only; geometry limits still come from the existing
-  // category height/depth profile.
-  const categoryBias =
-    category === "rifles" ? 0.015 :
-    category === "guns" ? -0.01 :
-    category === "objects" ? 0.005 :
-    0;
-
   // Very sparse local support is more likely to be a thin feature. Keep its
   // depth closer to the neutral midpoint rather than inflating it.
   const sparseWeight = foregroundNeighbours <= 3 ? 0.08 : 0;
   const sparseSafe = compressed * (1 - sparseWeight) + 0.5 * sparseWeight;
 
-  return clamp(sparseSafe + categoryBias, 0, 1);
+  // Category-specific geometry remains handled by the existing profile layer;
+  // keep the depth signal itself neutral to avoid biasing thickness by label.
+  return clamp(sparseSafe, 0, 1);
 }
 
 async function finalizeLocalAi(
@@ -1943,7 +2030,14 @@ export async function imagesToVoxels(
       const metrics = computeHullMetrics(frontBounds, sideBounds);
       normalized.sideAmbiguous = metrics.sideAmbiguous;
       const align = bestSideYShiftBins(frontMask, frontBounds, sideMask, sideBounds);
-      sideYOffset = sideYOffsetFromShift(align.shiftBins);
+      const initialYOffset = sideYOffsetFromShift(align.shiftBins);
+      sideYOffset = refineSideYOffset(
+        frontMask,
+        frontBounds,
+        sideMask,
+        sideBounds,
+        initialYOffset
+      );
     } catch {
       sideYOffset = 0;
     }
