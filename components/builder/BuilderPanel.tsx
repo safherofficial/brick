@@ -361,7 +361,6 @@ export function BuilderPanel({
               setOutputLock(mode === "flat" ? "2d" : mode === "relief" ? "25d" : null);
               if (mode !== "model") setImageCategory(null);
               setSymmetrize(mode === "model" ? symmetrize : false);
-              if (mode === "model" && frontFile && !sideFile) notify("MODEL · ADD SIDE PNG FOR FULL 3D HULL");
               if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
             }}
           >
