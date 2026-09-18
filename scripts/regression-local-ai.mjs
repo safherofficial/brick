@@ -3,7 +3,7 @@
  * Run: node scripts/regression-local-ai.mjs
  */
 import { readFile } from "node:fs/promises";
-
+ 
 const runtime = await readFile(new URL("../lib/ai/runtime.ts", import.meta.url), "utf8");
 const fetcher = await readFile(new URL("./fetch-onnx.mjs", import.meta.url), "utf8");
 const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
