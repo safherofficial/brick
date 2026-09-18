@@ -1625,21 +1625,16 @@ export async function imageToVoxels(
     return { ...finished, aiStatus: formatAiStatus(aiDiag) };
   };
 
-  // Single-view: MODEL needs a SIDE image for visual-hull. Fall back to relief
-  // so the UI can still preview FRONT while waiting for SIDE (no hard crash).
+  // Single-view MODEL: keep MODEL volumetric while using the existing solid
+  // reconstruction as a conservative FRONT-only depth estimate.
   if (normalized.mode === "model") {
-    const reliefOpts: NormalizedImageVoxelOptions = {
-      ...normalized,
-      mode: "relief",
-      heightMax: Math.max(normalized.heightMax, 8)
-    };
     const result = buildNonModel(
       raster,
       mask,
       bounds,
       undefined,
       null,
-      reliefOpts,
+      { ...normalized, mode: "solid" },
       paletteValues,
       palette,
       depthMap
@@ -1678,10 +1673,6 @@ export async function imagesToVoxels(
     outline: options.outline
   };
   applyOutputLock(normalized);
-
-  if (normalized.mode === "model" && !views.side) {
-    throw new Error("MODEL MODE REQUIRES FRONT + SIDE");
-  }
 
   const useLocalAi = options.useLocalAi ?? true;
   const files = [views.front, views.side].filter(Boolean) as File[];
@@ -1761,7 +1752,27 @@ export async function imagesToVoxels(
     );
 
     if (!sideRaster || !sideMask || !sideBounds) {
-      throw new Error("MODEL MODE REQUIRES A VALID SIDE VIEW");
+      // FRONT-only MODEL: keep the MODEL contract but reconstruct a volumetric
+      // asset from the segmented FRONT, category profile and local depth hint.
+      // FRONT + SIDE continues through the existing true visual-hull path.
+      const singleView = buildNonModel(
+        frontRaster,
+        frontMask,
+        frontBounds,
+        undefined,
+        null,
+        { ...normalized, mode: "solid" },
+        paletteValues,
+        palette,
+        frontDepth
+      );
+      const finished = useLocalAi
+        ? await finalizeLocalAi(singleView, normalized.volumeSize, frontMask, normalized.aiCategory)
+        : singleView;
+      return {
+        ...finished,
+        aiStatus: formatAiStatus(aiDiag, dimensions)
+      };
     }
 
     // Metrics + Y-align + optional depth clamp flag (ambiguous SIDE only).
