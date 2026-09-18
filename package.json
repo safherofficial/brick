@@ -11,9 +11,10 @@
     "test:golden": "node scripts/golden-import.mjs",
     "test:assets": "node --experimental-strip-types scripts/regression-assets.mjs",
     "test:local-ai": "node scripts/regression-local-ai.mjs",
-    "test": "node scripts/regression-hull.mjs && node scripts/golden-import.mjs && node --experimental-strip-types scripts/regression-assets.mjs && node scripts/regression-local-ai.mjs && node scripts/regression-game-ready.mjs && node --experimental-strip-types scripts/regression-recognition.mjs",
+    "test": "node scripts/regression-hull.mjs && node scripts/golden-import.mjs && node --experimental-strip-types scripts/regression-assets.mjs && node scripts/regression-local-ai.mjs && node scripts/regression-game-ready.mjs && node --experimental-strip-types scripts/regression-recognition.mjs && node --experimental-strip-types scripts/regression-reconstruction.mjs",
     "test:game-ready": "node scripts/regression-game-ready.mjs",
-    "test:recognition": "node --experimental-strip-types scripts/regression-recognition.mjs"
+    "test:recognition": "node --experimental-strip-types scripts/regression-recognition.mjs",
+    "test:reconstruction": "node --experimental-strip-types scripts/regression-reconstruction.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",
