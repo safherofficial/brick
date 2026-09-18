@@ -115,18 +115,29 @@ export async function loadModel(id: AiModelId) {
   if (existing) return existing;
 
   const job = (async () => {
-    const url = await resolveModel(id);
-    if (!url) return null;
+    const candidates = modelCandidates(id);
+    let ort: typeof import("onnxruntime-web");
     try {
-      const ort = await import("onnxruntime-web");
-      try {
-        return await createSession(ort, url, ORT_WASM_LOCAL);
-      } catch {
-        return await createSession(ort, url, ORT_WASM_CDN);
-      }
+      ort = await import("onnxruntime-web");
     } catch {
       return null;
     }
+
+    for (const url of candidates) {
+      if (!(await probe(url))) continue;
+      try {
+        return await createSession(ort, url, ORT_WASM_LOCAL);
+      } catch {
+        try {
+          return await createSession(ort, url, ORT_WASM_CDN);
+        } catch {
+          // Keep trying the next local/remote candidate instead of pinning
+          // the whole model to a single broken or incompatible file.
+        }
+      }
+    }
+
+    return null;
   })();
 
   sessions.set(id, job);
