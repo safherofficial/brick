@@ -32,7 +32,7 @@ import {
   exportVox,
   importVox
 } from "@/lib/voxelExport";
-import { exportGlb } from "@/lib/voxelGlb";
+import { exportGlbTextured } from "@/lib/voxelGlb";
 import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxel";
 import { UNITY_EXPORT, unity2dPixelExportOptions } from "@/lib/ai/unity";
 import { buildImageOptions } from "@/lib/ai/buildOptions";
@@ -638,8 +638,12 @@ export default function Builder() {
         return;
       }
       if (kind === "glb") {
-        const options = outputLock === "2d" ? unity2dPixelExportOptions() : UNITY_EXPORT;
-        const bytes = await exportGlb(volumeRef.current, palette, options);
+        const options = {
+          ...(outputLock === "2d" ? unity2dPixelExportOptions() : UNITY_EXPORT),
+          name: title,
+          shape: lastShape
+        };
+        const bytes = await exportGlbTextured(volumeRef.current, palette, options);
         downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
         return;
       }
