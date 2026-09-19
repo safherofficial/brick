@@ -2034,6 +2034,37 @@ async function applyLocalAiRaster(
   }
 }
 
+async function attachQualityControl(
+  result: ImageImport,
+  mask: boolean[][],
+  category?: ImageVoxelOptions["aiCategory"]
+): Promise<ImageImport> {
+  try {
+    const { evaluateVoxelQuality, repairVoxelIntegrity } = await import("@/lib/image/qualityControl");
+    const initialQuality = evaluateVoxelQuality(result.voxels, mask, result.palette, category);
+    if (initialQuality.status === "accept") {
+      return { ...result, qualityControl: initialQuality };
+    }
+
+    const repairedVoxels = repairVoxelIntegrity(result.voxels);
+    if (repairedVoxels === result.voxels) {
+      return { ...result, qualityControl: initialQuality };
+    }
+
+    const repaired = {
+      ...result,
+      voxels: repairedVoxels,
+      count: repairedVoxels.length
+    };
+    const repairedQuality = evaluateVoxelQuality(repaired.voxels, mask, repaired.palette, category);
+    return repairedQuality.score >= initialQuality.score + 3
+      ? { ...repaired, qualityControl: repairedQuality }
+      : { ...result, qualityControl: initialQuality };
+  } catch {
+    return result;
+  }
+}
+
 function formatAiStatus(
   diag: LocalAiResult["diagnostics"] | undefined,
   dims?: { width: number; height: number; depth: number }
@@ -2379,7 +2410,8 @@ export async function imageToVoxels(
     const finished = useLocalAi
       ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory, false)
       : result;
-    return { ...finished, aiStatus: formatAiStatus(aiDiag) };
+    const checked = await attachQualityControl(finished, mask, normalized.aiCategory);
+    return { ...checked, aiStatus: formatAiStatus(aiDiag) };
   };
 
   // Single-view MODEL: keep MODEL volumetric while using the existing solid
@@ -2547,8 +2579,9 @@ export async function imagesToVoxels(
       const finished = useLocalAi
         ? await finalizeLocalAi(singleView, normalized.volumeSize, frontMask, normalized.aiCategory, false)
         : singleView;
+      const checked = await attachQualityControl(finished, frontMask, normalized.aiCategory);
       return {
-        ...finished,
+        ...checked,
         aiStatus: formatAiStatus(aiDiag, dimensions)
       };
     }
@@ -2590,8 +2623,9 @@ export async function imagesToVoxels(
     const finished = useLocalAi
       ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask, normalized.aiCategory, true)
       : hull;
+    const checked = await attachQualityControl(finished, frontMask, normalized.aiCategory);
     return {
-      ...finished,
+      ...checked,
       aiStatus: formatAiStatus(aiDiag, dimensions)
     };
   }
@@ -2610,5 +2644,6 @@ export async function imagesToVoxels(
   const finished = useLocalAi
     ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask, normalized.aiCategory, Boolean(views.side))
     : flat;
-  return { ...finished, aiStatus: formatAiStatus(aiDiag) };
+  const checked = await attachQualityControl(finished, frontMask, normalized.aiCategory);
+  return { ...checked, aiStatus: formatAiStatus(aiDiag) };
 }
