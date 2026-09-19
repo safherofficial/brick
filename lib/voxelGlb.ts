@@ -13,10 +13,22 @@ import {
 } from "@/lib/voxelMesh";
 import { encodePng } from "@/lib/png";
 import { GENERATOR_NAME, MAX_VOXELS } from "@/lib/limits";
-import { buildGlbExtras, UNITY_2D_PIXEL } from "@/lib/ai/gameReady";
+import { buildGlbExtras, UNITY_2D_PIXEL, unityBoxCollider, unityUnitMeters } from "@/lib/ai/gameReady";
 
 function pad4(n: number) {
   return (4 - (n % 4)) % 4;
+}
+
+function contentSpanY(volume: VoxelVolume): number {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const key of volume.raw().keys()) {
+    const y = Number(key.split(":")[1]);
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  if (!Number.isFinite(minY)) return 1;
+  return Math.max(1, maxY - minY + 1);
 }
 
 function voxelMassCentroid(
@@ -212,6 +224,7 @@ export async function exportGlb(
         voxelCount: volume.count,
         volumeSize: volume.size,
         shape: options?.shape as never,
+        unitMeters: resolved.unitMeters,
         mesh: {
           quads: quads.length,
           triangles: indices.length / 3,
@@ -288,7 +301,11 @@ export async function exportGlbTextured(
     throw new Error(`Model too large for GLB (max ${MAX_VOXELS} voxel)`);
   }
   const bounds = assertExportable(volume);
-  const resolved = resolveExport(options);
+  const twoD = (options as { output?: string } | undefined)?.output === "2d";
+  const unitMeters = twoD
+    ? UNITY_2D_PIXEL.unitMeters
+    : unityUnitMeters(options?.shape as string | undefined, contentSpanY(volume));
+  const resolved = resolveExport({ ...options, unitMeters });
   const origin = pivotOrigin(bounds, resolved.pivot);
   const quads = greedyQuads(volume);
   if (!quads.length) throw new Error("Empty volume");
@@ -403,10 +420,14 @@ export async function exportGlbTextured(
     resolved.upAxis,
     options?.shape
   );
+  const collider = unityBoxCollider(
+    [minPx, minPy, minPz],
+    [maxPx, maxPy, maxPz]
+  );
   const meshNode = 1;
-  const socketIndex0 = 2;
-  const rootChildren = [meshNode, ...sockets.map((_, i) => socketIndex0 + i)];
-  const twoD = resolved.unitMeters === UNITY_2D_PIXEL.unitMeters;
+  const colliderNode = 2;
+  const socketIndex0 = 3;
+  const rootChildren = [meshNode, colliderNode, ...sockets.map((_, i) => socketIndex0 + i)];
 
   const json = {
     asset: {
@@ -420,6 +441,8 @@ export async function exportGlbTextured(
         shape: options?.shape as never,
         output: twoD ? "2d" : undefined,
         pixelsPerUnit: twoD ? UNITY_2D_PIXEL.pixelsPerUnit : undefined,
+        unitMeters: resolved.unitMeters,
+        collider,
         mesh: {
           quads: quads.length,
           triangles: indices.length / 3,
@@ -434,6 +457,11 @@ export async function exportGlbTextured(
     nodes: [
       { name: resolved.name, children: rootChildren },
       { mesh: 0, name: `${resolved.name}_Mesh` },
+      {
+        name: "Collider_Box",
+        translation: collider.center,
+        extras: { collider }
+      },
       ...sockets
     ],
     meshes: [
