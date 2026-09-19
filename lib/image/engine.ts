@@ -652,11 +652,12 @@ function dominantPalette(
   return chosen.map(([r, g, b]) => hexOf(r, g, b));
 }
 
-function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
+function createPalette(rasters: Raster[], masks: boolean[][][], size = 48, viewWeights?: number[]) {
   const buckets = new Map<string, { r: number; g: number; b: number; weight: number }>();
 
   for (let view = 0; view < rasters.length; view += 1) {
     const raster = rasters[view];
+    const viewWeight = Math.max(0.1, viewWeights?.[view] ?? 1);
     const mask = masks[view];
     const stride = Math.max(
       1,
@@ -674,8 +675,8 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48) {
         const b = Math.round(s.b / 4) * 4;
         const key = `${r}:${g}:${b}`;
         const existing = buckets.get(key);
-        if (existing) existing.weight += 1;
-        else buckets.set(key, { r, g, b, weight: 1 });
+        if (existing) existing.weight += viewWeight;
+        else buckets.set(key, { r, g, b, weight: viewWeight });
       }
     }
   }
@@ -701,6 +702,28 @@ function ditheredColor(
     clamp(rgb[1] + offset, 0, 255),
     clamp(rgb[2] + offset, 0, 255)
   ];
+}
+
+function materialAwareDitheredColor(
+  rgb: [number, number, number],
+  px: number,
+  py: number,
+  strength = 10
+): [number, number, number] {
+  const luma = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+  const chroma = Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
+
+  // Keep source material colors stable when a Bayer offset would become a
+  // visible fake highlight/shadow. This especially protects real blacks, dark
+  // metals and neutral surfaces while retaining normal dithering for textured
+  // and chromatic materials.
+  let factor = 1;
+  if (luma < 48) factor *= 0.35;
+  else if (luma < 86) factor *= 0.58;
+  else if (luma > 228) factor *= 0.52;
+  if (chroma < 18) factor *= 0.62;
+
+  return ditheredColor(rgb, px, py, strength * factor);
 }
 
 function nearestColor(
@@ -739,16 +762,79 @@ function blendMaterialPreserveLuma(
   side: Sample,
   t: number
 ): [number, number, number] {
-  const blended = blendRgb(front, side, t);
+  const amount = clamp(t, 0, 1);
+  const blended = blendRgb(front, side, amount);
   const frontLuma = 0.299 * front.r + 0.587 * front.g + 0.114 * front.b;
+  const sideLuma = 0.299 * side.r + 0.587 * side.g + 0.114 * side.b;
   const blendedLuma = 0.299 * blended[0] + 0.587 * blended[1] + 0.114 * blended[2];
   if (blendedLuma < 1) return blended;
-  const scale = clamp(frontLuma / blendedLuma, 0.82, 1.18);
+
+  // FRONT remains the material anchor. SIDE contributes luminance more gently
+  // than its raw RGB blend so hidden/lateral samples cannot wash out a dark
+  // source or artificially darken a bright one.
+  const allowedLumaShift = clamp(8 + amount * 24, 8, 32);
+  const rawShift = sideLuma - frontLuma;
+  const cappedShift = clamp(rawShift, -allowedLumaShift, allowedLumaShift);
+  const targetLuma = frontLuma + cappedShift * clamp(amount * 0.7, 0, 0.55);
+  const scale = clamp(targetLuma / blendedLuma, 0.78, 1.22);
+
   return [
     clamp(blended[0] * scale, 0, 255),
     clamp(blended[1] * scale, 0, 255),
     clamp(blended[2] * scale, 0, 255)
   ];
+}
+
+function materialAgreement(a: Sample, b: Sample): number {
+  if (!a.visible || !b.visible) return 0;
+  const distance = Math.sqrt(
+    rgbDistance([a.r, a.g, a.b], [b.r, b.g, b.b])
+  );
+  // Similar source colors are safe to interpolate; strong disagreement is
+  // treated as a material boundary and keeps FRONT dominant.
+  return 1 - clamp((distance - 18) / 150, 0, 1);
+}
+
+function localMaterialSample(
+  raster: Raster,
+  x: number,
+  y: number
+): Sample {
+  const cx = clamp(Math.round(x), 0, raster.width - 1);
+  const cy = clamp(Math.round(y), 0, raster.height - 1);
+  const samples: Sample[] = [];
+
+  for (let oy = -1; oy <= 1; oy += 1) {
+    for (let ox = -1; ox <= 1; ox += 1) {
+      const s = sampleAt(raster, cx + ox, cy + oy);
+      if (s.visible) samples.push(s);
+    }
+  }
+
+  if (samples.length <= 1) return sampleAt(raster, cx, cy);
+
+  const sortedR = samples.map((s) => s.r).sort((a, b) => a - b);
+  const sortedG = samples.map((s) => s.g).sort((a, b) => a - b);
+  const sortedB = samples.map((s) => s.b).sort((a, b) => a - b);
+  const mid = Math.floor(samples.length / 2);
+  const center = sampleAt(raster, cx, cy);
+
+  // Keep the exact source pixel dominant while taking only a small median
+  // support sample. This smooths JPEG/antialias noise without flattening real
+  // material boundaries or dark details.
+  const support: [number, number, number] = [
+    sortedR[mid],
+    sortedG[mid],
+    sortedB[mid]
+  ];
+  const supportWeight = center.visible ? 0.18 : 1;
+  return {
+    r: center.r * (1 - supportWeight) + support[0] * supportWeight,
+    g: center.g * (1 - supportWeight) + support[1] * supportWeight,
+    b: center.b * (1 - supportWeight) + support[2] * supportWeight,
+    a: Math.max(center.a, 255),
+    visible: true
+  };
 }
 
 function sampleMapped(raster: Raster, bounds: Bounds, nx: number, ny: number) {
@@ -1232,7 +1318,7 @@ function reconstructVisualHull(
       if (!front[y]?.[x]) continue;
 
       const nx = dimensions.width <= 1 ? 0.5 : x / (dimensions.width - 1);
-      const frontColor = sampleMapped(frontRaster, frontBounds, nx, ny);
+      const frontColor = localMaterialSample(frontRaster, frontBounds.minX + nx * (frontBounds.maxX - frontBounds.minX), frontBounds.minY + ny * (frontBounds.maxY - frontBounds.minY));
       const px = frontBounds.minX + nx * (frontBounds.maxX - frontBounds.minX);
       const py = frontBounds.minY + ny * (frontBounds.maxY - frontBounds.minY);
       const depthSample = adaptiveDepthAt(
@@ -1278,23 +1364,25 @@ function reconstructVisualHull(
         ];
 
         if (sideRaster && sideBounds && side?.[ySide]?.[z]) {
-          const sideColor = sampleMapped(sideRaster, sideBounds, nz, ny + sideYOffset);
-          // SIDE contributes most near the lateral surfaces and less through
-          // the volume center, where FRONT is the strongest material signal.
+          const sideX = sideBounds.minX + clamp(nz, 0, 1) * (sideBounds.maxX - sideBounds.minX);
+          const sideY = sideBounds.minY + clamp(ny + sideYOffset, 0, 1) * (sideBounds.maxY - sideBounds.minY);
+          const sideColor = localMaterialSample(sideRaster, sideX, sideY);
+          // SIDE contributes most near lateral surfaces. When FRONT/SIDE colors
+          // disagree strongly, reduce the blend so one material cannot bleed
+          // into another across the reconstructed volume.
           const edgeProximity = 1 - Math.min(nz, 1 - nz) * 2;
           const eased = edgeProximity * edgeProximity * (3 - 2 * edgeProximity);
-          color = blendMaterialPreserveLuma(
-            frontColor,
-            sideColor,
-            0.08 + eased * 0.54
-          );
+          const agreement = materialAgreement(frontColor, sideColor);
+          const sideWeight =
+            (0.08 + eased * 0.54) * (0.38 + agreement * 0.62);
+          color = blendMaterialPreserveLuma(frontColor, sideColor, sideWeight);
         }
 
         voxels.push({
           x,
           y,
           z,
-          c: nearestColor(ditheredColor(color, x, y + z, 3), paletteValues)
+          c: nearestColor(materialAwareDitheredColor(color, x, y + z, 3), paletteValues)
         });
       }
     }
@@ -1381,7 +1469,7 @@ function buildFlatSprite(
     for (let x = 0; x < width; x += 1) {
       if (!sourceMask[y]?.[x]) continue;
       const nx = width <= 1 ? 0.5 : x / (width - 1);
-      const frontColor = sampleMapped(raster, bounds, nx, ny);
+      const frontColor = localMaterialSample(raster, bounds.minX + nx * (bounds.maxX - bounds.minX), bounds.minY + ny * (bounds.maxY - bounds.minY));
       voxels.push({
         x, y, z: 0,
         c: nearestColor(applySharpness([frontColor.r, frontColor.g, frontColor.b], options.aiCategory === "swords" ? 1.18 : 1.12), paletteValues)
@@ -1567,7 +1655,7 @@ function buildSingleViewModel(
     for (let x = 0; x < width; x += 1) {
       if (!sourceMask[y]?.[x]) continue;
       const nx = width <= 1 ? 0.5 : x / (width - 1);
-      const frontColor = sampleMapped(raster, bounds, nx, ny);
+      const frontColor = localMaterialSample(raster, bounds.minX + nx * (bounds.maxX - bounds.minX), bounds.minY + ny * (bounds.maxY - bounds.minY));
       const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
       const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
       const d = adaptiveDepthAt(depthMap, raster, mask, px, py, options.aiCategory);
@@ -1581,7 +1669,7 @@ function buildSingleViewModel(
       const rawDepth = depthCap * (supportRatio / Math.max(maxRatio, 1)) * depthModulation;
       const finalDepth = Math.max(1, Math.min(depthCap, Math.round(rawDepth)));
       const colorIndex = nearestColor(
-        ditheredColor(
+        materialAwareDitheredColor(
           applySharpness([frontColor.r, frontColor.g, frontColor.b], sharpness),
           x,
           y,
@@ -1696,10 +1784,10 @@ function buildNonModel(
       for (let x = 0; x < width; x += 1) {
         if (!sourceMask[y]?.[x]) continue;
         const nx = width <= 1 ? 0.5 : x / (width - 1);
-        const frontColor = sampleMapped(raster, bounds, nx, ny);
+        const frontColor = localMaterialSample(raster, bounds.minX + nx * (bounds.maxX - bounds.minX), bounds.minY + ny * (bounds.maxY - bounds.minY));
         const finalDepth = zGrid[y][x];
         const colorIndex = nearestColor(
-          ditheredColor(
+          materialAwareDitheredColor(
             applySharpness([frontColor.r, frontColor.g, frontColor.b], options.aiCategory === "swords" ? 1.18 : options.aiCategory === "guns" ? 1.08 : 1),
             x, y,
             options.aiCategory === "swords" || options.aiCategory === "guns" ? 4 : 8
@@ -1770,7 +1858,7 @@ function buildNonModel(
           y,
           z,
           c: nearestColor(
-            ditheredColor(
+            materialAwareDitheredColor(
               applySharpness(
                 [colorSample.r, colorSample.g, colorSample.b],
                 options.aiCategory === "swords" ? 1.18 : options.aiCategory === "guns" ? 1.08 : 1
@@ -2305,7 +2393,8 @@ export async function imagesToVoxels(
   const palette = createPalette(
     rasters,
     masks,
-    normalized.mode === "model" ? 64 : 48
+    normalized.mode === "model" ? 64 : 48,
+    rasters.length > 1 ? [1.45, 0.85] : undefined
   );
   const paletteValues = paletteRgb(palette);
 
