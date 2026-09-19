@@ -5,6 +5,7 @@ import {
   styleFromCategory
 } from "@/lib/ai/aiCategories";
 import { profileById } from "@/lib/ai/styleProfiles";
+import { adaptiveAssetProfile, adaptiveHeightMax, type AdaptiveAssetProfile } from "@/lib/ai/assetProfiles";
 import { guessRevolve } from "@/lib/ai/revolve";
 import type {
   ImageMode,
@@ -1124,6 +1125,7 @@ function effectiveBudget(
     depth: number;
     projectedFill?: number;
     category?: ImageVoxelOptions["aiCategory"];
+    profileScale?: number;
   }
 ) {
   return dynamicVoxelBudget({
@@ -1135,7 +1137,8 @@ function effectiveBudget(
     height: geometry?.height ?? volumeSize,
     depth: geometry?.depth ?? (mode === "model" ? 8 : 1),
     projectedFill: geometry?.projectedFill,
-    category: geometry?.category
+    category: geometry?.category,
+    profileScale: geometry?.profileScale
   });
 }
 
@@ -1487,7 +1490,8 @@ function buildFlatSprite(
       height,
       depth: 1,
       projectedFill: maskFillRatio(sourceMask, { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height }),
-      category: options.aiCategory
+      category: options.aiCategory,
+      profileScale: options.adaptiveBudgetScale
     }
   );
   const limited = voxels.length <= budget ? voxels : spatialBudget(voxels, budget);
@@ -1714,7 +1718,8 @@ function buildSingleViewModel(
         width,
         height
       }),
-      category: options.aiCategory
+      category: options.aiCategory,
+      profileScale: options.adaptiveBudgetScale
     }
   );
 
@@ -1807,7 +1812,8 @@ function buildNonModel(
         height,
         depth: Math.max(1, options.heightMax),
         projectedFill: maskFillRatio(sourceMask, { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height }),
-        category: options.aiCategory
+        category: options.aiCategory,
+        profileScale: options.adaptiveBudgetScale
       }
     );
     const limitedQ = voxels.length <= budgetQ ? voxels : spatialBudget(voxels, budgetQ);
@@ -1885,7 +1891,8 @@ function buildNonModel(
       height,
       depth: Math.max(1, options.heightMax),
       projectedFill: maskFillRatio(sourceMask, { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height }),
-      category: options.aiCategory
+      category: options.aiCategory,
+      profileScale: options.adaptiveBudgetScale
     }
   );
   const limited = voxels.length <= budget ? voxels : spatialBudget(voxels, budget);
@@ -2124,7 +2131,8 @@ async function finalizeLocalAi(
   result: ImageImport,
   volumeSize: number,
   mask: boolean[][],
-  aiCategory?: ImageVoxelOptions["aiCategory"]
+  aiCategory?: ImageVoxelOptions["aiCategory"],
+  hasSide = false
 ): Promise<ImageImport> {
   try {
     const [{ recognizeFromMask }, { finishVoxels, evenPack }, { lintVoxels }, { aiCategoryProfile }] =
@@ -2137,7 +2145,21 @@ async function finalizeLocalAi(
     const guess = recognizeFromMask(mask);
     const resolvedCategory = aiCategory ?? guess.category;
     const profile = resolvedCategory ? aiCategoryProfile(resolvedCategory) : null;
+    const adaptive = resolvedCategory
+      ? adaptiveAssetProfile({
+          category: resolvedCategory,
+          features: guess.features,
+          evidence: guess.evidence,
+          width: mask[0]?.length ?? 0,
+          height: mask.length,
+          volumeSize,
+          mode: "model",
+          hasSide,
+          hasDepth: true
+        })
+      : null;
     const thinFeatures = Boolean(
+      adaptive?.thinFeatures ||
       profile?.thinFeatures ||
       guess.features.thin ||
       guess.kind === "sword" ||
@@ -2148,7 +2170,7 @@ async function finalizeLocalAi(
     const beforeFinish = voxels;
     const finished = finishVoxels(beforeFinish, volumeSize, guess.kind !== "tile", {
       thinFeatures,
-      shell: resolvedCategory === "swords"
+      shell: adaptive?.shell ?? resolvedCategory === "swords"
     });
     // Non-destructive finishing: if the finishing pass unexpectedly removes
     // a large fraction of a non-sword asset, keep the linted geometry and only
@@ -2203,36 +2225,60 @@ async function resolveCategoryAndDepth(
   mask: boolean[][],
   normalized: NormalizedImageVoxelOptions,
   depthMap: Float32Array | null,
-  useLocalAi: boolean
+  useLocalAi: boolean,
+  hasSide = false
 ): Promise<{
   category: NormalizedImageVoxelOptions["aiCategory"];
   depthMap: Float32Array | null;
   raster: Raster;
+  adaptiveProfile: AdaptiveAssetProfile | null;
   extraDiag?: LocalAiResult["diagnostics"];
 }> {
+  let adaptiveProfile: AdaptiveAssetProfile | null = null;
   let category = normalized.aiCategory;
   try {
     const { recognizeFromMask, resolveRecognizedCategory } = await import("@/lib/ai/recognize");
     const guess = recognizeFromMask(mask);
     category = resolveRecognizedCategory(guess, normalized.aiCategory).category;
+    adaptiveProfile = adaptiveAssetProfile({
+      category,
+      features: guess.features,
+      evidence: guess.evidence,
+      width: mask[0]?.length ?? 0,
+      height: mask.length,
+      volumeSize: normalized.volumeSize,
+      mode: normalized.mode,
+      hasSide,
+      hasDepth: Boolean(depthMap)
+    });
   } catch {
     category = normalized.aiCategory ?? "objects";
   }
   normalized.aiCategory = category;
   applyCategoryProfile(normalized);
+  if (adaptiveProfile && !normalized.output) {
+    normalized.heightMax = adaptiveHeightMax(
+      normalized.heightMax,
+      normalized.volumeSize,
+      adaptiveProfile
+    );
+    normalized.useDepthThickness = adaptiveProfile.useDepthHint;
+    normalized.adaptiveBudgetScale = adaptiveProfile.budgetScale;
+  }
   if (category === "swords" || normalized.output === "2d") depthMap = null;
   const want =
     useLocalAi &&
     normalized.output !== "2d" &&
     category !== "swords" &&
     (aiCategoryWantsDepth(category, normalized.mode) || normalized.useDepthThickness === true);
-  if (!want) return { category, depthMap: null, raster };
-  if (depthMap) return { category, depthMap, raster };
+  if (!want) return { category, depthMap: null, raster, adaptiveProfile };
+  if (depthMap) return { category, depthMap, raster, adaptiveProfile };
   const again = await applyLocalAiRaster(raster, { depth: true, category });
   return {
     category,
     depthMap: again.depth,
     raster: again.raster,
+    adaptiveProfile,
     extraDiag: again.diagnostics
   };
 }
@@ -2275,7 +2321,6 @@ export async function imageToVoxels(
   raster = resolved.raster;
   depthMap = resolved.depthMap;
   normalized.aiCategory = resolved.category;
-  applyCategoryProfile(normalized);
   if (resolved.extraDiag) aiDiag = resolved.extraDiag;
   if (normalized.mode === "model" || useLocalAi) {
     mask = cleanModelMask(buildMask(raster, normalized.mode), raster, normalized.aiCategory);
@@ -2292,7 +2337,7 @@ export async function imageToVoxels(
 
   const withStatus = async (result: ImageImport) => {
     const finished = useLocalAi
-      ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory)
+      ? await finalizeLocalAi(result, normalized.volumeSize, mask, normalized.aiCategory, false)
       : result;
     return { ...finished, aiStatus: formatAiStatus(aiDiag) };
   };
@@ -2375,11 +2420,20 @@ export async function imagesToVoxels(
       masks[0],
       normalized,
       frontDepth,
-      useLocalAi
+      useLocalAi,
+      Boolean(views.side)
     );
     rasters[0] = resolved.raster;
     frontDepth = resolved.depthMap;
     normalized.aiCategory = resolved.category;
+    if (resolved.adaptiveProfile && !normalized.output) {
+      normalized.heightMax = adaptiveHeightMax(
+        normalized.heightMax,
+        normalized.volumeSize,
+        resolved.adaptiveProfile
+      );
+      normalized.useDepthThickness = resolved.adaptiveProfile.useDepthHint;
+    }
     if (resolved.extraDiag) aiDiag = resolved.extraDiag;
     masks[0] = cleanModelMask(
       buildMask(rasters[0], normalized.mode),
@@ -2417,7 +2471,8 @@ export async function imagesToVoxels(
         height: frontBounds.height,
         depth: sideBounds?.width ?? Math.max(1, normalized.heightMax),
         projectedFill: maskFillRatio(frontMask, frontBounds),
-        category: normalized.aiCategory
+        category: normalized.aiCategory,
+        profileScale: normalized.adaptiveBudgetScale
       }
     );
 
@@ -2446,7 +2501,7 @@ export async function imagesToVoxels(
         frontDepth
       );
       const finished = useLocalAi
-        ? await finalizeLocalAi(singleView, normalized.volumeSize, frontMask, normalized.aiCategory)
+        ? await finalizeLocalAi(singleView, normalized.volumeSize, frontMask, normalized.aiCategory, false)
         : singleView;
       return {
         ...finished,
@@ -2489,7 +2544,7 @@ export async function imagesToVoxels(
       frontDepth
     );
     const finished = useLocalAi
-      ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask, normalized.aiCategory)
+      ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask, normalized.aiCategory, true)
       : hull;
     return {
       ...finished,
@@ -2509,7 +2564,7 @@ export async function imagesToVoxels(
     frontDepth
   );
   const finished = useLocalAi
-    ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask, normalized.aiCategory)
+    ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask, normalized.aiCategory, Boolean(views.side))
     : flat;
   return { ...finished, aiStatus: formatAiStatus(aiDiag) };
 }
