@@ -39,8 +39,8 @@ export const ENGINE_PROFILES: Record<EngineId, EngineProfile> = {
     textureFilter: "nearest",
     metallicFactor: 0,
     roughnessFactor: 1,
-    doubleSided: true,
-    notes: "1 unit = 1 m after import · pivot at base · Unlit or Lit + atlas NEAREST"
+    doubleSided: false,
+    notes: "1 unit = 1 m after import · pivot at base · Unlit + atlas NEAREST · single root"
   },
   godot: {
     id: "godot",
@@ -92,7 +92,7 @@ export const UNITY_2D_PIXEL = {
   pivot: "bottom-center" as const,
   upAxis: "y" as const,
   textureFilter: "nearest" as const,
-  doubleSided: true,
+  doubleSided: false,
   notes: "1 voxel = 1 unit · PPU 16 · Unlit + NEAREST · pivot bottom-center of content"
 };
 
@@ -190,7 +190,7 @@ export const VOXEL_MATERIAL_CONTRACT: MaterialContract = {
   name: "voxel-atlas",
   metallicFactor: 0,
   roughnessFactor: 1,
-  doubleSided: true,
+  doubleSided: false,
   nearestFilter: true,
   unlitPreferred: true
 };
@@ -252,8 +252,8 @@ export function gameReadyChecklist(): string[] {
     "Up axis: Y (glTF / Unity / Godot)",
     "Mesh: greedy quads (not one cube = one mesh)",
     "Material: single atlas, metallic 0, roughness 1, NEAREST filter",
-    "Hierarchy: mesh root + Socket_* empty nodes",
-    "Formats: GLB textured (primary), VOX, OBJ archive, PNG ortho for 2D",
+    "Hierarchy: single root → mesh child + Socket_*",
+    "Formats: GLB textured unlit (primary), VOX, OBJ archive, PNG ortho for 2D",
     "No editor-only lights baked into the file"
   ];
 }
