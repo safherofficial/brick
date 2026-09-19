@@ -99,6 +99,16 @@ export const UNITY_2D_PIXEL = {
 /** Default export = Unity-compatible (most common Brick target). */
 export const DEFAULT_ENGINE: EngineId = "unity";
 
+/** Floor: never below 0.01 m/voxel (256-grid). */
+export const UNITY_MIN_UNIT_METERS = 0.01;
+
+export const UNITY_SWORD_HEIGHT_METERS = 1.10;
+export const UNITY_RIFLE_HEIGHT_METERS = 1.00;
+export const UNITY_GUN_HEIGHT_METERS = 0.35;
+export const UNITY_PROP_HEIGHT_METERS = 1.50;
+export const UNITY_PROP_HEIGHT_MIN_METERS = 0.4;
+export const UNITY_PROP_HEIGHT_MAX_METERS = 2.5;
+
 export function engineExportOptions(engine: EngineId = DEFAULT_ENGINE): MeshExportOptions {
   const p = ENGINE_PROFILES[engine];
   return {
@@ -106,6 +116,60 @@ export function engineExportOptions(engine: EngineId = DEFAULT_ENGINE): MeshExpo
     pivot: p.pivot,
     upAxis: p.upAxis
   };
+}
+
+/** World-space target height (long axis after bottom-center pivot). */
+export function unityTargetHeightMeters(shape?: string | null): number {
+  const kind = String(shape ?? "prop").toLowerCase();
+  if (kind === "sword") return UNITY_SWORD_HEIGHT_METERS;
+  if (kind === "rifle" || kind === "rifles") return UNITY_RIFLE_HEIGHT_METERS;
+  if (kind === "gun" || kind === "guns") return UNITY_GUN_HEIGHT_METERS;
+  const targetHeight = UNITY_PROP_HEIGHT_METERS;
+  return Math.min(
+    UNITY_PROP_HEIGHT_MAX_METERS,
+    Math.max(UNITY_PROP_HEIGHT_MIN_METERS, targetHeight)
+  );
+}
+
+/**
+ * Unity meters per voxel. unitMeters = targetHeight / voxelSpanY.
+ * tile / output 2d stays 1 voxel = 1 unit. Pivot remains bottom-center.
+ */
+export function unityUnitMeters(
+  shape: string | null | undefined,
+  voxelSpanY: number,
+  output?: "2d" | "25d"
+): number {
+  if (output === "2d") return UNITY_2D_PIXEL.unitMeters;
+  const kind = String(shape ?? "prop").toLowerCase();
+  if (kind === "tile") return UNITY_2D_PIXEL.unitMeters;
+  const span = Math.max(1, voxelSpanY);
+  const targetHeight = unityTargetHeightMeters(kind);
+  return Math.max(UNITY_MIN_UNIT_METERS, targetHeight / span);
+}
+
+export type UnityBoxCollider = {
+  type: "box";
+  center: [number, number, number];
+  size: [number, number, number];
+};
+
+/** World-space AABB box collider. 1 voxel → size [u,u,u], center at half height. */
+export function unityBoxCollider(
+  min: [number, number, number],
+  max: [number, number, number]
+): UnityBoxCollider {
+  const size: [number, number, number] = [
+    max[0] - min[0],
+    max[1] - min[1],
+    max[2] - min[2]
+  ];
+  const center: [number, number, number] = [
+    (min[0] + max[0]) / 2,
+    (min[1] + max[1]) / 2,
+    (min[2] + max[2]) / 2
+  ];
+  return { type: "box", center, size };
 }
 
 /** Triangle / voxel budgets by quality tier (static props). */
@@ -206,6 +270,8 @@ export function buildGlbExtras(input: {
   shape?: ShapeKind;
   output?: "2d" | "25d";
   pixelsPerUnit?: number;
+  unitMeters?: number;
+  collider?: UnityBoxCollider | null;
   mesh?: {
     quads: number;
     triangles: number;
@@ -221,7 +287,7 @@ export function buildGlbExtras(input: {
       generator: GENERATOR_NAME,
       gameReady: true,
       engine: twoD ? UNITY_2D_PIXEL.id : profile.id,
-      unitMeters: profile.unitMeters,
+      unitMeters: input.unitMeters ?? profile.unitMeters,
       pivot: profile.pivot,
       upAxis: profile.upAxis,
       voxelCount: input.voxelCount,
@@ -232,6 +298,7 @@ export function buildGlbExtras(input: {
       sockets: input.shape ? SHAPE_SOCKETS[input.shape].map((s) => s.name) : ["Socket_Grip"],
       output: input.output ?? null,
       pixelsPerUnit: twoD ? (input.pixelsPerUnit ?? UNITY_2D_PIXEL.pixelsPerUnit) : null,
+      collider: input.collider ?? null,
       mesh: input.mesh
         ? {
             quads: input.mesh.quads,
@@ -247,12 +314,13 @@ export function buildGlbExtras(input: {
 
 export function gameReadyChecklist(): string[] {
   return [
-    "Scale: 0.1 m per voxel (1 unit = 1 m in engine after import)",
+    "Scale: Unity target height / voxelSpanY (sword 1.10 m, rifle 1.00 m, gun 0.35 m, prop 1.50 m, min 0.01 m/voxel; 2d tile 1 voxel = 1 unit)",
     "Pivot: bottom-center (floor props / weapon base)",
     "Up axis: Y (glTF / Unity / Godot)",
     "Mesh: greedy quads (not one cube = one mesh)",
     "Material: single atlas, metallic 0, roughness 1, NEAREST filter",
     "Hierarchy: single root → mesh child + Socket_*",
+    "Collider: AABB box in extras (type box, no mesh collider)",
     "Formats: GLB textured unlit (primary), VOX, OBJ archive, PNG ortho for 2D",
     "No editor-only lights baked into the file"
   ];
