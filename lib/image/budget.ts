@@ -13,6 +13,8 @@ export type DynamicVoxelBudgetOptions = {
   depth: number;
   projectedFill?: number;
   category?: VoxelBudgetCategory;
+  /** Narrow adaptive profile nudge; ignored when requested is explicit. */
+  profileScale?: number;
 };
 
 function clamp(n: number, lo: number, hi: number) {
@@ -83,8 +85,9 @@ export function dynamicVoxelBudget(options: DynamicVoxelBudgetOptions) {
   }
 
   const baseBudget = Math.min(hardCap, physical * baseRatio);
+  const profileScale = clamp(options.profileScale ?? 1, 0.96, 1.1);
   return roundBudget(
-    baseBudget * clamp(qualityRatio, 0.84, 1),
+    baseBudget * clamp(qualityRatio, 0.84, 1) * profileScale,
     dynamicMinimum,
     hardCap
   );
