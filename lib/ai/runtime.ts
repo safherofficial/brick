@@ -1,4 +1,11 @@
 import type { InferenceSession } from "onnxruntime-web";
+import {
+  ONNX_LOAD_TIMEOUT_MS,
+  ONNX_PROBE_TIMEOUT_MS,
+  ONNX_RUN_TIMEOUT_MS,
+  withTimeout
+} from "@/lib/prod/timeout";
+import { localAiSupported } from "@/lib/prod/compat";
 
 export type AiModelId = "segment" | "depth";
 
@@ -34,20 +41,33 @@ const inferenceTails = new Map<AiModelId, Promise<void>>();
 const ORT_WASM_LOCAL = "/ort/";
 const ORT_WASM_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
 
+function resetModel(id: AiModelId) {
+  sessions.delete(id);
+  resolved.delete(id);
+}
+
 async function probe(url: string) {
   try {
-    const head = await fetch(url, { method: "HEAD", mode: "cors", cache: "force-cache" });
+    const head = await withTimeout(
+      fetch(url, { method: "HEAD", mode: "cors", cache: "force-cache" }),
+      ONNX_PROBE_TIMEOUT_MS,
+      "onnx-probe"
+    );
     if (head.ok) return true;
   } catch {
     /* some hosts reject HEAD */
   }
   try {
-    const get = await fetch(url, {
-      method: "GET",
-      mode: "cors",
-      cache: "force-cache",
-      headers: { Range: "bytes=0-64" }
-    });
+    const get = await withTimeout(
+      fetch(url, {
+        method: "GET",
+        mode: "cors",
+        cache: "force-cache",
+        headers: { Range: "bytes=0-64" }
+      }),
+      ONNX_PROBE_TIMEOUT_MS,
+      "onnx-probe"
+    );
     return get.ok || get.status === 206;
   } catch {
     return false;
@@ -108,7 +128,11 @@ async function createSession(
     enableMemPattern: true
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return ort.InferenceSession.create(url, options as any);
+  return withTimeout(
+    ort.InferenceSession.create(url, options as any),
+    ONNX_LOAD_TIMEOUT_MS,
+    "onnx-load"
+  );
 }
 
 export async function loadModel(id: AiModelId) {
@@ -116,6 +140,7 @@ export async function loadModel(id: AiModelId) {
   if (existing) return existing;
 
   const job = (async () => {
+    if (!localAiSupported()) return null;
     const candidates = modelCandidates(id);
     let ort: typeof import("onnxruntime-web");
     try {
@@ -142,6 +167,9 @@ export async function loadModel(id: AiModelId) {
   })();
 
   sessions.set(id, job);
+  void job.then((session) => {
+    if (!session) resetModel(id);
+  });
   return job;
 }
 
@@ -159,7 +187,10 @@ export async function runModel(
   inferenceTails.set(id, current);
   await previous;
   try {
-    return await session.run(feeds);
+    return await withTimeout(session.run(feeds), ONNX_RUN_TIMEOUT_MS, "onnx-run");
+  } catch (error) {
+    resetModel(id);
+    throw error;
   } finally {
     release();
     if (inferenceTails.get(id) === current) inferenceTails.delete(id);
