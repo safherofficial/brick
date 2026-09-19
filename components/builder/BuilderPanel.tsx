@@ -259,7 +259,7 @@ export function BuilderPanel({
         {imageMode === "model"
           ? sideFile
             ? "Side image ready · MODEL hull active"
-            : "Side image required for MODEL (visual hull)"
+            : "Side image optional · FRONT-only MODEL estimate active"
           : sideFile
             ? "Side image ready"
             : "Side image optional"}
@@ -312,7 +312,7 @@ export function BuilderPanel({
               setImageMode("model");
               setSymmetrize(aiCategoryProfile(id).symmetrize);
               if (frontFile && !sideFile) {
-                notify(`${id.toUpperCase()} · ADD SIDE PNG FOR FULL HULL`);
+                notify(`${id.toUpperCase()} · SIDE PNG OPTIONAL · IMPROVES FULL HULL`);
               }
               if (frontFile) window.setTimeout(() => void rebuildMultiView(), 0);
             }}
@@ -390,7 +390,7 @@ export function BuilderPanel({
       )}
       {imageMode === "model" && !sideFile && (
         <>
-          <p className="foldHint">Preview depth until SIDE is added</p>
+          <p className="foldHint">Depth estimated from FRONT · SIDE improves full hull</p>
           <div className="viewRow">
             {[4, 8, 12, 16].map((n) => (
               <button
@@ -431,7 +431,7 @@ export function BuilderPanel({
         onClick={() => sideRef.current?.click()}
         disabled={busy || !frontFile}
       >
-        {imageMode === "model" && !sideFile ? "SIDE PNG (REQUIRED)" : "SIDE PNG"}
+        {imageMode === "model" && !sideFile ? "SIDE PNG (OPTIONAL)" : "SIDE PNG"}
       </button>
       <p className="foldHint">
         LOCAL AI · ONNX segment/depth when models are present · falls back to heuristics · 32–256
