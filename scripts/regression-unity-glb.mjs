@@ -1,13 +1,18 @@
 /**
- * P11 Unity GLB primary export — contract checks.
- * Run: node scripts/regression-unity-glb.mjs
+ * P11 Unity GLB primary export — executes the real exporter.
+ *
+ * Builds a synthetic voxel volume, calls the real exportGlbTextured() from
+ * lib/voxelGlb.ts, parses the GLB it actually produces, and asserts on that
+ * real output. Previous version of this script read lib/voxelGlb.ts as text
+ * and grepped for substrings — it could not detect a broken export, only a
+ * renamed literal.
+ *
+ * Run: node --experimental-strip-types --import ./scripts/_register-aliases.mjs scripts/regression-unity-glb.mjs
  */
-import { readFile } from "node:fs/promises";
-
-const glb = await readFile(new URL("../lib/voxelGlb.ts", import.meta.url), "utf8");
-const builder = await readFile(new URL("../components/builder/Builder.tsx", import.meta.url), "utf8");
-const ready = await readFile(new URL("../lib/ai/gameReady.ts", import.meta.url), "utf8");
-const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+import { exportGlbTextured } from "@/lib/voxelGlb.ts";
+import { VoxelVolume, DEFAULT_PALETTE } from "@/lib/voxelEngine.ts";
+import { ENGINE_PROFILES } from "@/lib/ai/gameReady.ts";
+import { parseGlbJson, buildBox } from "./_test-utils.mjs";
 
 let failed = 0;
 function assert(name, ok) {
@@ -19,23 +24,41 @@ function assert(name, ok) {
   }
 }
 
-const textured = glb.slice(glb.indexOf("export async function exportGlbTextured"));
+const volume = new VoxelVolume(64);
+buildBox(volume, { x0: 0, x1: 2, y0: 0, y1: 5, z0: 0, z1: 1 }, 1);
 
-assert("Builder imports textured GLB", builder.includes("import { exportGlbTextured } from \"@/lib/voxelGlb\""));
-assert("Builder does not download COLOR_0 GLB", !builder.includes("await exportGlb("));
-assert("Builder passes asset name", builder.includes("name: title"));
-assert("Builder passes recognized shape", builder.includes("shape: lastShape"));
-assert("Textured GLB is unlit", textured.includes("KHR_materials_unlit"));
-assert("Textured GLB is single sided", textured.includes("doubleSided: false"));
-assert("Scene has a single root node", textured.includes("scenes: [{ nodes: [0], name: resolved.name }]"));
-assert("Root owns mesh + sockets", textured.includes("{ name: resolved.name, children: rootChildren }"));
-assert("Mesh is a child node", textured.includes("{ mesh: 0, name: `${resolved.name}_Mesh` }"));
-assert("Extras engine is unity", textured.includes('engine: "unity"'));
-assert("Nearest atlas sampler remains", textured.includes("magFilter: 9728"));
-assert("Unity profile is single sided", ready.includes("id: \"unity\"") && ready.includes("Unlit + atlas NEAREST · single root"));
-assert("Material contract is single sided", ready.includes("name: \"voxel-atlas\"") && /doubleSided: false/.test(ready.slice(ready.indexOf("VOXEL_MATERIAL_CONTRACT"))));
-assert("Godot profile stayed double sided", /id: \"godot\"[\s\S]*?doubleSided: true/.test(ready));
-assert("test script includes P11", String(pkg.scripts?.test || "").includes("regression-unity-glb.mjs"));
+const glb = await exportGlbTextured(volume, DEFAULT_PALETTE, {
+  name: "Test Prop",
+  shape: "prop"
+});
+const json = parseGlbJson(glb);
+
+assert("GLB parses as valid glTF 2.0", json.asset?.version === "2.0");
+assert("extensionsUsed includes KHR_materials_unlit", json.extensionsUsed?.includes("KHR_materials_unlit"));
+assert("material extension is unlit", !!json.materials?.[0]?.extensions?.KHR_materials_unlit);
+assert("material name is voxel-atlas", json.materials?.[0]?.name === "voxel-atlas");
+assert("Unity material is single sided", json.materials?.[0]?.doubleSided === false);
+assert("scene has a single root node", json.scenes?.[0]?.nodes?.length === 1);
+const rootIndex = json.scenes[0].nodes[0];
+const root = json.nodes[rootIndex];
+assert("root node owns mesh + collider + sockets as children", Array.isArray(root.children) && root.children.length >= 3);
+const meshNode = json.nodes[root.children[0]];
+assert("first root child is the mesh node", meshNode.mesh === 0 && meshNode.name.endsWith("_Mesh"));
+const colliderNode = root.children
+  .map((i) => json.nodes[i])
+  .find((n) => n.name === "Collider_Box");
+assert("a Collider_Box node exists among root children", !!colliderNode);
+assert("Collider_Box node is not itself rendered (no mesh)", colliderNode && colliderNode.mesh === undefined);
+assert("nearest-neighbor atlas sampler (magFilter 9728)", json.samplers?.[0]?.magFilter === 9728);
+assert("extras report the unity engine id", json.asset?.extras?.brick?.engine === "unity");
+assert("extras report the voxel-atlas material contract", json.asset?.extras?.brick?.material === "voxel-atlas");
+assert("extras report nearest texture filtering", json.asset?.extras?.brick?.textureFilter === "nearest");
+assert("extras carry a box collider", json.asset?.extras?.brick?.collider?.type === "box");
+
+// Cross-check against the live engine profiles (not a hardcoded regex) —
+// Unity stays single-sided while Godot intentionally stays double-sided.
+assert("Unity profile is single sided", ENGINE_PROFILES.unity.doubleSided === false);
+assert("Godot profile stayed double sided", ENGINE_PROFILES.godot.doubleSided === true);
 
 if (failed) {
   console.error(`\n${failed} P11 assertion(s) failed`);
