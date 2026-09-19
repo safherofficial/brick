@@ -14,7 +14,9 @@
     "check:deploy": "node scripts/check-deploy.mjs",
     "test:hardening": "node scripts/regression-hardening.mjs",
     "test:unity-glb": "node scripts/regression-unity-glb.mjs",
-    "test": "node scripts/regression-hull.mjs && node scripts/golden-import.mjs && node --experimental-strip-types scripts/regression-assets.mjs && node scripts/regression-local-ai.mjs && node scripts/regression-game-ready.mjs && node --experimental-strip-types scripts/regression-recognition.mjs && node --experimental-strip-types scripts/regression-reconstruction.mjs && node --experimental-strip-types scripts/regression-material.mjs && node --experimental-strip-types scripts/regression-profiles.mjs && node scripts/regression-performance.mjs && node --experimental-strip-types scripts/regression-quality-control.mjs && node scripts/regression-hardening.mjs && node scripts/check-deploy.mjs && node scripts/regression-unity-glb.mjs",
+    "test:unity-scale": "node scripts/regression-unity-scale.mjs",
+    "test:unity-collider": "node scripts/regression-unity-collider.mjs",
+    "test": "node scripts/regression-hull.mjs && node scripts/golden-import.mjs && node --experimental-strip-types scripts/regression-assets.mjs && node scripts/regression-local-ai.mjs && node scripts/regression-game-ready.mjs && node --experimental-strip-types scripts/regression-recognition.mjs && node --experimental-strip-types scripts/regression-reconstruction.mjs && node --experimental-strip-types scripts/regression-material.mjs && node --experimental-strip-types scripts/regression-profiles.mjs && node scripts/regression-performance.mjs && node --experimental-strip-types scripts/regression-quality-control.mjs && node scripts/regression-hardening.mjs && node scripts/check-deploy.mjs && node scripts/regression-unity-glb.mjs && node scripts/regression-unity-scale.mjs && node scripts/regression-unity-collider.mjs",
     "test:game-ready": "node scripts/regression-game-ready.mjs",
     "test:recognition": "node --experimental-strip-types scripts/regression-recognition.mjs",
     "test:reconstruction": "node --experimental-strip-types scripts/regression-reconstruction.mjs",
@@ -34,6 +36,14 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "typescript": "5.9.3"
+  }
+}
   },
   "devDependencies": {
     "@types/node": "26.4.1",
