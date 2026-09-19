@@ -26,6 +26,8 @@ export type ImageImport = {
   aiStatus?: string;
   shape?: string;
   category?: AiCategory;
+  /** P9 automatic quality-control result for the final voxel asset. */
+  qualityControl?: import("@/lib/image/qualityControl").QualityControlResult;
 };
 
 export type ImageVoxelOptions = {
