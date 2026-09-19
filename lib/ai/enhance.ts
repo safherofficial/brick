@@ -3,7 +3,7 @@
  * Local ONNX enhance: U2Net segment → alpha matte, optional MiDaS depth.
  * Tuned for 2.5D voxel fidelity (sharp silhouettes, less halo, thin-feature safe).
  */
-import { aiAvailable, loadModel } from "@/lib/ai/runtime";
+import { aiAvailable, loadModel, runModel } from "@/lib/ai/runtime";
 import type { AiCategory } from "@/lib/ai/aiCategories";
 import { aiCategoryProfile } from "@/lib/ai/aiCategories";
 
@@ -107,7 +107,13 @@ function rasterToCanvas(raster: AiRaster) {
   return canvas;
 }
 
-function toNchw(raster: AiRaster, width: number, height: number, imagenet: boolean) {
+function toNchw(
+  raster: AiRaster,
+  width: number,
+  height: number,
+  imagenet: boolean,
+  sourceCanvas?: HTMLCanvasElement
+) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -120,7 +126,7 @@ function toNchw(raster: AiRaster, width: number, height: number, imagenet: boole
   } catch {
     /* ignore */
   }
-  ctx.drawImage(rasterToCanvas(raster), 0, 0, width, height);
+  ctx.drawImage(sourceCanvas ?? rasterToCanvas(raster), 0, 0, width, height);
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const plane = width * height;
   const data = new Float32Array(3 * plane);
@@ -351,7 +357,8 @@ export function hasCutoutAlpha(raster: AiRaster) {
 
 async function runMap(
   id: "segment" | "depth",
-  raster: AiRaster
+  raster: AiRaster,
+  sourceCanvas?: HTMLCanvasElement
 ): Promise<{ map: Float32Array; sizeLabel: string } | null> {
   const session = await loadModel(id);
   if (!session) return null;
@@ -381,13 +388,13 @@ async function runMap(
   const cap = id === "segment" ? 512 : 384;
   const width = Math.min(cap, size.width);
   const height = Math.min(cap, size.height);
-  const tensor = new ort.Tensor("float32", toNchw(raster, width, height, true), [
+  const tensor = new ort.Tensor("float32", toNchw(raster, width, height, true, sourceCanvas), [
     1,
     3,
     height,
     width
   ]);
-  const result = await session.run({ [inputName]: tensor });
+  const result = await runModel(id, session, { [inputName]: tensor });
   const output = result[session.outputNames[0]] as unknown as {
     dims: readonly number[];
     data: Float32Array;
@@ -483,12 +490,16 @@ export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = 
     height: raster.height,
     rgba: new Uint8ClampedArray(raster.rgba)
   };
+  // Reuse one source canvas for both segmentation and depth inference.
+  // This avoids rebuilding a full-resolution ImageData/canvas for each model
+  // pass while keeping the input raster immutable.
+  const sourceCanvas = wantSegment || wantDepth ? rasterToCanvas(raster) : undefined;
 
   const matte = matteParamsFor(options.category);
 
   if (wantSegment) {
     try {
-      const raw = await runMap("segment", raster);
+      const raw = await runMap("segment", raster, sourceCanvas);
       if (raw) {
         diag.segmentSize = raw.sizeLabel;
         let kept = 0;
@@ -527,7 +538,7 @@ export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = 
   let depth: Float32Array | null = null;
   if (wantDepth) {
     try {
-      const d = await runMap("depth", raster);
+      const d = await runMap("depth", raster, sourceCanvas);
       if (d) {
         const alphaPlane = new Float32Array(next.width * next.height);
         for (let i = 0; i < alphaPlane.length; i += 1) alphaPlane[i] = next.rgba[i * 4 + 3] / 255;
