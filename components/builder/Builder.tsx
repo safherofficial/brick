@@ -37,6 +37,7 @@ import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxe
 import { unityExportOptions, unityVoxelSpanY } from "@/lib/ai/unity";
 import { buildImageOptions } from "@/lib/ai/buildOptions";
 import { exportVolumePngOrtho } from "@/lib/exportPngOrtho";
+import { buildUnityPack } from "@/lib/ai/unityPack";
 import type { OutputLock } from "@/lib/imageVoxel";
 import { type AiCategory } from "@/lib/ai/aiCategories";
 import {
@@ -581,7 +582,7 @@ export default function Builder() {
     [attachFront, bump, notify]
   );
   const exportFiles = useCallback(
-    async (kind: "json" | "vox" | "glb" | "obj" | "png") => {
+    async (kind: "json" | "vox" | "glb" | "obj" | "png" | "unity-pack") => {
       const name = title.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "brick";
       if (kind === "json") {
         downloadText(
@@ -616,6 +617,30 @@ export default function Builder() {
         };
         const bytes = await exportGlbTextured(volumeRef.current, palette, options);
         downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
+        return;
+      }
+      if (kind === "unity-pack") {
+        const options = {
+          ...unityExportOptions({
+            voxelSpanY: unityVoxelSpanY(volumeRef.current),
+            output: outputLock === "2d" ? "2d" : undefined,
+            name: title,
+            shape: lastShape
+          })
+        };
+        const glbBytes = await exportGlbTextured(volumeRef.current, palette, options);
+        const sprite =
+          outputLock === "2d"
+            ? exportVolumePngOrtho(volumeRef.current, palette, 16)
+            : undefined;
+        const pack = buildUnityPack({
+          name,
+          glb: new Uint8Array(glbBytes),
+          sprite: sprite
+            ? { png: sprite.png, meta: sprite.unityMeta }
+            : undefined
+        });
+        downloadBytes(pack, `${name}-unity.zip`, "application/zip");
         return;
       }
       const archive = await exportObjArchive(
