@@ -29,6 +29,7 @@ export const MODEL_FILES: Record<AiModelId, string[]> = {
 
 const sessions = new Map<AiModelId, Promise<InferenceSession | null>>();
 const resolved = new Map<AiModelId, Promise<string | null>>();
+const inferenceTails = new Map<AiModelId, Promise<void>>();
 
 const ORT_WASM_LOCAL = "/ort/";
 const ORT_WASM_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
@@ -142,6 +143,27 @@ export async function loadModel(id: AiModelId) {
 
   sessions.set(id, job);
   return job;
+}
+
+
+export async function runModel(
+  id: AiModelId,
+  session: InferenceSession,
+  feeds: Parameters<InferenceSession["run"]>[0]
+) {
+  const previous = inferenceTails.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  inferenceTails.set(id, current);
+  await previous;
+  try {
+    return await session.run(feeds);
+  } finally {
+    release();
+    if (inferenceTails.get(id) === current) inferenceTails.delete(id);
+  }
 }
 
 export async function aiAvailable() {
