@@ -1,5 +1,4 @@
 "use client";
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThreeEvent } from "@react-three/fiber";
 import {
@@ -30,7 +29,8 @@ import {
   downloadText,
   exportObjArchive,
   exportVox,
-  importVox
+  importVox,
+  zipStore
 } from "@/lib/voxelExport";
 import { exportGlbTextured } from "@/lib/voxelGlb";
 import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxel";
@@ -64,7 +64,6 @@ export default function Builder() {
   const sideRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<number | null>(null);
   const imageJobRef = useRef(0);
-
   const [rev, setRev] = useState(0);
   const [title, setTitle] = useState("UNTITLED");
   const [tool, setTool] = useState<Tool>("attach");
@@ -103,7 +102,6 @@ export default function Builder() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
-
   const volume = volumeRef.current;
   const count = volume.count;
   const creditLabel = creditsLeft < 0 ? "PRO" : `${creditsLeft} LEFT`;
@@ -120,7 +118,6 @@ export default function Builder() {
   }, []);
 
   const refreshCredits = useCallback(() => setCreditsLeft(remainingApplies()), []);
-
   const imageOptions = useCallback(
     () =>
       buildImageOptions({
@@ -136,7 +133,6 @@ export default function Builder() {
       }),
     [imageCategory, imageHeight, imageMode, outputLock, symmetrize]
   );
-
   const commit = useCallback(
     (deltas: Delta[]) => {
       if (!deltas.length) return;
@@ -156,7 +152,6 @@ export default function Builder() {
   useEffect(() => {
     persist();
   }, [persist, rev]);
-
   useEffect(() => {
     const draft = loadDraft();
     if (!draft) return;
@@ -171,7 +166,6 @@ export default function Builder() {
   useEffect(() => {
     refreshCredits();
   }, [refreshCredits]);
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
@@ -223,7 +217,6 @@ export default function Builder() {
     },
     [imageOptions, notify]
   );
-
   const rebuildMultiView = useCallback(async () => {
     if (!frontFile) {
       notify("Add a front image first");
@@ -231,7 +224,6 @@ export default function Builder() {
     }
     await regenerateMultiView({ front: frontFile, side: sideFile ?? undefined });
   }, [frontFile, notify, regenerateMultiView, sideFile]);
-
   const attachFront = useCallback(
     async (file: File) => {
       const job = ++imageJobRef.current;
@@ -279,7 +271,6 @@ export default function Builder() {
     },
     [imageOptions, notify, sideFile]
   );
-
   const refreshSideMetrics = useCallback(
     async (front: File, side: File) => {
       try {
@@ -362,7 +353,6 @@ export default function Builder() {
     },
     [notify]
   );
-
   const attachSide = useCallback(
     async (file: File) => {
       if (!frontFile) {
@@ -375,7 +365,6 @@ export default function Builder() {
     },
     [frontFile, notify, regenerateMultiView, refreshSideMetrics]
   );
-
   const applyImage = useCallback(async () => {
     if (!pendingImage) return;
     const gate = await consumeImageApplyRemote(
@@ -420,7 +409,6 @@ export default function Builder() {
     bump();
     notify(`APPLIED · ${result.count ?? result.voxels.length} VX`);
   }, [bump, notify, pendingHash, pendingImage, pendingName, refreshCredits]);
-
   const frameContent = useCallback(() => {
     const cells: { x: number; y: number; z: number }[] = volumeRef.current
       .voxels()
@@ -445,7 +433,6 @@ export default function Builder() {
     }
     notify("FRAME · CONTENT");
   }, [notify, pendingImage]);
-
   const undo = useCallback(() => {
     historyRef.current.undo(volumeRef.current);
     bump();
@@ -455,7 +442,6 @@ export default function Builder() {
     historyRef.current.redo(volumeRef.current);
     bump();
   }, [bump]);
-
   const resize = useCallback(
     (size: number) => {
       if (size === volumeRef.current.size) return;
@@ -473,7 +459,6 @@ export default function Builder() {
     if (!bounds) return;
     resize(fitSizeFor(bounds));
   }, [resize]);
-
   const clearAll = useCallback(() => {
     imageJobRef.current += 1;
 
@@ -483,7 +468,6 @@ export default function Builder() {
       z: false
     });
     commit(deltas);
-
     setPendingImage(null);
     setPendingName("");
     setPendingHash("");
@@ -501,13 +485,11 @@ export default function Builder() {
     if (frontRef.current) frontRef.current.value = "";
     if (sideRef.current) sideRef.current.value = "";
     if (fileRef.current) fileRef.current.value = "";
-
     historyRef.current = new History();
     setCanUndo(false);
     setCanRedo(false);
     notify("CLEARED");
   }, [commit, notify]);
-
   const onHit = useCallback(
     (hit: VoxelHit, ev: ThreeEvent<PointerEvent>) => {
       ev.stopPropagation();
@@ -558,11 +540,9 @@ export default function Builder() {
     },
     [boxMode, boxStart, brush, color, commit, mirror, tool]
   );
-
   const onHover = useCallback((hit: VoxelHit | null) => setHover(hit), []);
   const ghost = hover?.kind === "voxel" && tool === "attach" ? hover.place : (hover?.cell ?? null);
   const ghostValid = Boolean(ghost && !volumeRef.current.has(ghost.x, ghost.y, ghost.z));
-
   const openProject = useCallback(
     async (file: File) => {
       const name = file.name.toLowerCase();
@@ -600,7 +580,6 @@ export default function Builder() {
     },
     [attachFront, bump, notify]
   );
-
   const exportFiles = useCallback(
     async (kind: "json" | "vox" | "glb" | "obj" | "png") => {
       const name = title.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "brick";
@@ -617,24 +596,13 @@ export default function Builder() {
         return;
       }
       if (kind === "png") {
-        const { png, pivot } = exportVolumePngOrtho(volumeRef.current, palette, 16);
-        downloadBytes(png, `${name}.png`, "image/png");
-        downloadText(
-          JSON.stringify(
-            {
-              schema: "brick.unity-2d-pixel.v1",
-              engine: "unity-2d-pixel",
-              pixelsPerUnit: pivot.pixelsPerUnit,
-              pivot: { x: pivot.x, y: pivot.y },
-              width: pivot.width,
-              height: pivot.height
-            },
-            null,
-            2
-          ),
-          `${name}.png.json`,
-          "application/json"
-        );
+        const { png, unityMeta } = exportVolumePngOrtho(volumeRef.current, palette, 16);
+        const metaBytes = new TextEncoder().encode(unityMeta);
+        const unity2dZip = zipStore([
+          { name: `${name}.png`, data: png },
+          { name: `${name}.png.meta`, data: metaBytes }
+        ]);
+        downloadBytes(unity2dZip, `${name}-unity2d.zip`, "application/zip");
         return;
       }
       if (kind === "glb") {
@@ -664,7 +632,6 @@ export default function Builder() {
     },
     [lastShape, outputLock, palette, title]
   );
-
   const publish = useCallback(async () => {
     setBusy(true);
     try {
@@ -683,7 +650,6 @@ export default function Builder() {
       setBusy(false);
     }
   }, [notify, palette, title]);
-
   const syncPlan = useCallback(async () => {
     try {
       await restorePlan();
@@ -697,7 +663,6 @@ export default function Builder() {
   const commitHollow = useCallback(() => {
     commit(applyCells(volumeRef.current, hollowCells(volumeRef.current), null, mirror));
   }, [commit, mirror]);
-
   return (
     <main className="builderShell">
       <BuilderHeader
@@ -719,7 +684,6 @@ export default function Builder() {
         frontRef={frontRef}
         sideRef={sideRef}
       />
-
       <div className="builderBody voxelBody">
         <BuilderPanel
           tool={tool}
@@ -771,7 +735,6 @@ export default function Builder() {
           frontRef={frontRef}
           sideRef={sideRef}
         />
-
         <BuilderViewport
           volume={volume}
           palette={palette}
