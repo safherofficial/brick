@@ -34,7 +34,7 @@ import {
 } from "@/lib/voxelExport";
 import { exportGlbTextured } from "@/lib/voxelGlb";
 import { imageToVoxels, imagesToVoxels, type ImageImport } from "@/lib/imageVoxel";
-import { UNITY_EXPORT, unity2dPixelExportOptions } from "@/lib/ai/unity";
+import { unityExportOptions, unityVoxelSpanY } from "@/lib/ai/unity";
 import { buildImageOptions } from "@/lib/ai/buildOptions";
 import { exportVolumePngOrtho } from "@/lib/exportPngOrtho";
 import type { OutputLock } from "@/lib/imageVoxel";
@@ -639,9 +639,12 @@ export default function Builder() {
       }
       if (kind === "glb") {
         const options = {
-          ...(outputLock === "2d" ? unity2dPixelExportOptions() : UNITY_EXPORT),
-          name: title,
-          shape: lastShape
+          ...unityExportOptions({
+            voxelSpanY: unityVoxelSpanY(volumeRef.current),
+            output: outputLock === "2d" ? "2d" : undefined,
+            name: title,
+            shape: lastShape
+          })
         };
         const bytes = await exportGlbTextured(volumeRef.current, palette, options);
         downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
@@ -650,7 +653,12 @@ export default function Builder() {
       const archive = await exportObjArchive(
         volumeRef.current,
         palette,
-        outputLock === "2d" ? unity2dPixelExportOptions() : UNITY_EXPORT
+        unityExportOptions({
+          voxelSpanY: unityVoxelSpanY(volumeRef.current),
+          output: outputLock === "2d" ? "2d" : undefined,
+          name: title,
+          shape: lastShape
+        })
       );
       downloadBytes(archive, `${name}-obj.zip`, "application/zip");
     },
