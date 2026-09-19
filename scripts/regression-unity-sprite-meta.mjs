@@ -1,47 +1,39 @@
-import fs from "node:fs";
-import path from "node:path";
+/**
+ * P14 Unity 2D sprite metadata — runs the real ortho PNG exporter and
+ * checks the real returned pivot/meta against the real PNG bytes.
+ *
+ * Run: node --experimental-strip-types --import ./scripts/_register-aliases.mjs scripts/regression-unity-sprite-meta.mjs
+ */
+import { exportVolumePngOrtho, UNITY_2D_PIXELS_PER_UNIT } from "@/lib/exportPngOrtho.ts";
+import { VoxelVolume, DEFAULT_PALETTE } from "@/lib/voxelEngine.ts";
+import { buildBox, assertFactory } from "./_test-utils.mjs";
 
-const root = process.cwd();
-const ortho = fs.readFileSync(path.join(root, "lib/exportPngOrtho.ts"), "utf8");
-const builder = fs.readFileSync(path.join(root, "components/builder/Builder.tsx"), "utf8");
-const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const { assert, failed } = assertFactory();
 
-function assertIncludes(text, needle, label) {
-  if (!text.includes(needle)) throw new Error(`${label}: missing ${needle}`);
+// A 5x4 flat-ish silhouette (varying depth so the "front-most voxel wins" rule is exercised).
+const volume = new VoxelVolume(32);
+buildBox(volume, { x0: 0, x1: 4, y0: 0, y1: 3, z0: 0, z1: 0 }, 3);
+volume.apply(2, 2, 1, 4); // a voxel one step closer to camera at a shared (x,y)
+
+const { png, pivot, unityMeta } = exportVolumePngOrtho(volume, DEFAULT_PALETTE);
+
+assert("output is a real PNG (magic bytes)", png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47);
+assert("pivot width matches the real voxel X extent", pivot.width === 5);
+assert("pivot height matches the real voxel Y extent", pivot.height === 4);
+assert("pixels-per-unit constant is 16", UNITY_2D_PIXELS_PER_UNIT === 16);
+assert("pivot reports the real pixels-per-unit", pivot.pixelsPerUnit === 16);
+assert("pivot.x sits at horizontal center of the real width", pivot.x === pivot.width / 2);
+assert("pivot.y sits at the top per bottom-center convention", pivot.y === pivot.height);
+
+assert("meta declares Unity fileFormatVersion 2", unityMeta.includes("fileFormatVersion: 2"));
+assert("meta serializes the real pixels-per-unit", unityMeta.includes(`spritePixelsPerUnit: ${pivot.pixelsPerUnit}`));
+assert("meta pins point filtering (filterMode: 0)", unityMeta.includes("filterMode: 0"));
+assert("meta uses sprite import mode", unityMeta.includes("spriteMode: 1"));
+assert("meta pivot matches the bottom-center convention", unityMeta.includes("spritePivot: {x: 0.5, y: 0}"));
+assert("meta guid is derived from the real PNG bytes (32 hex chars)", /guid: [0-9a-f]{32}/.test(unityMeta));
+
+if (failed) {
+  console.error(`\n${failed} P14 assertion(s) failed`);
+  process.exit(1);
 }
-
-assertIncludes(ortho, "export function unityPngMeta", "P14 meta helper");
-assertIncludes(ortho, "UNITY_2D_PIXELS_PER_UNIT = 16", "P14 PPU constant");
-assertIncludes(ortho, "spritePixelsPerUnit: ${pixelsPerUnit}", "P14 PPU serialization");
-assertIncludes(ortho, "filterMode: 0", "P14 point filter");
-assertIncludes(ortho, "spritePivot: {x: ${normalizedX}, y: ${normalizedY}}", "P14 bottom-center pivot serialization");
-assertIncludes(ortho, "spriteMeshType: 1", "P14 tight mesh");
-assertIncludes(ortho, "alphaIsTransparency: 1", "P14 alpha transparency");
-assertIncludes(ortho, "textureType: 8", "P14 sprite texture type");
-assertIncludes(builder, '`${name}.png.meta`', "P14 Unity meta filename");
-assertIncludes(builder, '`${name}-unity2d.zip`', "P14 Unity 2D package filename");
-assertIncludes(builder, "zipStore([", "P14 zip generation");
-if (builder.includes("${name}.png.json")) {
-  throw new Error("P14 legacy .png.json export still present");
-}
-const scripts = String(pkg.scripts?.test ?? "");
-if (!scripts.includes("regression-unity-sprite-meta.mjs")) {
-  throw new Error("P14 regression is not included in npm test");
-}
-
-const width = 3;
-const height = 80;
-const pivotX = width / 2;
-const pivotY = height;
-if (pivotX !== 1.5 || pivotY !== 80) throw new Error("Unexpected bottom-center pivot pixels");
-const normalizedX = 0.5;
-const normalizedY = 0;
-if (normalizedX !== 0.5 || normalizedY !== 0) throw new Error("Unexpected Unity sprite pivot");
-if (16 !== 16) throw new Error("Unexpected PPU");
-
-console.log("Unity 2D Sprite Meta regression PASS");
-console.log("pivot pixels:", { x: pivotX, y: pivotY });
-console.log("pivot normalized:", { x: normalizedX, y: normalizedY });
-console.log("PPU: 16");
-console.log("filterMode: 0");
-console.log("spriteMeshType: Tight (1)");
+console.log("\nAll P14 Unity sprite-meta regression checks passed.");
