@@ -23,6 +23,9 @@ import type {
   LocalAiResult
 } from "@/lib/image/types";
 import { dynamicVoxelBudget } from "@/lib/image/budget";
+import { sanitizeRaster } from "@/lib/prod/rasterSanitize";
+import { DECODE_TIMEOUT_MS, withTimeout } from "@/lib/prod/timeout";
+import { assertImportableFile } from "@/lib/prod/inputGuard";
 import {
   DEFAULT_PALETTE,
   MAX_RASTER_EDGE,
@@ -99,18 +102,19 @@ function applySharpness(rgb: [number, number, number], sharpness: number): [numb
 }
 
 function loadImage(file: File): Promise<Raster> {
-  return new Promise((resolve, reject) => {
+  assertImportableFile(file);
+  const decode = new Promise<Raster>((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
 
     img.onload = () => {
       try {
-        const scale = Math.min(
-          1,
-          MAX_RASTER_EDGE / Math.max(img.naturalWidth, img.naturalHeight)
-        );
-        const width = Math.max(1, Math.round(img.naturalWidth * scale));
-        const height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const naturalW = Math.max(0, img.naturalWidth || img.width || 0);
+        const naturalH = Math.max(0, img.naturalHeight || img.height || 0);
+        if (naturalW < 1 || naturalH < 1) throw new Error("Unable to read image");
+        const scale = Math.min(1, MAX_RASTER_EDGE / Math.max(naturalW, naturalH));
+        const width = Math.max(1, Math.round(naturalW * scale));
+        const height = Math.max(1, Math.round(naturalH * scale));
         const canvas = document.createElement("canvas");
         canvas.width = width;
         canvas.height = height;
@@ -118,11 +122,12 @@ function loadImage(file: File): Promise<Raster> {
         if (!ctx) throw new Error("Canvas unavailable");
         ctx.clearRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
-        resolve({
+        const raw: Raster = {
           width,
           height,
           rgba: ctx.getImageData(0, 0, width, height).data
-        });
+        };
+        resolve(sanitizeRaster(raw));
       } catch (error) {
         reject(error);
       } finally {
@@ -136,6 +141,7 @@ function loadImage(file: File): Promise<Raster> {
     };
     img.src = url;
   });
+  return withTimeout(decode, DECODE_TIMEOUT_MS, "image-decode");
 }
 
 function sampleAt(raster: Raster, x: number, y: number): Sample {
