@@ -13,7 +13,7 @@ import {
 } from "@/lib/voxelMesh";
 import { encodePng } from "@/lib/png";
 import { GENERATOR_NAME, MAX_VOXELS } from "@/lib/limits";
-import { buildGlbExtras } from "@/lib/ai/gameReady";
+import { buildGlbExtras, UNITY_2D_PIXEL } from "@/lib/ai/gameReady";
 
 function pad4(n: number) {
   return (4 - (n % 4)) % 4;
@@ -396,6 +396,18 @@ export async function exportGlbTextured(
   bin.set(idxPad, offsets[3]);
   bin.set(imgPad, offsets[4]);
 
+  const sockets = socketNodes(
+    volume,
+    origin,
+    resolved.unitMeters,
+    resolved.upAxis,
+    options?.shape
+  );
+  const meshNode = 1;
+  const socketIndex0 = 2;
+  const rootChildren = [meshNode, ...sockets.map((_, i) => socketIndex0 + i)];
+  const twoD = resolved.unitMeters === UNITY_2D_PIXEL.unitMeters;
+
   const json = {
     asset: {
       version: "2.0",
@@ -404,7 +416,10 @@ export async function exportGlbTextured(
         name: resolved.name,
         voxelCount: volume.count,
         volumeSize: volume.size,
+        engine: "unity",
         shape: options?.shape as never,
+        output: twoD ? "2d" : undefined,
+        pixelsPerUnit: twoD ? UNITY_2D_PIXEL.pixelsPerUnit : undefined,
         mesh: {
           quads: quads.length,
           triangles: indices.length / 3,
@@ -413,11 +428,13 @@ export async function exportGlbTextured(
         }
       })
     },
+    extensionsUsed: ["KHR_materials_unlit"],
     scene: 0,
-    scenes: [{ nodes: [0, 1, 2, 3, 4], name: resolved.name }],
+    scenes: [{ nodes: [0], name: resolved.name }],
     nodes: [
-      { mesh: 0, name: resolved.name },
-      ...socketNodes(volume, origin, resolved.unitMeters, resolved.upAxis, options?.shape)
+      { name: resolved.name, children: rootChildren },
+      { mesh: 0, name: `${resolved.name}_Mesh` },
+      ...sockets
     ],
     meshes: [
       {
@@ -434,7 +451,8 @@ export async function exportGlbTextured(
     materials: [
       {
         name: "voxel-atlas",
-        doubleSided: true,
+        doubleSided: false,
+        extensions: { KHR_materials_unlit: {} },
         pbrMetallicRoughness: {
           baseColorTexture: { index: 0 },
           metallicFactor: 0,
