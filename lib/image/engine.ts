@@ -1310,6 +1310,7 @@ function reconstructVisualHull(
   );
 
   const voxels: ImageVoxel[] = [];
+  const adaptiveDepthGrid = buildAdaptiveDepthGrid(frontDepth, frontRaster, frontMask);
   const h = dimensions.height;
 
   for (let y = 0; y < h; y += 1) {
@@ -1330,7 +1331,8 @@ function reconstructVisualHull(
         frontMask,
         px,
         py,
-        options.aiCategory
+        options.aiCategory,
+        adaptiveDepthGrid
       );
 
       // Depth soft-clamp: ambiguous SIDE (legacy) OR (C) guns/rifles/objects
@@ -1651,6 +1653,7 @@ function buildSingleViewModel(
   }
 
   const voxels: ImageVoxel[] = [];
+  const adaptiveDepthGrid = buildAdaptiveDepthGrid(depthMap, raster, mask);
   const depthCap = Math.max(2, Math.min(options.heightMax, Math.round(maxAxis * 0.22)));
   const sharpness = options.aiCategory === "objects" ? 1.02 : 1;
 
@@ -1662,7 +1665,7 @@ function buildSingleViewModel(
       const frontColor = localMaterialSample(raster, bounds.minX + nx * (bounds.maxX - bounds.minX), bounds.minY + ny * (bounds.maxY - bounds.minY));
       const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
       const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
-      const d = adaptiveDepthAt(depthMap, raster, mask, px, py, options.aiCategory);
+      const d = adaptiveDepthAt(depthMap, raster, mask, px, py, options.aiCategory, adaptiveDepthGrid);
       const supportRatio = revolve.axis === "y"
         ? rowRatios[y]?.[x] ?? 0
         : columnRatios[y]?.[x] ?? 0;
@@ -1753,6 +1756,7 @@ function buildNonModel(
   const height = Math.max(1, Math.round(bounds.height * scale));
   const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
   const rowRunRatios = buildRowRunRatios(sourceMask);
+  const adaptiveDepthGrid = buildAdaptiveDepthGrid(depthMap, raster, mask);
 
   if (options.output === "2d" || options.mode === "flat") {
     return buildFlatSprite(raster, mask, bounds, options, paletteValues, palette);
@@ -1841,7 +1845,8 @@ function buildNonModel(
         mask,
         px,
         py,
-        options.aiCategory
+        options.aiCategory,
+        adaptiveDepthGrid
       );
 
       // Local thickness: use the connected foreground run containing this
@@ -2057,20 +2062,16 @@ function depthAt(depth: Float32Array | null, raster: Raster, x: number, y: numbe
  * surrounding body. Category-specific bias is deliberately tiny so the
  * existing heightMax/category budgets remain authoritative.
  */
-function adaptiveDepthAt(
-  depth: Float32Array | null,
+function computeAdaptiveDepthSample(
+  depth: Float32Array,
   raster: Raster,
   mask: boolean[][],
-  x: number,
-  y: number,
-  category: ImageVoxelOptions["aiCategory"]
+  cx: number,
+  cy: number
 ): number {
-  const base = depthAt(depth, raster, x, y);
-  if (!depth || !raster.width || !raster.height) return base;
-
-  const cx = clamp(Math.round(x), 0, raster.width - 1);
-  const cy = clamp(Math.round(y), 0, raster.height - 1);
-  const values: number[] = [];
+  const base = depthAt(depth, raster, cx, cy);
+  const values = new Array<number>(25);
+  let valueCount = 0;
   let foregroundNeighbours = 0;
   let ringSupport = 0;
 
@@ -2083,18 +2084,24 @@ function adaptiveDepthAt(
       const yy = cy + dy;
       if (xx < 0 || yy < 0 || xx >= raster.width || yy >= raster.height) continue;
       if (!mask[yy]?.[xx]) continue;
-      values.push(depthAt(depth, raster, xx, yy));
+      values[valueCount] = depthAt(depth, raster, xx, yy);
+      valueCount += 1;
       foregroundNeighbours += 1;
       if (Math.abs(dx) === 2 || Math.abs(dy) === 2) ringSupport += 1;
     }
   }
 
-  if (values.length < 3) return base;
+  if (valueCount < 3) return base;
 
-  values.sort((a, b) => a - b);
-  const median = values[Math.floor(values.length / 2)];
-  const deviations = values.map((value) => Math.abs(value - median)).sort((a, b) => a - b);
-  const mad = deviations[Math.floor(deviations.length / 2)] ?? 0;
+  const samples = values.slice(0, valueCount);
+  samples.sort((a, b) => a - b);
+  const median = samples[Math.floor(valueCount / 2)];
+  const deviations = new Array<number>(valueCount);
+  for (let i = 0; i < valueCount; i += 1) {
+    deviations[i] = Math.abs(samples[i] - median);
+  }
+  deviations.sort((a, b) => a - b);
+  const mad = deviations[Math.floor(valueCount / 2)] ?? 0;
   const robustNoise = clamp(mad / 0.12, 0, 1);
 
   // High local dispersion means the raw depth is unreliable. Trust the
@@ -2121,10 +2128,43 @@ function adaptiveDepthAt(
     ? 0.5 + centred * tailCompression
     : 0.5 + centred * (tailCompression - 0.04);
 
-  // Category geometry remains outside the depth sampler. Keep the category
-  // parameter in the signature for API stability and future profile tuning.
-  void category;
   return clamp(compressed, 0, 1);
+}
+
+function buildAdaptiveDepthGrid(
+  depth: Float32Array | null,
+  raster: Raster,
+  mask: boolean[][]
+): Float32Array | null {
+  if (!depth || !raster.width || !raster.height) return null;
+  const grid = new Float32Array(raster.width * raster.height);
+  grid.fill(Number.NaN);
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      if (!mask[y]?.[x]) continue;
+      grid[y * raster.width + x] = computeAdaptiveDepthSample(depth, raster, mask, x, y);
+    }
+  }
+  return grid;
+}
+
+function adaptiveDepthAt(
+  depth: Float32Array | null,
+  raster: Raster,
+  mask: boolean[][],
+  x: number,
+  y: number,
+  category: ImageVoxelOptions["aiCategory"],
+  grid: Float32Array | null = null
+): number {
+  const base = depthAt(depth, raster, x, y);
+  if (!depth || !raster.width || !raster.height) return base;
+  const cx = clamp(Math.round(x), 0, raster.width - 1);
+  const cy = clamp(Math.round(y), 0, raster.height - 1);
+  const cached = grid?.[cy * raster.width + cx];
+  if (cached !== undefined && Number.isFinite(cached)) return cached;
+  void category;
+  return computeAdaptiveDepthSample(depth, raster, mask, cx, cy);
 }
 
 async function finalizeLocalAi(
@@ -2396,14 +2436,18 @@ export async function imagesToVoxels(
   let frontDepth: Float32Array | null = null;
   let aiDiag: LocalAiResult["diagnostics"];
   if (useLocalAi) {
-    const enhanced = await Promise.all(
-      rasters.map((raster) =>
-        applyLocalAiRaster(raster, {
+    const enhanced: LocalAiResult[] = [];
+    // Two ONNX segmentation passes in parallel can briefly duplicate model
+    // tensors and canvas buffers on low-core browsers. Keep FRONT first and
+    // process SIDE afterwards to cap peak memory without changing either view.
+    for (const raster of rasters) {
+      enhanced.push(
+        await applyLocalAiRaster(raster, {
           depth: false,
           category: normalized.aiCategory
         })
-      )
-    );
+      );
+    }
     rasters = enhanced.map((e) => e.raster);
     frontDepth = enhanced[0]?.depth ?? null;
     aiDiag = enhanced[0]?.diagnostics;
