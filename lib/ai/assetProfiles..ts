@@ -80,12 +80,12 @@ export function adaptiveAssetProfile(
     reasons.push("broad feature protection");
   }
 
-  if (evidence?.bulge >= 1.28) {
+  if ((evidence?.bulge ?? 0) >= 1.28) {
     depthScale += 0.025;
     reasons.push("body mass evidence");
   }
 
-  if (evidence?.fill <= 0.22 && input.category !== "swords") {
+  if ((evidence?.fill ?? 1) <= 0.22 && input.category !== "swords") {
     depthScale -= 0.02;
     reasons.push("sparse silhouette");
   }
