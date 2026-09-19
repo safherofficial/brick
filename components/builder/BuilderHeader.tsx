@@ -1,8 +1,6 @@
 "use client";
-
 import type { RefObject } from "react";
 import Link from "next/link";
-
 export type BuilderHeaderProps = {
   title: string;
   editingTitle: boolean;
@@ -13,7 +11,9 @@ export type BuilderHeaderProps = {
   busy: boolean;
   undo: () => void;
   redo: () => void;
-  exportFiles: (kind: "json" | "vox" | "glb" | "obj" | "png") => void | Promise<void>;
+  exportFiles: (
+    kind: "json" | "vox" | "glb" | "obj" | "png" | "unity-pack"
+  ) => void | Promise<void>;
   publish: () => void | Promise<void>;
   openProject: (file: File) => void | Promise<void>;
   attachFront: (file: File) => void | Promise<void>;
@@ -22,7 +22,6 @@ export type BuilderHeaderProps = {
   frontRef: RefObject<HTMLInputElement | null>;
   sideRef: RefObject<HTMLInputElement | null>;
 };
-
 export function BuilderHeader({
   title,
   editingTitle,
@@ -88,6 +87,9 @@ export function BuilderHeader({
         </button>
         <button onClick={() => void exportFiles("glb")} disabled={busy}>
           GLB
+        </button>
+        <button onClick={() => void exportFiles("unity-pack")} disabled={busy}>
+          UNITY PACK
         </button>
         <button onClick={() => void exportFiles("png")} disabled={busy}>
           PNG
