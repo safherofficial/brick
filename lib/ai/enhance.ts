@@ -1,11 +1,6 @@
 // lib/ai/enhance.ts
-/**
- * Local ONNX enhance: U2Net segment → alpha matte, optional MiDaS depth.
- * Tuned for 2.5D voxel fidelity (sharp silhouettes, less halo, thin-feature safe).
- */
-import { aiAvailable, loadModel, runModel } from "@/lib/ai/runtime";
 import type { AiCategory } from "@/lib/ai/aiCategories";
-import { aiCategoryProfile } from "@/lib/ai/aiCategories";
+import { aiAvailable, loadModel } from "@/lib/ai/runtime";
 
 export type AiRaster = {
   width: number;
@@ -13,77 +8,27 @@ export type AiRaster = {
   rgba: Uint8ClampedArray;
 };
 
-export type EnhanceOptions = {
-  depth?: boolean;
-  /** Guides matte hardness / acceptance thresholds. */
-  category?: AiCategory;
+type SegmentationPolicy = {
+  strongThreshold: number;
+  weakThreshold: number;
+  preserveRadius: number;
 };
 
-/** Matte refinement knobs (derived from category when present). */
-type MatteParams = {
-  /** Soft-threshold center for alpha contrast (higher = tighter subject). */
-  threshold: number;
-  /** Transition width around threshold (lower = harder edge). */
-  softness: number;
-  /** Min fraction of pixels above soft-high to accept the ONNX map. */
-  minKeepRatio: number;
-  /** Soft-high used only for the acceptance count. */
-  acceptFloor: number;
+/**
+ * Category-aware local-AI matte policy.
+ * Thin weapon features get a lower weak threshold so small blades/barrels are
+ * not discarded before voxel reconstruction. Generic props keep a stricter
+ * threshold to avoid background spill. The existing model mask cleanup still
+ * removes detached noise after this pass.
+ */
+const SEGMENT_POLICIES: Record<AiCategory, SegmentationPolicy> = {
+  swords: { strongThreshold: 0.30, weakThreshold: 0.12, preserveRadius: 2 },
+  guns: { strongThreshold: 0.38, weakThreshold: 0.16, preserveRadius: 2 },
+  rifles: { strongThreshold: 0.34, weakThreshold: 0.14, preserveRadius: 2 },
+  objects: { strongThreshold: 0.44, weakThreshold: 0.22, preserveRadius: 1 }
 };
 
-const DEFAULT_MATTE: MatteParams = {
-  threshold: 0.4,
-  softness: 0.09,
-  minKeepRatio: 0.007,
-  acceptFloor: 0.3
-};
-
-/** (A) Category-calibrated matte — swords keep tips; objects cut bleed. */
-function matteParamsFor(category?: AiCategory): MatteParams {
-  if (!category) return DEFAULT_MATTE;
-  switch (category) {
-    case "swords":
-      return {
-        threshold: 0.36,
-        softness: 0.11,
-        minKeepRatio: 0.004,
-        acceptFloor: 0.25
-      };
-    case "guns":
-      return {
-        threshold: 0.38,
-        softness: 0.1,
-        minKeepRatio: 0.005,
-        acceptFloor: 0.27
-      };
-    case "rifles":
-      return {
-        threshold: 0.37,
-        softness: 0.1,
-        minKeepRatio: 0.0045,
-        acceptFloor: 0.26
-      };
-    case "objects":
-      return {
-        threshold: 0.44,
-        softness: 0.08,
-        minKeepRatio: 0.01,
-        acceptFloor: 0.34
-      };
-    default:
-      return DEFAULT_MATTE;
-  }
-}
-
-export type EnhanceDiagnostics = {
-  segment: "ok" | "weak-fallback" | "skip" | "fail" | "cutout";
-  depth: "ok" | "skip" | "fail";
-  segmentSize: string;
-};
-
-function emptyDiag(): EnhanceDiagnostics {
-  return { segment: "skip", depth: "skip", segmentSize: "-" };
-}
+const DEFAULT_SEGMENT_POLICY: SegmentationPolicy = SEGMENT_POLICIES.objects;
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
@@ -107,26 +52,13 @@ function rasterToCanvas(raster: AiRaster) {
   return canvas;
 }
 
-function toNchw(
-  raster: AiRaster,
-  width: number,
-  height: number,
-  imagenet: boolean,
-  sourceCanvas?: HTMLCanvasElement
-) {
+function toNchw(raster: AiRaster, width: number, height: number, imagenet: boolean) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Canvas unavailable");
-  // High-quality downscale into model input (better than default when available).
-  try {
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-  } catch {
-    /* ignore */
-  }
-  ctx.drawImage(sourceCanvas ?? rasterToCanvas(raster), 0, 0, width, height);
+  ctx.drawImage(rasterToCanvas(raster), 0, 0, width, height);
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const plane = width * height;
   const data = new Float32Array(3 * plane);
@@ -190,153 +122,94 @@ function normalizeMap(values: Float32Array) {
   return out;
 }
 
-/**
- * Smoothstep contrast around threshold → cleaner game-ready matte.
- * Preserves a thin AA band (softness) so thin blades are not hard-clipped.
- */
-function refineAlphaMap(alpha: Float32Array, params: MatteParams): Float32Array {
-  const lo = clamp(params.threshold - params.softness, 0, 1);
-  const hi = clamp(params.threshold + params.softness, 0, 1);
-  const span = Math.max(1e-6, hi - lo);
-  const out = new Float32Array(alpha.length);
-  for (let i = 0; i < alpha.length; i += 1) {
-    const t = clamp((alpha[i] - lo) / span, 0, 1);
-    // Smoothstep: 3t² − 2t³
-    const s = t * t * (3 - 2 * t);
-    out[i] = s;
-  }
-  return out;
+function quantile(sorted: number[], q: number) {
+  if (!sorted.length) return 0;
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.round(q * (sorted.length - 1))));
+  return sorted[index];
 }
 
 /**
- * Mild 3×3 unsharp on alpha after refine — recovers edge acuity lost to
- * model→full bilinear upscale without reintroducing speckles.
+ * Hysteresis-style alpha refinement: preserve strong foreground, retain weak
+ * alpha only when it is spatially attached to confident foreground. This is
+ * intentionally category-aware and remains deterministic.
  */
-function sharpenAlphaMap(alpha: Float32Array, width: number, height: number, amount = 0.35): Float32Array {
-  if (width < 3 || height < 3 || amount <= 0) return alpha;
+export function refineSegmentAlpha(
+  alpha: Float32Array,
+  width: number,
+  height: number,
+  category?: AiCategory
+) {
+  if (!alpha.length || width <= 0 || height <= 0) return alpha;
+  const policy = category ? SEGMENT_POLICIES[category] : DEFAULT_SEGMENT_POLICY;
+  const strong = new Uint8Array(alpha.length);
+  for (let i = 0; i < alpha.length; i += 1) {
+    if (alpha[i] >= policy.strongThreshold) strong[i] = 1;
+  }
+
   const out = new Float32Array(alpha.length);
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const i = y * width + x;
-      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
-        out[i] = alpha[i];
+      const index = y * width + x;
+      const value = clamp(alpha[index] ?? 0, 0, 1);
+      if (value >= policy.strongThreshold) {
+        out[index] = value;
         continue;
       }
-      const c = alpha[i];
-      const blur =
-        (alpha[i - 1] +
-          alpha[i + 1] +
-          alpha[i - width] +
-          alpha[i + width] +
-          c) /
-        5;
-      out[i] = clamp(c + (c - blur) * amount, 0, 1);
+      if (value < policy.weakThreshold) continue;
+      let attached = false;
+      for (let dy = -policy.preserveRadius; dy <= policy.preserveRadius && !attached; dy += 1) {
+        for (let dx = -policy.preserveRadius; dx <= policy.preserveRadius; dx += 1) {
+          if (!dx && !dy) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          if (strong[ny * width + nx]) {
+            attached = true;
+            break;
+          }
+        }
+      }
+      if (attached) out[index] = Math.max(value, policy.weakThreshold + (policy.strongThreshold - policy.weakThreshold) * 0.45);
     }
   }
   return out;
 }
 
 /**
- * (2) Joint bilateral-ish refine: smooth alpha only where RGB guide is flat.
- * Keeps hard edges of the subject (guided by luminance of the source raster).
+ * Re-normalize MiDaS using the foreground support instead of the full image.
+ * The robust foreground percentiles prevent bright/dark backgrounds from
+ * consuming most of the usable depth range. A conservative blend keeps the
+ * original model signal so this remains a refinement, not a new depth model.
  */
-function guidedAlphaRefine(
+export function normalizeDepthToForeground(
+  depth: Float32Array,
   alpha: Float32Array,
-  raster: AiRaster,
-  radius = 1,
-  eps = 0.01
-): Float32Array {
-  const { width: w, height: h, rgba } = raster;
-  if (w < 3 || h < 3) return alpha;
-  const guide = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i += 1) {
-    const o = i * 4;
-    guide[i] = (0.299 * rgba[o] + 0.587 * rgba[o + 1] + 0.114 * rgba[o + 2]) / 255;
+  category?: AiCategory
+) {
+  if (!depth.length || depth.length !== alpha.length) return depth;
+  const policy = category ? SEGMENT_POLICIES[category] : DEFAULT_SEGMENT_POLICY;
+  const values: number[] = [];
+  for (let i = 0; i < depth.length; i += 1) {
+    if ((alpha[i] ?? 0) >= policy.weakThreshold) values.push(depth[i]);
   }
-  const out = new Float32Array(alpha.length);
-  const r = Math.max(1, radius);
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      const i = y * w + x;
-      let sumA = 0;
-      let sumG = 0;
-      let sumAG = 0;
-      let sumGG = 0;
-      let n = 0;
-      for (let oy = -r; oy <= r; oy += 1) {
-        for (let ox = -r; ox <= r; ox += 1) {
-          const xx = x + ox;
-          const yy = y + oy;
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-          const j = yy * w + xx;
-          const g = guide[j];
-          const a = alpha[j];
-          sumA += a;
-          sumG += g;
-          sumAG += a * g;
-          sumGG += g * g;
-          n += 1;
-        }
-      }
-      const inv = 1 / Math.max(1, n);
-      const meanA = sumA * inv;
-      const meanG = sumG * inv;
-      const covAG = sumAG * inv - meanA * meanG;
-      const varG = sumGG * inv - meanG * meanG;
-      const A = covAG / (varG + eps);
-      const B = meanA - A * meanG;
-      out[i] = clamp(A * guide[i] + B, 0, 1);
+  const coverage = values.length / Math.max(1, depth.length);
+  if (values.length < 32 || coverage < 0.03 || coverage > 0.96) return depth;
+  values.sort((a, b) => a - b);
+  const low = quantile(values, 0.08);
+  const high = quantile(values, 0.92);
+  const span = Math.max(1e-5, high - low);
+  const blend = category === "rifles" || category === "guns" ? 0.72 : category === "objects" ? 0.62 : 0.5;
+  const out = new Float32Array(depth.length);
+  for (let i = 0; i < depth.length; i += 1) {
+    const original = clamp(depth[i] ?? 0.5, 0, 1);
+    if ((alpha[i] ?? 0) < policy.weakThreshold) {
+      out[i] = original;
+      continue;
     }
+    const local = clamp((original - low) / span, 0, 1);
+    out[i] = original * (1 - blend) + local * blend;
   }
   return out;
-}
-
-function estimateCornerBg(raster: AiRaster): [number, number, number] {
-  const { width: w, height: h, rgba } = raster;
-  const pts = [
-    [0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1],
-    [Math.floor(w / 2), 0], [0, Math.floor(h / 2)]
-  ];
-  let r = 0, g = 0, b = 0, n = 0;
-  for (const [x, y] of pts) {
-    const i = (y * w + x) * 4;
-    if (rgba[i + 3] < 12) continue;
-    r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2]; n += 1;
-  }
-  if (!n) return [255, 255, 255];
-  return [r / n, g / n, b / n];
-}
-
-/** Pull subject RGB off the studio backdrop (JPEG fringe / green-screen bleed). */
-function despillRgb(raster: AiRaster, alpha: Float32Array) {
-  const bg = estimateCornerBg(raster);
-  const { width, height, rgba } = raster;
-  for (let i = 0; i < width * height; i += 1) {
-    const a = alpha[i];
-    if (a <= 0.04 || a >= 0.92) continue;
-    const o = i * 4;
-    const t = 1 - a;
-    rgba[o] = Math.max(0, Math.min(255, rgba[o] - (bg[0] - 128) * t * 0.35));
-    rgba[o + 1] = Math.max(0, Math.min(255, rgba[o + 1] - (bg[1] - 128) * t * 0.35));
-    rgba[o + 2] = Math.max(0, Math.min(255, rgba[o + 2] - (bg[2] - 128) * t * 0.35));
-  }
-}
-
-/** MiDaS outputs are sometimes inverted; flip if the subject core is farther than the rim. */
-function orientDepth(depth: Float32Array, alpha: Float32Array | null): Float32Array {
-  if (!alpha || depth.length !== alpha.length) return depth;
-  let core = 0, coreN = 0, rim = 0, rimN = 0;
-  for (let i = 0; i < depth.length; i += 1) {
-    if (alpha[i] >= 0.85) { core += depth[i]; coreN += 1; }
-    else if (alpha[i] >= 0.2 && alpha[i] < 0.55) { rim += depth[i]; rimN += 1; }
-  }
-  if (coreN < 16 || rimN < 16) return depth;
-  if (core / coreN + 0.06 < rim / rimN) {
-    const out = new Float32Array(depth.length);
-    for (let i = 0; i < depth.length; i += 1) out[i] = 1 - depth[i];
-    return out;
-  }
-  return depth;
 }
 
 export function hasCutoutAlpha(raster: AiRaster) {
@@ -351,206 +224,74 @@ export function hasCutoutAlpha(raster: AiRaster) {
     else if (a >= 240) opaque += 1;
     else mid += 1;
   }
-  // Slightly stricter mid cap → prefer ONNX re-matte when alpha is mushy.
-  return transparent / total >= 0.08 && opaque / total >= 0.08 && mid / total <= 0.14;
+  return transparent / total >= 0.08 && opaque / total >= 0.08 && mid / total <= 0.18;
 }
 
-async function runMap(
-  id: "segment" | "depth",
-  raster: AiRaster,
-  sourceCanvas?: HTMLCanvasElement
-): Promise<{ map: Float32Array; sizeLabel: string } | null> {
+async function runMap(id: "segment" | "depth", raster: AiRaster) {
   const session = await loadModel(id);
   if (!session) return null;
   const ort = await import("onnxruntime-web");
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
-  let fallback = id === "segment" ? 320 : 256;
-  if (id === "segment") {
-    const edge = Math.max(raster.width, raster.height);
-    const d2 = dims?.[2];
-    const d3 = dims?.[3];
-    const dyn =
-      d2 === -1 ||
-      d3 === -1 ||
-      d2 === 0 ||
-      d3 === 0 ||
-      d2 === undefined ||
-      d3 === undefined;
-    if (dyn) {
-      fallback = edge >= 400 ? 512 : edge >= 256 ? 384 : 320;
-    } else {
-      const fixed = Math.max(Number(d2) || 0, Number(d3) || 0);
-      fallback = fixed > 0 ? fixed : 320;
-    }
-  }
-  const size = modelSize(dims, fallback);
-  const cap = id === "segment" ? 512 : 384;
-  const width = Math.min(cap, size.width);
-  const height = Math.min(cap, size.height);
-  const tensor = new ort.Tensor("float32", toNchw(raster, width, height, true, sourceCanvas), [
+  const size = modelSize(dims, id === "segment" ? 320 : 256);
+  const tensor = new ort.Tensor("float32", toNchw(raster, size.width, size.height, true), [
     1,
     3,
-    height,
-    width
+    size.height,
+    size.width
   ]);
-  const result = await runModel(id, session, { [inputName]: tensor });
+  const result = await session.run({ [inputName]: tensor });
   const output = result[session.outputNames[0]] as unknown as {
     dims: readonly number[];
     data: Float32Array;
   };
   const plane = planeFromOutput(output.data, output.dims);
-  const map = resizeMap(
-    normalizeMap(Float32Array.from(plane.map)),
-    plane.width,
-    plane.height,
-    raster.width,
-    raster.height
-  );
-  return { map, sizeLabel: `${width}×${height}` };
+  return resizeMap(normalizeMap(Float32Array.from(plane.map)), plane.width, plane.height, raster.width, raster.height);
 }
 
-function maxAlpha(a: Float32Array, b: Float32Array) {
-  const n = Math.min(a.length, b.length);
-  const out = new Float32Array(n);
-  for (let i = 0; i < n; i += 1) out[i] = a[i] > b[i] ? a[i] : b[i];
-  return out;
-}
-
-/** Background = corner color, not "bright = empty". Keeps silver blades. */
-function heuristicMatte(raster: AiRaster, category?: AiCategory): Float32Array {
-  const { width, height, rgba } = raster;
-  const out = new Float32Array(width * height);
-  const bg = estimateCornerBg(raster);
-  const weapon =
-    category === "swords" || category === "guns" || category === "rifles" || !category;
-  const bgTol = weapon ? 26 : 20;
-  const whiteCut = category === "objects" ? 242 : 250;
-  for (let i = 0; i < width * height; i += 1) {
-    const o = i * 4;
-    const r = rgba[o];
-    const g = rgba[o + 1];
-    const b = rgba[o + 2];
-    const a = rgba[o + 3] / 255;
-    if (a < 0.08) {
-      out[i] = 0;
-      continue;
-    }
-    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-    const dist = Math.sqrt((r - bg[0]) ** 2 + (g - bg[1]) ** 2 + (b - bg[2]) ** 2);
-    if (lum >= whiteCut && chroma < 14 && dist < bgTol) {
-      out[i] = 0;
-      continue;
-    }
-    const steel = weapon && lum >= 130 && lum <= 242 && chroma <= 48 && dist >= bgTol * 0.55;
-    const score = steel ? 0.88 : clamp(dist / 72, 0, 1);
-    out[i] = score * a;
-  }
-  return out;
-}
-
-function writeAlpha(next: AiRaster, alpha: Float32Array) {
-  for (let i = 0; i < alpha.length; i += 1) {
-    const a = alpha[i];
-    const byte = a <= 0.04 ? 0 : a >= 0.96 ? 255 : clamp(Math.round(a * 255), 0, 255);
-    next.rgba[i * 4 + 3] = byte;
-  }
-}
-
-export async function enhanceRaster(raster: AiRaster, options: EnhanceOptions = {}) {
-  const diag = emptyDiag();
+export async function enhanceRaster(
+  raster: AiRaster,
+  options: { depth?: boolean; category?: AiCategory } = {}
+) {
   const cutout = hasCutoutAlpha(raster);
   const available = await aiAvailable();
   const wantSegment = Boolean(available.segment) && !cutout;
   const wantDepth = options.depth === true && Boolean(available.depth);
-
-  if (cutout) diag.segment = "cutout";
-
   if (!wantSegment && !wantDepth) {
-    if (!cutout && !available.segment) {
-      // (B) No ONNX segment available → heuristic matte so mask is still usable.
-      const next: AiRaster = {
-        width: raster.width,
-        height: raster.height,
-        rgba: new Uint8ClampedArray(raster.rgba)
-      };
-      const matte = matteParamsFor(options.category);
-      let alpha = refineAlphaMap(heuristicMatte(raster, options.category), matte);
-      alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.22);
-      writeAlpha(next, alpha);
-      diag.segment = "weak-fallback";
-      return { raster: next, depth: null as Float32Array | null, diagnostics: diag };
-    }
-    return { raster, depth: null as Float32Array | null, diagnostics: diag };
+    return { raster, depth: null as Float32Array | null };
   }
-
   const next: AiRaster = {
     width: raster.width,
     height: raster.height,
     rgba: new Uint8ClampedArray(raster.rgba)
   };
-  // Reuse one source canvas for both segmentation and depth inference.
-  // This avoids rebuilding a full-resolution ImageData/canvas for each model
-  // pass while keeping the input raster immutable.
-  const sourceCanvas = wantSegment || wantDepth ? rasterToCanvas(raster) : undefined;
 
-  const matte = matteParamsFor(options.category);
-
+  let foregroundAlpha: Float32Array | null = null;
   if (wantSegment) {
-    try {
-      const raw = await runMap("segment", raster, sourceCanvas);
-      if (raw) {
-        diag.segmentSize = raw.sizeLabel;
-        let kept = 0;
-        for (let i = 0; i < raw.map.length; i += 1) {
-          if (raw.map[i] >= matte.acceptFloor) kept += 1;
-        }
-        const minKeep = raster.width * raster.height * matte.minKeepRatio;
-        if (kept >= minKeep) {
-          let alpha = refineAlphaMap(raw.map, matte);
-          alpha = guidedAlphaRefine(alpha, raster, 1, 0.012);
-          alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.28);
-          writeAlpha(next, alpha);
-          despillRgb(next, alpha);
-          diag.segment = "ok";
-        } else {
-          let alpha = refineAlphaMap(
-            maxAlpha(raw.map, heuristicMatte(raster, options.category)),
-            matte
-          );
-          alpha = guidedAlphaRefine(alpha, raster, 1, 0.01);
-          alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.24);
-          writeAlpha(next, alpha);
-          diag.segment = "weak-fallback";
-        }
-      } else {
-        let alpha = refineAlphaMap(heuristicMatte(raster, options.category), matte);
-        alpha = sharpenAlphaMap(alpha, raster.width, raster.height, 0.22);
-        writeAlpha(next, alpha);
-        diag.segment = "weak-fallback";
+    const alpha = await runMap("segment", raster);
+    if (alpha) {
+      foregroundAlpha = refineSegmentAlpha(alpha, raster.width, raster.height, options.category);
+      let kept = 0;
+      for (let i = 0; i < foregroundAlpha.length; i += 1) {
+        if (foregroundAlpha[i] >= 0.08) kept += 1;
       }
-    } catch {
-      diag.segment = "fail";
+      if (kept >= raster.width * raster.height * 0.01) {
+        for (let i = 0; i < foregroundAlpha.length; i += 1) {
+          next.rgba[i * 4 + 3] = clamp(Math.round(foregroundAlpha[i] * 255), 0, 255);
+        }
+      }
+    }
+  } else if (cutout) {
+    foregroundAlpha = new Float32Array(raster.width * raster.height);
+    for (let i = 0; i < foregroundAlpha.length; i += 1) {
+      foregroundAlpha[i] = raster.rgba[i * 4 + 3] / 255;
     }
   }
 
-  let depth: Float32Array | null = null;
-  if (wantDepth) {
-    try {
-      const d = await runMap("depth", raster, sourceCanvas);
-      if (d) {
-        const alphaPlane = new Float32Array(next.width * next.height);
-        for (let i = 0; i < alphaPlane.length; i += 1) alphaPlane[i] = next.rgba[i * 4 + 3] / 255;
-        depth = orientDepth(d.map, alphaPlane);
-        diag.depth = "ok";
-      } else {
-        diag.depth = "fail";
-      }
-    } catch {
-      diag.depth = "fail";
-    }
-  }
+  const rawDepth = wantDepth ? await runMap("depth", raster) : null;
+  const depth = rawDepth && foregroundAlpha
+    ? normalizeDepthToForeground(rawDepth, foregroundAlpha, options.category)
+    : rawDepth;
 
-  return { raster: next, depth, diagnostics: diag };
+  return { raster: next, depth };
 }
