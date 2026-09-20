@@ -109,7 +109,7 @@ export default function VoxelThumb({
           enableDamping
           dampingFactor={0.1}
           minDistance={distance * 0.45}
-          maxDistance={distance}
+          maxDistance={Infinity}
         />
       )}
     </Canvas>
