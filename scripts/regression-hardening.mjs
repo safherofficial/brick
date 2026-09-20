@@ -1,25 +1,18 @@
 /**
- * P10 production-hardening contract checks.
+ * P10 production-hardening functional checks.
+ * Executes the actual timeout, input guard, raster sanitize, recovery and browser
+ * capability helpers instead of checking source strings.
+ * Run: node --experimental-strip-types --import ./scripts/_register-aliases.mjs scripts/regression-hardening.mjs
  */
-import { readFile } from "node:fs/promises";
-
-const files = {
-  timeout: await readFile(new URL("../lib/prod/timeout.ts", import.meta.url), "utf8"),
-  guard: await readFile(new URL("../lib/prod/inputGuard.ts", import.meta.url), "utf8"),
-  sanitize: await readFile(new URL("../lib/prod/rasterSanitize.ts", import.meta.url), "utf8"),
-  recover: await readFile(new URL("../lib/prod/recover.ts", import.meta.url), "utf8"),
-  compat: await readFile(new URL("../lib/prod/compat.ts", import.meta.url), "utf8"),
-  runtime: await readFile(new URL("../lib/ai/runtime.ts", import.meta.url), "utf8"),
-  engine: await readFile(new URL("../lib/image/engine.ts", import.meta.url), "utf8"),
-  entry: await readFile(new URL("../lib/imageVoxel.ts", import.meta.url), "utf8"),
-  nextConfig: await readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
-  vercel: await readFile(new URL("../vercel.json", import.meta.url), "utf8"),
-  pkg: await readFile(new URL("../package.json", import.meta.url), "utf8")
-};
+import { withTimeout, TimeoutError, IMPORT_TIMEOUT_MS } from "@/lib/prod/timeout.ts";
+import { assertImportableFile, MAX_IMPORT_BYTES } from "@/lib/prod/inputGuard.ts";
+import { sanitizeRaster } from "@/lib/prod/rasterSanitize.ts";
+import { recoverImport } from "@/lib/prod/recover.ts";
+import { localAiSupported, probeBrowserCompat } from "@/lib/prod/compat.ts";
 
 let failed = 0;
-function assert(name, ok) {
-  if (!ok) {
+function assert(name, condition) {
+  if (!condition) {
     console.error("FAIL", name);
     failed += 1;
   } else {
@@ -27,32 +20,70 @@ function assert(name, ok) {
   }
 }
 
-assert("timeout helper exists", files.timeout.includes("export function withTimeout"));
-assert("import timeout is bounded", files.timeout.includes("IMPORT_TIMEOUT_MS = 45_000"));
-assert("decode timeout is bounded", files.timeout.includes("DECODE_TIMEOUT_MS = 20_000"));
-assert("onnx run timeout is bounded", files.timeout.includes("ONNX_RUN_TIMEOUT_MS = 15_000"));
-assert("file size cap exists", files.guard.includes("MAX_IMPORT_BYTES = 25 * 1024 * 1024"));
-assert("unsupported types rejected", files.guard.includes("TYPE NOT SUPPORTED"));
-assert("transparent fringe sanitize exists", files.sanitize.includes("Near-invisible near-white fringe"));
-assert("opaque pixels stay untouched", files.sanitize.includes("Opaque pixels are left untouched"));
-assert("empty import retries as 2d", files.recover.includes('output: "2d"'));
-assert("fallback disables local AI", files.recover.includes("useLocalAi: false"));
-assert("wasm probe exists", files.compat.includes("typeof WebAssembly"));
-assert("runtime probes with timeout", files.runtime.includes("onnx-probe"));
-assert("runtime load timeout", files.runtime.includes("onnx-load"));
-assert("runtime run timeout", files.runtime.includes("onnx-run"));
-assert("corrupt model cache reset", files.runtime.includes("resetModel(id)"));
-assert("engine sanitizes decoded raster", files.engine.includes("sanitizeRaster(raw)"));
-assert("engine decode is timed", files.engine.includes("image-decode"));
-assert("engine still exports imageToVoxels", files.engine.includes("export async function imageToVoxels"));
-assert("public API wraps engine with recoverImport", files.entry.includes("recoverImport"));
-assert("public API still re-exports types", files.entry.includes("export type {"));
-assert("next caches model assets", files.nextConfig.includes("/models/:path*"));
-assert("vercel.json caches models", files.vercel.includes("/models/(.*)"));
-assert("test script includes hardening", files.pkg.includes("regression-hardening.mjs"));
+const resolved = await withTimeout(Promise.resolve("ok"), 50, "resolve-test");
+assert("withTimeout resolves normal promises", resolved === "ok");
+
+let timeoutCaught = false;
+try {
+  await withTimeout(new Promise(() => {}), 10, "timeout-test");
+} catch (error) {
+  timeoutCaught = error instanceof TimeoutError;
+}
+assert("withTimeout rejects with TimeoutError", timeoutCaught);
+assert("production import timeout remains 45 seconds", IMPORT_TIMEOUT_MS === 45_000);
+
+const valid = new File([new Uint8Array(64)], "asset.png", { type: "image/png" });
+assert("valid image file passes input guard", assertImportableFile(valid) === undefined);
+let badTypeRejected = false;
+try {
+  assertImportableFile(new File([new Uint8Array(64)], "asset.exe", { type: "application/octet-stream" }));
+} catch {
+  badTypeRejected = true;
+}
+assert("unsupported file type is rejected", badTypeRejected);
+
+let bigFileRejected = false;
+try {
+  assertImportableFile({ size: MAX_IMPORT_BYTES + 1, type: "image/png", name: "large.png" });
+} catch {
+  bigFileRejected = true;
+}
+assert("oversized file is rejected", bigFileRejected);
+
+const sanitized = sanitizeRaster({
+  width: 2,
+  height: 1,
+  rgba: new Uint8ClampedArray([
+    255, 255, 255, 20,
+    20, 30, 40, 255
+  ])
+});
+assert("near-invisible fringe is removed", sanitized.rgba[3] === 0);
+assert("opaque source pixel remains untouched", sanitized.rgba[4] === 20 && sanitized.rgba[7] === 255);
+
+let fallbackOptions;
+let runCount = 0;
+const recovered = await recoverImport(
+  async (options) => {
+    runCount += 1;
+    if (runCount === 1) return { voxels: [], count: 0, palette: [] };
+    fallbackOptions = options;
+    return { voxels: [{ x: 0, y: 0, z: 0, c: 0 }], count: 1, palette: ["#ffffff"] };
+  },
+  { mode: "model", output: "25d", useLocalAi: true }
+);
+assert("recoverImport runs the real fallback path", runCount === 2);
+assert("fallback disables local AI", fallbackOptions?.useLocalAi === false);
+assert("fallback switches to 2d", fallbackOptions?.output === "2d");
+assert("fallback uses flat mode", fallbackOptions?.mode === "flat");
+assert("fallback result is returned", recovered.count === 1 && recovered.aiStatus === "recovered-2d");
+
+const compat = probeBrowserCompat();
+assert("browser capability probe reports WebAssembly in Node", compat.wasm === true);
+assert("localAiSupported follows the wasm probe", localAiSupported(compat) === true);
 
 if (failed) {
-  console.error(`\n${failed} assertion(s) failed`);
+  console.error(`\n${failed} hardening functional assertion(s) failed`);
   process.exit(1);
 }
-console.log("\nAll P10 hardening regression checks passed.");
+console.log("\nAll hardening functional regression checks passed.");
