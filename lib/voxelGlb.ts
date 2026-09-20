@@ -1,3 +1,4 @@
+// lib/voxelGlb.ts
 import type { VoxelVolume } from "@/lib/voxelEngine";
 import {
   assertExportable,
@@ -288,7 +289,7 @@ export async function exportGlb(
     buffers: [{ byteLength: bin.length }]
   };
 
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
   return writeGlb(json, bin);
 }
 
@@ -526,6 +527,6 @@ export async function exportGlbTextured(
     buffers: [{ byteLength: bin.length }]
   };
 
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
   return writeGlb(json, bin);
 }
