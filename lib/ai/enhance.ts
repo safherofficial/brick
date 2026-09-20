@@ -1,4 +1,5 @@
 // lib/ai/enhance.ts
+
 import type { AiCategory } from "@/lib/ai/aiCategories";
 import { aiAvailable, loadModel } from "@/lib/ai/runtime";
 
@@ -14,13 +15,6 @@ type SegmentationPolicy = {
   preserveRadius: number;
 };
 
-/**
- * Category-aware local-AI matte policy.
- * Thin weapon features get a lower weak threshold so small blades/barrels are
- * not discarded before voxel reconstruction. Generic props keep a stricter
- * threshold to avoid background spill. The existing model mask cleanup still
- * removes detached noise after this pass.
- */
 const SEGMENT_POLICIES: Record<AiCategory, SegmentationPolicy> = {
   swords: { strongThreshold: 0.30, weakThreshold: 0.12, preserveRadius: 2 },
   guns: { strongThreshold: 0.38, weakThreshold: 0.16, preserveRadius: 2 },
@@ -103,7 +97,11 @@ function resizeMap(src: Float32Array, srcW: number, srcH: number, dstW: number, 
       const b = src[y0 * srcW + x1];
       const c = src[y1 * srcW + x0];
       const d = src[y1 * srcW + x1];
-      out[y * dstW + x] = a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+      out[y * dstW + x] =
+        a * (1 - fx) * (1 - fy) +
+        b * fx * (1 - fy) +
+        c * (1 - fx) * fy +
+        d * fx * fy;
     }
   }
   return out;
@@ -128,11 +126,6 @@ function quantile(sorted: number[], q: number) {
   return sorted[index];
 }
 
-/**
- * Hysteresis-style alpha refinement: preserve strong foreground, retain weak
- * alpha only when it is spatially attached to confident foreground. This is
- * intentionally category-aware and remains deterministic.
- */
 export function refineSegmentAlpha(
   alpha: Float32Array,
   width: number,
@@ -145,7 +138,6 @@ export function refineSegmentAlpha(
   for (let i = 0; i < alpha.length; i += 1) {
     if (alpha[i] >= policy.strongThreshold) strong[i] = 1;
   }
-
   const out = new Float32Array(alpha.length);
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -169,18 +161,17 @@ export function refineSegmentAlpha(
           }
         }
       }
-      if (attached) out[index] = Math.max(value, policy.weakThreshold + (policy.strongThreshold - policy.weakThreshold) * 0.45);
+      if (attached) {
+        out[index] = Math.max(
+          value,
+          policy.weakThreshold + (policy.strongThreshold - policy.weakThreshold) * 0.45
+        );
+      }
     }
   }
   return out;
 }
 
-/**
- * Re-normalize MiDaS using the foreground support instead of the full image.
- * The robust foreground percentiles prevent bright/dark backgrounds from
- * consuming most of the usable depth range. A conservative blend keeps the
- * original model signal so this remains a refinement, not a new depth model.
- */
 export function normalizeDepthToForeground(
   depth: Float32Array,
   alpha: Float32Array,
@@ -209,6 +200,100 @@ export function normalizeDepthToForeground(
     const local = clamp((original - low) / span, 0, 1);
     out[i] = original * (1 - blend) + local * blend;
   }
+  return out;
+}
+
+/**
+ * P17: add a bounded silhouette-derived structural prior to single-view depth.
+ * The prior is deliberately soft: MiDaS remains the dominant signal and the
+ * silhouette can only steer local thickness where it is well supported.
+ */
+export function refineDepthToShape(
+  depth: Float32Array,
+  alpha: Float32Array,
+  width: number,
+  height: number,
+  category?: AiCategory
+) {
+  if (!depth.length || depth.length !== alpha.length || width <= 1 || height <= 1) return depth;
+  if (!category || category === "swords") return depth;
+
+  const policy = SEGMENT_POLICIES[category];
+  const mask = new Uint8Array(alpha.length);
+  let foreground = 0;
+  for (let i = 0; i < alpha.length; i += 1) {
+    if ((alpha[i] ?? 0) >= policy.weakThreshold) {
+      mask[i] = 1;
+      foreground += 1;
+    }
+  }
+  if (foreground < 32) return depth;
+
+  const rowWidth = new Uint16Array(height);
+  const colHeight = new Uint16Array(width);
+  let maxRow = 1;
+  let maxCol = 1;
+  const rowMin = new Int16Array(height);
+  const rowMax = new Int16Array(height);
+  rowMin.fill(width);
+  rowMax.fill(-1);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue;
+      rowWidth[y] += 1;
+      colHeight[x] += 1;
+      if (x < rowMin[y]) rowMin[y] = x;
+      if (x > rowMax[y]) rowMax[y] = x;
+    }
+  }
+  for (let y = 0; y < height; y += 1) maxRow = Math.max(maxRow, rowWidth[y]);
+  for (let x = 0; x < width; x += 1) maxCol = Math.max(maxCol, colHeight[x]);
+
+  const blend = category === "rifles" ? 0.34 : category === "guns" ? 0.30 : 0.25;
+  const out = new Float32Array(depth.length);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const original = clamp(depth[index] ?? 0.5, 0, 1);
+      if (!mask[index]) {
+        out[index] = original;
+        continue;
+      }
+
+      const widthSignal = rowWidth[y] / maxRow;
+      const heightSignal = colHeight[x] / maxCol;
+      const span = Math.max(1, rowMax[y] - rowMin[y]);
+      const edgeDistance =
+        rowMax[y] < 0
+          ? 0
+          : Math.min(x - rowMin[y], rowMax[y] - x) / Math.max(1, span * 0.5);
+      const edgeSafe = clamp(edgeDistance, 0, 1);
+
+      // Broad silhouette bands are a safer depth prior than isolated pixels.
+      // Guns favour horizontal body mass; rifles additionally preserve long,
+      // thin runs by giving local column support a smaller but meaningful role.
+      const bodySignal = category === "rifles"
+        ? widthSignal * 0.62 + heightSignal * 0.38
+        : widthSignal * 0.70 + heightSignal * 0.30;
+      const shapePrior = clamp(
+        0.38 + bodySignal * 0.42 + edgeSafe * 0.20,
+        0.24,
+        0.88
+      );
+
+      // Keep the structural prior centered around 0.5 so it cannot create a
+      // global depth bias or flatten the original MiDaS gradient.
+      const anchoredPrior = 0.5 + (shapePrior - 0.5) * 0.72;
+      out[index] = clamp(
+        original * (1 - blend) + anchoredPrior * blend,
+        0,
+        1
+      );
+    }
+  }
+
   return out;
 }
 
@@ -246,7 +331,13 @@ async function runMap(id: "segment" | "depth", raster: AiRaster) {
     data: Float32Array;
   };
   const plane = planeFromOutput(output.data, output.dims);
-  const map = resizeMap(normalizeMap(Float32Array.from(plane.map)), plane.width, plane.height, raster.width, raster.height);
+  const map = resizeMap(
+    normalizeMap(Float32Array.from(plane.map)),
+    plane.width,
+    plane.height,
+    raster.width,
+    raster.height
+  );
   return { map, size };
 }
 
@@ -264,7 +355,6 @@ export async function enhanceRaster(
   const available = await aiAvailable();
   const wantSegment = Boolean(available.segment) && !cutout;
   const wantDepth = options.depth === true && Boolean(available.depth);
-
   let segmentStatus = cutout ? "cutout" : "skip";
   let depthStatus = "skip";
   let segmentSize = "-";
@@ -276,18 +366,24 @@ export async function enhanceRaster(
       diagnostics: { segment: segmentStatus, depth: depthStatus, segmentSize }
     };
   }
+
   const next: AiRaster = {
     width: raster.width,
     height: raster.height,
     rgba: new Uint8ClampedArray(raster.rgba)
   };
-
   let foregroundAlpha: Float32Array | null = null;
+
   if (wantSegment) {
     const segmentResult = await runMap("segment", raster);
     if (segmentResult) {
       segmentSize = `${segmentResult.size.width}×${segmentResult.size.height}`;
-      foregroundAlpha = refineSegmentAlpha(segmentResult.map, raster.width, raster.height, options.category);
+      foregroundAlpha = refineSegmentAlpha(
+        segmentResult.map,
+        raster.width,
+        raster.height,
+        options.category
+      );
       let kept = 0;
       for (let i = 0; i < foregroundAlpha.length; i += 1) {
         if (foregroundAlpha[i] >= 0.08) kept += 1;
@@ -321,9 +417,21 @@ export async function enhanceRaster(
     }
   }
 
-  const depth = rawDepth && foregroundAlpha
+  let depth = rawDepth && foregroundAlpha
     ? normalizeDepthToForeground(rawDepth, foregroundAlpha, options.category)
     : rawDepth;
+
+  // P17 is deliberately downstream of MiDaS normalization. This keeps the
+  // existing model signal and adds only a bounded silhouette-aware correction.
+  if (depth && foregroundAlpha && options.category) {
+    depth = refineDepthToShape(
+      depth,
+      foregroundAlpha,
+      raster.width,
+      raster.height,
+      options.category
+    );
+  }
 
   return {
     raster: next,
