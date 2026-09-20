@@ -33,13 +33,36 @@ export default function VoxelThumb({
   }, [size, voxels]);
 
   const center = volumeCenter(size);
-  // Keep published assets comfortably inside the preview frame while keeping
-  // the orbit tight around the actual asset center.
-  const distance = Math.max(8.5, size * 0.92);
+  const fov = 40;
+  const distance = useMemo(() => {
+    if (!voxels.length) return 10;
+
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+    for (const voxel of voxels) {
+      minX = Math.min(minX, voxel.x);
+      minY = Math.min(minY, voxel.y);
+      minZ = Math.min(minZ, voxel.z);
+      maxX = Math.max(maxX, voxel.x);
+      maxY = Math.max(maxY, voxel.y);
+      maxZ = Math.max(maxZ, voxel.z);
+    }
+
+    const width = maxX - minX + 1;
+    const height = maxY - minY + 1;
+    const depth = maxZ - minZ + 1;
+    const radius = Math.sqrt(width * width + height * height + depth * depth) * 0.5;
+    const requiredActualDistance = (radius / Math.tan(THREE.MathUtils.degToRad(fov * 0.5))) * 1.28;
+    const cameraDirectionLength = Math.sqrt(2.49);
+
+    return Math.max(10, requiredActualDistance / cameraDirectionLength);
+  }, [voxels]);
+
   return (
     <Canvas
       shadows
-      camera={{ position: [distance, distance * 0.7, distance], fov: 40 }}
+      camera={{ position: [distance, distance * 0.7, distance], fov }}
       dpr={[1, 2]}
     >
       <color attach="background" args={["#0b0f1a"]} />
@@ -67,8 +90,8 @@ export default function VoxelThumb({
           enablePan={false}
           enableDamping
           dampingFactor={0.1}
-          minDistance={distance * 0.82}
-          maxDistance={distance * 1.18}
+          minDistance={distance * 0.45}
+          maxDistance={distance}
         />
       )}
     </Canvas>
