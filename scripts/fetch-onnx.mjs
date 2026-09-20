@@ -7,10 +7,8 @@ import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(root, "public", "models");
-
 const FILES = [
   {
     name: "u2netp.onnx",
@@ -22,7 +20,8 @@ const FILES = [
   {
     name: "midas-small.onnx",
     urls: [
-      "https://huggingface.co/Heliosoph/midas-small-onnx/resolve/main/midas_v21_small_256.onnx"
+      "https://huggingface.co/Heliosoph/midas-small-onnx/resolve/main/midas_v21_small_256.onnx",
+      "https://huggingface.co/julienkay/sentis-MiDaS/resolve/main/onnx/midas_v21_small_256.onnx"
     ]
   }
 ];
@@ -35,7 +34,6 @@ async function exists(p) {
     return false;
   }
 }
-
 async function download(url, dest) {
   const tmp = `${dest}.part`;
   try {
@@ -52,9 +50,7 @@ async function download(url, dest) {
     throw error;
   }
 }
-
 await mkdir(outDir, { recursive: true });
-
 for (const file of FILES) {
   const dest = path.join(outDir, file.name);
   if (await exists(dest)) {
@@ -75,7 +71,6 @@ for (const file of FILES) {
   }
   if (!ok) console.error("MISSING", file.name);
 }
-
 const aliases = [
   ["u2netp.onnx", "rmbg.onnx"],
   ["midas-small.onnx", "depth-small.onnx"]
@@ -88,7 +83,6 @@ for (const [srcName, aliasName] of aliases) {
     console.log("alias", aliasName, "←", srcName);
   }
 }
-
 const ortDist = path.join(root, "node_modules", "onnxruntime-web", "dist");
 const ortOut = path.join(root, "public", "ort");
 try {
@@ -110,5 +104,4 @@ try {
 } catch (error) {
   console.warn("ONNX Runtime local WASM preparation skipped:", String(error?.message || error));
 }
-
 console.log("Done. Local AI assets prepared in public/models/ and public/ort/");
