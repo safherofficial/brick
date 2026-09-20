@@ -5,7 +5,7 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { VoxelCloud } from "@/components/builder/VoxelCloud";
-import { DEFAULT_PALETTE, VoxelVolume, volumeCenter, type Voxel } from "@/lib/voxelEngine";
+import { DEFAULT_PALETTE, VoxelVolume, type Voxel } from "@/lib/voxelEngine";
 
 const noop = () => {};
 function Spinner({ children }: { children: React.ReactNode }) {
@@ -32,10 +32,14 @@ export default function VoxelThumb({
     return v;
   }, [size, voxels]);
 
-  const center = volumeCenter(size);
-  const fov = 40;
-  const distance = useMemo(() => {
-    if (!voxels.length) return 10;
+  const bounds = useMemo(() => {
+    if (!voxels.length) {
+      return {
+        minX: 0, maxX: 0,
+        minY: 0, maxY: 0,
+        minZ: 0, maxZ: 0
+      };
+    }
 
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -49,15 +53,29 @@ export default function VoxelThumb({
       maxZ = Math.max(maxZ, voxel.z);
     }
 
-    const width = maxX - minX + 1;
-    const height = maxY - minY + 1;
-    const depth = maxZ - minZ + 1;
+    return { minX, maxX, minY, maxY, minZ, maxZ };
+  }, [voxels]);
+
+  const center = useMemo(
+    () => [
+      (bounds.minX + bounds.maxX) * 0.5,
+      (bounds.minY + bounds.maxY) * 0.5,
+      (bounds.minZ + bounds.maxZ) * 0.5
+    ] as [number, number, number],
+    [bounds]
+  );
+
+  const fov = 40;
+  const distance = useMemo(() => {
+    const width = bounds.maxX - bounds.minX + 1;
+    const height = bounds.maxY - bounds.minY + 1;
+    const depth = bounds.maxZ - bounds.minZ + 1;
     const radius = Math.sqrt(width * width + height * height + depth * depth) * 0.5;
     const requiredActualDistance = (radius / Math.tan(THREE.MathUtils.degToRad(fov * 0.5))) * 1.28;
     const cameraDirectionLength = Math.sqrt(2.49);
 
     return Math.max(10, requiredActualDistance / cameraDirectionLength);
-  }, [voxels]);
+  }, [bounds]);
 
   return (
     <Canvas
