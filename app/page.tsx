@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Float, Sparkles, OrbitControls, ContactShadows } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
@@ -140,6 +140,29 @@ function HeroScene() {
 }
 
 export default function HomePage() {
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const previousHtmlOverflow = html.style.overflow;
+    const previousBodyOverflow = body.style.overflow;
+    const previousHtmlHeight = html.style.height;
+    const previousBodyHeight = body.style.height;
+
+    // Builder CSS intentionally locks the viewport; release that lock when
+    // client-side navigation lands on the public home page.
+    html.style.overflow = "auto";
+    body.style.overflow = "auto";
+    html.style.height = "auto";
+    body.style.height = "auto";
+
+    return () => {
+      html.style.overflow = previousHtmlOverflow;
+      body.style.overflow = previousBodyOverflow;
+      html.style.height = previousHtmlHeight;
+      body.style.height = previousBodyHeight;
+    };
+  }, []);
+
   const [monthlySub, setMonthlySub] = useState(50);
   const [solPrice, setSolPrice] = useState(REFERENCE_SOL_USD);
 
@@ -182,6 +205,11 @@ export default function HomePage() {
               <span><b>01</b> MANUAL VOXEL BUILDER</span>
               <span><b>02</b> PNG / JPEG → ASSET</span>
               <span><b>03</b> GLB / VOX / OBJ</span>
+            </div>
+            <div className="proBuilderProof" aria-label="Builder strengths">
+              <span><b>EDIT</b> Shape &amp; paint voxel-by-voxel</span>
+              <span><b>INPUT</b> Single image or FRONT + SIDE</span>
+              <span><b>OUTPUT</b> Game-ready formats for Unity workflows</span>
             </div>
           </div>
           <HeroScene />
@@ -274,12 +302,19 @@ export default function HomePage() {
         <div className="proPricingGrid">
           <div className="proCalcCard">
             <div className="calcHeader"><span>YOUR CURRENT 3D SUBSCRIPTION</span><strong>${monthlySub}<small>/ month</small></strong></div>
+            <div className="brickPriceHighlight">
+              <div>
+                <span>BRICK PRO</span>
+                <strong>{PRO_SOL_PRICE.toFixed(2)} <small>SOL / month</small></strong>
+              </div>
+              <b>≈ ${brickMonthlyUsd.toFixed(2)} / month</b>
+            </div>
             <input aria-label="Current monthly subscription cost" type="range" min="5" max="150" step="1" value={monthlySub} onChange={(e) => setMonthlySub(Number(e.target.value))} />
             <div className="calcInputs">
               <label><span>Monthly subscription</span><input type="number" min="0" step="1" value={monthlySub} onChange={(e) => setMonthlySub(Number(e.target.value) || 0)} /></label>
               <label><span>SOL reference price</span><input type="number" min="0" step="1" value={solPrice} onChange={(e) => setSolPrice(Number(e.target.value) || 0)} /></label>
             </div>
-            <div className="calcFoot"><span>Brick Pro</span><strong>{PRO_SOL_PRICE.toFixed(2)} SOL / mo ≈ ${brickMonthlyUsd.toFixed(2)}</strong></div>
+
           </div>
           <div className="proSavingsCard">
             <span>ESTIMATED ANNUAL DIFFERENCE</span>
