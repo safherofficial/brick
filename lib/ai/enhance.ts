@@ -246,19 +246,35 @@ async function runMap(id: "segment" | "depth", raster: AiRaster) {
     data: Float32Array;
   };
   const plane = planeFromOutput(output.data, output.dims);
-  return resizeMap(normalizeMap(Float32Array.from(plane.map)), plane.width, plane.height, raster.width, raster.height);
+  const map = resizeMap(normalizeMap(Float32Array.from(plane.map)), plane.width, plane.height, raster.width, raster.height);
+  return { map, size };
 }
+
+export type EnhanceDiagnostics = {
+  segment: string;
+  depth: string;
+  segmentSize: string;
+};
 
 export async function enhanceRaster(
   raster: AiRaster,
   options: { depth?: boolean; category?: AiCategory } = {}
-) {
+): Promise<{ raster: AiRaster; depth: Float32Array | null; diagnostics: EnhanceDiagnostics }> {
   const cutout = hasCutoutAlpha(raster);
   const available = await aiAvailable();
   const wantSegment = Boolean(available.segment) && !cutout;
   const wantDepth = options.depth === true && Boolean(available.depth);
+
+  let segmentStatus = cutout ? "cutout" : "skip";
+  let depthStatus = "skip";
+  let segmentSize = "-";
+
   if (!wantSegment && !wantDepth) {
-    return { raster, depth: null as Float32Array | null };
+    return {
+      raster,
+      depth: null,
+      diagnostics: { segment: segmentStatus, depth: depthStatus, segmentSize }
+    };
   }
   const next: AiRaster = {
     width: raster.width,
@@ -268,9 +284,10 @@ export async function enhanceRaster(
 
   let foregroundAlpha: Float32Array | null = null;
   if (wantSegment) {
-    const alpha = await runMap("segment", raster);
-    if (alpha) {
-      foregroundAlpha = refineSegmentAlpha(alpha, raster.width, raster.height, options.category);
+    const segmentResult = await runMap("segment", raster);
+    if (segmentResult) {
+      segmentSize = `${segmentResult.size.width}×${segmentResult.size.height}`;
+      foregroundAlpha = refineSegmentAlpha(segmentResult.map, raster.width, raster.height, options.category);
       let kept = 0;
       for (let i = 0; i < foregroundAlpha.length; i += 1) {
         if (foregroundAlpha[i] >= 0.08) kept += 1;
@@ -279,7 +296,12 @@ export async function enhanceRaster(
         for (let i = 0; i < foregroundAlpha.length; i += 1) {
           next.rgba[i * 4 + 3] = clamp(Math.round(foregroundAlpha[i] * 255), 0, 255);
         }
+        segmentStatus = "ok";
+      } else {
+        segmentStatus = "weak";
       }
+    } else {
+      segmentStatus = "fail";
     }
   } else if (cutout) {
     foregroundAlpha = new Float32Array(raster.width * raster.height);
@@ -288,10 +310,24 @@ export async function enhanceRaster(
     }
   }
 
-  const rawDepth = wantDepth ? await runMap("depth", raster) : null;
+  let rawDepth: Float32Array | null = null;
+  if (wantDepth) {
+    const depthResult = await runMap("depth", raster);
+    if (depthResult) {
+      rawDepth = depthResult.map;
+      depthStatus = "ok";
+    } else {
+      depthStatus = "fail";
+    }
+  }
+
   const depth = rawDepth && foregroundAlpha
     ? normalizeDepthToForeground(rawDepth, foregroundAlpha, options.category)
     : rawDepth;
 
-  return { raster: next, depth };
+  return {
+    raster: next,
+    depth,
+    diagnostics: { segment: segmentStatus, depth: depthStatus, segmentSize }
+  };
 }
