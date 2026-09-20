@@ -2,8 +2,8 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Canvas, Float, Sparkles, OrbitControls, ContactShadows } from "@react-three/drei";
-import { useFrame } from "@react-three/fiber";
+import { Float, Sparkles, OrbitControls, ContactShadows } from "@react-three/drei";
+import { Canvas, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useRef } from "react";
 
