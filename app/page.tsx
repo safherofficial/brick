@@ -1,139 +1,88 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Float, Sparkles, OrbitControls, ContactShadows } from "@react-three/drei";
-import { Canvas, useFrame } from "@react-three/fiber";
-import * as THREE from "three";
-import { useRef } from "react";
+import VoxelThumb from "@/components/gallery/VoxelThumb";
+import type { CreationSummary } from "@/lib/creationsApi";
 
 const PRO_SOL_PRICE = 0.08;
 const REFERENCE_SOL_USD = 113;
+const HOME_ROTATION_MS = 4 * 60 * 60 * 1000;
 
-function Block({ position, scale = [1, 1, 1], color = "#8090ff", metalness = 0.45 }: { position: [number, number, number]; scale?: [number, number, number]; color?: string; metalness?: number }) {
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function selectRotatingAssets(creations: CreationSummary[], bucket: number, count: number) {
+  return [...creations]
+    .sort((a, b) => hashString(`${bucket}:${a.id}`) - hashString(`${bucket}:${b.id}`))
+    .slice(0, count);
+}
+
+function PublishedAssetPreview({
+  asset,
+  interactive = false
+}: {
+  asset: CreationSummary | undefined;
+  interactive?: boolean;
+}) {
+  if (!asset) {
+    return (
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "grid",
+          placeItems: "center",
+          color: "#69758a",
+          font: '700 9px var(--font-mono)',
+          letterSpacing: ".12em",
+          textAlign: "center",
+          padding: 30
+        }}
+      >
+        NO PUBLISHED ASSETS YET
+      </div>
+    );
+  }
+
   return (
-    <mesh position={position} scale={scale} castShadow receiveShadow>
-      <boxGeometry args={[1, 1, 1]} />
-      <meshStandardMaterial color={color} roughness={0.34} metalness={metalness} />
-    </mesh>
+    <VoxelThumb
+      size={asset.construction_data.size}
+      voxels={asset.construction_data.voxels}
+      palette={asset.construction_data.palette}
+      interactive={interactive}
+    />
   );
 }
 
-function VoxelGun({ active = false }: { active?: boolean }) {
+function HomePublishedAsset({ asset }: { asset: CreationSummary | undefined }) {
   return (
-    <group rotation={[0.06, -0.32, -0.12]} scale={active ? 1.05 : 0.78}>
-      <Block position={[0, 0.45, 0]} scale={[2.35, 0.55, 0.65]} color="#9aa5bf" />
-      <Block position={[0.72, 0.88, 0]} scale={[0.82, 0.24, 0.74]} color="#68738e" />
-      <Block position={[1.38, 0.73, 0]} scale={[1.45, 0.22, 0.34]} color="#4e5870" metalness={0.7} />
-      <Block position={[2.07, 0.73, 0]} scale={[0.35, 0.3, 0.24]} color="#b5c0d8" />
-      <Block position={[-0.55, -0.25, 0]} scale={[0.54, 1.22, 0.58]} color="#59647d" />
-      <Block position={[-0.24, -0.74, 0]} scale={[0.86, 0.35, 0.5]} color="#444d64" />
-      <Block position={[0.55, -0.1, 0]} scale={[0.38, 0.16, 0.76]} color="#343b4e" metalness={0.8} />
-      <mesh position={[-0.2, 0.48, 0.34]} castShadow>
-        <boxGeometry args={[0.58, 0.18, 0.09]} />
-        <meshStandardMaterial color="#8899ff" emissive="#3444d8" emissiveIntensity={1.4} />
-      </mesh>
-    </group>
+    <div style={{ width: "100%", height: "100%" }}>
+      <PublishedAssetPreview asset={asset} />
+    </div>
   );
 }
 
-function VoxelSword() {
-  return (
-    <group rotation={[0.05, 0.28, -0.42]} scale={0.72}>
-      <Block position={[0, 1.95, 0]} scale={[0.32, 3.65, 0.32]} color="#b3bed3" metalness={0.75} />
-      <Block position={[0, 3.62, 0]} scale={[0.58, 0.24, 0.5]} color="#dae2ee" metalness={0.8} />
-      <Block position={[0, 3.9, 0]} scale={[0.34, 0.24, 0.34]} color="#8f9cff" />
-      <Block position={[0, 0.03, 0]} scale={[1.22, 0.25, 0.46]} color="#56617a" />
-      <Block position={[0, -0.75, 0]} scale={[0.32, 1.38, 0.32]} color="#30384a" />
-    </group>
-  );
-}
-
-function VoxelCrate() {
-  return (
-    <group rotation={[0.08, 0.15, 0.12]} scale={0.9}>
-      <mesh castShadow receiveShadow>
-        <boxGeometry args={[1.8, 1.8, 1.8]} />
-        <meshStandardMaterial color="#586279" roughness={0.55} metalness={0.15} />
-      </mesh>
-      <Block position={[0, 0, 0.95]} scale={[1.35, 0.2, 0.12]} color="#7c88a4" />
-      <Block position={[0, 0, -0.95]} scale={[1.35, 0.2, 0.12]} color="#7c88a4" />
-      <Block position={[0, 0.6, 0]} scale={[0.2, 1.35, 0.12]} color="#7783a0" />
-      <Block position={[0, -0.6, 0]} scale={[0.2, 1.35, 0.12]} color="#7783a0" />
-      <Block position={[0, 0, 0]} scale={[0.18, 1.45, 0.18]} color="#9ba8c3" />
-    </group>
-  );
-}
-
-function SceneRig() {
-  const group = useRef<THREE.Group>(null);
-
-  useFrame((state) => {
-    if (!group.current) return;
-    const t = state.clock.getElapsedTime();
-    group.current.rotation.y = Math.sin(t * 0.35) * 0.08 + state.pointer.x * 0.12;
-    group.current.rotation.x = Math.sin(t * 0.25) * 0.025 - state.pointer.y * 0.035;
-  });
-
-  return (
-    <group ref={group} position={[0.35, 0.25, 0]}>
-      <Float speed={1.2} rotationIntensity={0.12} floatIntensity={0.18}>
-        <VoxelGun active />
-      </Float>
-      <Float speed={1.05} rotationIntensity={0.18} floatIntensity={0.35}>
-        <group position={[-2.2, 1.45, -0.9]}>
-          <VoxelSword />
-        </group>
-      </Float>
-      <Float speed={1.15} rotationIntensity={0.2} floatIntensity={0.26}>
-        <group position={[2.35, -1.05, -0.7]}>
-          <VoxelCrate />
-        </group>
-      </Float>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.75, 0]} receiveShadow>
-        <circleGeometry args={[4.6, 96]} />
-        <meshBasicMaterial color="#0b0e14" transparent opacity={0.76} />
-      </mesh>
-    </group>
-  );
-}
-
-function MiniAssetCanvas({ children }: { children: ReactNode }) {
-  return (
-    <Canvas camera={{ position: [4.8, 2.8, 5.4], fov: 38 }} dpr={[1, 1.4]} shadows>
-      <ambientLight intensity={1.65} />
-      <directionalLight position={[4, 5, 4]} intensity={3.2} color="#e4e9ff" castShadow />
-      <pointLight position={[-2, 1, 2]} intensity={12} distance={7} color="#6573ff" />
-      <Float speed={1.05} rotationIntensity={0.12} floatIntensity={0.15}>{children}</Float>
-      <ContactShadows position={[0, -1.4, 0]} opacity={0.42} scale={5} blur={2.5} far={3.5} />
-    </Canvas>
-  );
-}
-
-function HeroScene() {
+function HeroScene({ asset }: { asset: CreationSummary | undefined }) {
   return (
     <div className="proSceneWrap">
       <div className="proSceneChrome">
-        <span>LIVE ASSET PREVIEW</span>
+        <span>LIVE PUBLISHED ASSET</span>
         <span className="sceneStatus"><i /> WEBGL</span>
       </div>
-      <Canvas camera={{ position: [6.6, 3.8, 7.4], fov: 34 }} dpr={[1, 1.6]} shadows>
-        <color attach="background" args={["#07090e"]} />
-        <fog attach="fog" args={["#07090e", 8, 15]} />
-        <ambientLight intensity={1.55} />
-        <directionalLight position={[4, 7, 5]} intensity={3.3} color="#dfe6ff" castShadow />
-        <pointLight position={[-3, 2, 2]} intensity={18} distance={8} color="#586cff" />
-        <pointLight position={[3, -1, -1]} intensity={12} distance={7} color="#50d7ff" />
-        <SceneRig />
-        <gridHelper args={[16, 32, "#20263b", "#101522"]} position={[0, -1.82, 0]} />
-        <ContactShadows position={[0, -1.78, 0]} opacity={0.55} scale={8} blur={2.8} far={4.5} />
-        <Sparkles count={75} scale={[8, 4.5, 8]} size={1.1} speed={0.22} opacity={0.34} color="#8793ff" />
-        <OrbitControls enablePan={false} enableZoom={false} minPolarAngle={1.12} maxPolarAngle={1.75} minAzimuthAngle={-0.45} maxAzimuthAngle={0.45} />
-      </Canvas>
+      <div style={{ position: "absolute", inset: 0, paddingTop: 34, paddingBottom: 52 }}>
+        <PublishedAssetPreview asset={asset} interactive />
+      </div>
       <div className="sceneReadout">
-        <span>PRIMARY ASSET</span>
-        <strong>VOXEL WEAPON</strong>
-        <em>2D / 2.5D READY</em>
+        <span>PUBLISHED ASSET</span>
+        <strong>{asset?.name || "NONE"}</strong>
+        <em>{asset ? "BUILDER / PUBLISH" : "WAITING FOR CREATION"}</em>
       </div>
     </div>
   );
@@ -165,6 +114,46 @@ export default function HomePage() {
 
   const [monthlySub, setMonthlySub] = useState(50);
   const [solPrice, setSolPrice] = useState(REFERENCE_SOL_USD);
+  const [publishedAssets, setPublishedAssets] = useState<CreationSummary[]>([]);
+  const [rotationKey, setRotationKey] = useState(() => Math.floor(Date.now() / HOME_ROTATION_MS));
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/creations?sort=latest&limit=60", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load published assets.");
+        const data = await response.json();
+        return Array.isArray(data?.creations) ? (data.creations as CreationSummary[]) : [];
+      })
+      .then((items) => {
+        if (!cancelled) setPublishedAssets(items);
+      })
+      .catch(() => {
+        if (!cancelled) setPublishedAssets([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rotationKey]);
+
+  useEffect(() => {
+    const now = Date.now();
+    const untilNextRotation = HOME_ROTATION_MS - (now % HOME_ROTATION_MS) + 100;
+    const timeout = window.setTimeout(() => {
+      setRotationKey(Math.floor(Date.now() / HOME_ROTATION_MS));
+    }, untilNextRotation);
+
+    return () => window.clearTimeout(timeout);
+  }, [rotationKey]);
+
+  const rotatingAssets = useMemo(
+    () => selectRotatingAssets(publishedAssets, rotationKey, 4),
+    [publishedAssets, rotationKey]
+  );
+  const heroAsset = rotatingAssets[0];
+  const clientAsset = rotatingAssets[1] ?? heroAsset;
 
   const brickMonthlyUsd = useMemo(() => PRO_SOL_PRICE * solPrice, [solPrice]);
   const annualSubscription = monthlySub * 12;
@@ -212,7 +201,7 @@ export default function HomePage() {
               <span><b>OUTPUT</b> Game-ready formats for Unity workflows</span>
             </div>
           </div>
-          <HeroScene />
+          <HeroScene asset={heroAsset} />
         </div>
         <div className="proHeroBottom">
           <span>SCROLL TO EXPLORE</span>
@@ -260,11 +249,27 @@ export default function HomePage() {
           </div>
           <Link href="/build" className="proInlineCta">OPEN THE BUILDER ↗</Link>
         </div>
-        <div className="proAssetGrid">
-          <article className="proAssetCard proAssetWeapon"><div className="assetArt"><MiniAssetCanvas><VoxelGun active /></MiniAssetCanvas></div><div className="assetMeta"><span>WEAPONS</span><strong>Combat assets</strong><p>Guns, rifles, swords and stylized equipment.</p></div></article>
-          <article className="proAssetCard proAssetSword"><div className="assetArt"><MiniAssetCanvas><VoxelSword /></MiniAssetCanvas></div><div className="assetMeta"><span>OBJECTS</span><strong>Inventory assets</strong><p>Items, pickups, tools and collectible objects.</p></div></article>
-          <article className="proAssetCard proAssetProp"><div className="assetArt"><MiniAssetCanvas><VoxelCrate /></MiniAssetCanvas></div><div className="assetMeta"><span>PROPS</span><strong>World objects</strong><p>Crates, blocks and gameplay environment pieces.</p></div></article>
-        </div>
+        {rotatingAssets.length ? (
+          <div className="proAssetGrid">
+            {rotatingAssets.slice(0, 3).map((asset, index) => (
+              <article className={`proAssetCard ${index === 0 ? "proAssetWeapon" : index === 1 ? "proAssetSword" : "proAssetProp"}`} key={asset.id}>
+                <Link href={`/creation/${asset.id}`} className="assetArt" aria-label={`Open ${asset.name}`}>
+                  <HomePublishedAsset asset={asset} />
+                </Link>
+                <div className="assetMeta">
+                  <span>PUBLISHED BY USER</span>
+                  <strong>{asset.name}</strong>
+                  <p>{asset.author ? `Created by ${asset.author}.` : "Published from the Builder."} {asset.brick_count.toLocaleString()} voxels.</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="proGalleryMessage">
+            <strong>No published assets yet.</strong>
+            <span>Assets appear here automatically after a user publishes them from the Builder.</span>
+          </div>
+        )}
       </section>
 
       <section className="proSection proClient" id="clients">
@@ -283,9 +288,11 @@ export default function HomePage() {
           </div>
           <div className="proClientVisual">
             <div className="clientFrame">
-              <span className="frameLabel">PRIVATE PROJECT</span>
-              <div className="frameScene"><MiniAssetCanvas><VoxelGun active /></MiniAssetCanvas></div>
-              <div className="frameFooter"><span>CLIENT ASSET / 014</span><strong>EXPORT GLB</strong></div>
+              <span className="frameLabel">PUBLISHED PROJECT</span>
+              <div className="frameScene">
+                <HomePublishedAsset asset={clientAsset} />
+              </div>
+              <div className="frameFooter"><span>{clientAsset ? clientAsset.name.toUpperCase() : "NO PUBLISHED ASSET"}</span><strong>{clientAsset ? "PUBLISHED" : "WAITING"}</strong></div>
             </div>
           </div>
         </div>
