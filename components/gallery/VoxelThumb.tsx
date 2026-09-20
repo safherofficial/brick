@@ -8,7 +8,6 @@ import { VoxelCloud } from "@/components/builder/VoxelCloud";
 import { DEFAULT_PALETTE, VoxelVolume, volumeCenter, type Voxel } from "@/lib/voxelEngine";
 
 const noop = () => {};
-
 function Spinner({ children }: { children: React.ReactNode }) {
   const ref = useRef<THREE.Group>(null);
   useFrame((_, delta) => {
@@ -16,7 +15,6 @@ function Spinner({ children }: { children: React.ReactNode }) {
   });
   return <group ref={ref}>{children}</group>;
 }
-
 export default function VoxelThumb({
   size,
   voxels,
@@ -35,12 +33,13 @@ export default function VoxelThumb({
   }, [size, voxels]);
 
   const center = volumeCenter(size);
-  const distance = Math.max(6, size * 0.6);
-
+  // Keep published assets comfortably inside the preview frame. The previous
+  // camera distance could crop tall/wide creations in cards and detail views.
+  const distance = Math.max(7, size * 0.76);
   return (
     <Canvas
       shadows
-      camera={{ position: [center[0] + distance, distance * 0.7, center[2] + distance], fov: 38 }}
+      camera={{ position: [center[0] + distance, distance * 0.7, center[2] + distance], fov: 40 }}
       dpr={[1, 2]}
     >
       <color attach="background" args={["#0b0f1a"]} />
@@ -71,5 +70,4 @@ export default function VoxelThumb({
     </Canvas>
   );
 }
-
 const EMPTY_SET = new Set<string>();
