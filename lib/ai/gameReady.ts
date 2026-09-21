@@ -40,7 +40,7 @@ export const ENGINE_PROFILES: Record<EngineId, EngineProfile> = {
     metallicFactor: 0,
     roughnessFactor: 1,
     doubleSided: false,
-    notes: "1 unit = 1 m after import · pivot at base · Unlit + atlas NEAREST · single root"
+    notes: "1 unit = 1 m after import · pivot at base · PBR palette materials + atlas NEAREST"
   },
   godot: {
     id: "godot",
@@ -109,16 +109,6 @@ export const UNITY_PROP_HEIGHT_METERS = 1.50;
 export const UNITY_PROP_HEIGHT_MIN_METERS = 0.4;
 export const UNITY_PROP_HEIGHT_MAX_METERS = 2.5;
 
-export function engineExportOptions(engine: EngineId = DEFAULT_ENGINE): MeshExportOptions {
-  const p = ENGINE_PROFILES[engine];
-  return {
-    unitMeters: p.unitMeters,
-    pivot: p.pivot,
-    upAxis: p.upAxis
-  };
-}
-
-/** World-space target height (long axis after bottom-center pivot). */
 export function unityTargetHeightMeters(shape?: string | null): number {
   const kind = String(shape ?? "prop").toLowerCase();
   if (kind === "sword") return UNITY_SWORD_HEIGHT_METERS;
@@ -131,10 +121,6 @@ export function unityTargetHeightMeters(shape?: string | null): number {
   );
 }
 
-/**
- * Unity meters per voxel. unitMeters = targetHeight / voxelSpanY.
- * tile / output 2d stays 1 voxel = 1 unit. Pivot remains bottom-center.
- */
 export function unityUnitMeters(
   shape: string | null | undefined,
   voxelSpanY: number,
@@ -170,6 +156,15 @@ export function unityBoxCollider(
     (min[2] + max[2]) / 2
   ];
   return { type: "box", center, size };
+}
+
+export function engineExportOptions(engine: EngineId = DEFAULT_ENGINE): MeshExportOptions {
+  const p = ENGINE_PROFILES[engine];
+  return {
+    unitMeters: p.unitMeters,
+    pivot: p.pivot,
+    upAxis: p.upAxis
+  };
 }
 
 /** Triangle / voxel budgets by quality tier (static props). */
@@ -252,11 +247,11 @@ export type MaterialContract = {
 
 export const VOXEL_MATERIAL_CONTRACT: MaterialContract = {
   name: "voxel-atlas",
-  metallicFactor: 0,
-  roughnessFactor: 1,
+  metallicFactor: 0.75,
+  roughnessFactor: 0.30,
   doubleSided: false,
   nearestFilter: true,
-  unlitPreferred: true
+  unlitPreferred: false
 };
 
 /**
@@ -314,14 +309,13 @@ export function buildGlbExtras(input: {
 
 export function gameReadyChecklist(): string[] {
   return [
-    "Scale: Unity target height / voxelSpanY (sword 1.10 m, rifle 1.00 m, gun 0.35 m, prop 1.50 m, min 0.01 m/voxel; 2d tile 1 voxel = 1 unit)",
+    "Scale: 0.1 m per voxel (1 unit = 1 m in engine after import)",
     "Pivot: bottom-center (floor props / weapon base)",
     "Up axis: Y (glTF / Unity / Godot)",
     "Mesh: greedy quads (not one cube = one mesh)",
-    "Material: single atlas, metallic 0, roughness 1, NEAREST filter",
-    "Hierarchy: single root → mesh child + Socket_*",
-    "Collider: AABB box in extras (type box, no mesh collider)",
-    "Formats: GLB textured unlit (primary), VOX, OBJ archive, PNG ortho for 2D",
+    "Material: palette-mapped PBR presets + baked voxel AO, NEAREST filter",
+    "Hierarchy: mesh root + Socket_* empty nodes",
+    "Formats: GLB textured PBR (primary), VOX, OBJ archive, PNG ortho for 2D",
     "No editor-only lights baked into the file"
   ];
 }
