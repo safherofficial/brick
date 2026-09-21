@@ -1,8 +1,9 @@
 /**
- * P15 + P16 + P17 AI precision regression.
+ * P15 + P16 + P17 + P18 AI precision regression.
  *
  * Locks category-aware segmentation/depth refinement, conservative FRONT/SIDE
- * confidence fusion, and the P17 single-view shape-aware depth prior.
+ * confidence fusion, the P17 single-view shape-aware depth prior, and the P18
+ * detail-preserving voxel budget allocation.
  */
 import {
   refineSegmentAlpha,
@@ -10,9 +11,10 @@ import {
   refineDepthToShape
 } from "../lib/ai/enhance.ts";
 import { bestSideYShiftBins, fuseSideMaskConfidence } from "../lib/ai/viewAlign.ts";
+import { adaptiveAssetProfile } from "../lib/ai/assetProfiles.ts";
+import { dynamicVoxelBudget } from "../lib/image/budget.ts";
 
 let failed = 0;
-
 function assert(name, condition) {
   if (!condition) {
     console.error("FAIL", name);
@@ -31,7 +33,6 @@ for (let y = 5; y < 19; y += 1) {
 }
 for (let y = 5; y < 19; y += 1) alpha[y * width + 9] = 0.18;
 for (let y = 5; y < 19; y += 1) alpha[y * width + 14] = 0.18;
-
 const sword = refineSegmentAlpha(alpha, width, height, "swords");
 const object = refineSegmentAlpha(alpha, width, height, "objects");
 const swordKept = [...sword].filter((v) => v > 0).length;
@@ -52,8 +53,14 @@ for (let y = 6; y < 18; y += 1) {
   }
 }
 const normalized = normalizeDepthToForeground(depth, depthAlpha, "rifles");
-assert("foreground depth range remains ordered", normalized[10 * width + 15] > normalized[10 * width + 8]);
-assert("background depth is not forcibly collapsed", normalized[2 * width + 2] >= 0 && normalized[2 * width + 2] <= 1);
+assert(
+  "foreground depth range remains ordered",
+  normalized[10 * width + 15] > normalized[10 * width + 8]
+);
+assert(
+  "background depth is not forcibly collapsed",
+  normalized[2 * width + 2] >= 0 && normalized[2 * width + 2] <= 1
+);
 
 // P17 shape-aware prior: a wide structural band should receive slightly more
 // depth support than a one-pixel contour while preserving MiDaS ordering.
@@ -71,11 +78,134 @@ const shape = refineDepthToShape(shapeDepth, shapeAlpha, width, height, "rifles"
 const broadCenter = shape[11 * width + 11];
 const narrowTop = shape[7 * width + 11];
 assert("P17 keeps depth bounded", [...shape].every((v) => v >= 0 && v <= 1));
-assert("P17 increases structural support for broad weapon bodies", broadCenter > narrowTop);
-const shapeAgain = refineDepthToShape(shapeDepth, shapeAlpha, width, height, "rifles");
-assert("P17 shape refinement is deterministic", shapeAgain[11 * width + 11] === broadCenter);
+assert(
+  "P17 increases structural support for broad weapon bodies",
+  broadCenter > narrowTop
+);
+const shapeAgain = refineDepthToShape(
+  shapeDepth,
+  shapeAlpha,
+  width,
+  height,
+  "rifles"
+);
+assert(
+  "P17 shape refinement is deterministic",
+  shapeAgain[11 * width + 11] === broadCenter
+);
 
-const makeMask = (w, h) => Array.from({ length: h }, () => Array(w).fill(false));
+// P18 — recognized detail demand must raise the adaptive budget profile for
+// long/thin weapon silhouettes without changing the hard category bounds.
+const detailProfile = adaptiveAssetProfile({
+  category: "rifles",
+  width: 64,
+  height: 128,
+  volumeSize: 64,
+  mode: "model",
+  hasSide: true,
+  hasDepth: true,
+  features: {
+    thin: true,
+    long: true,
+    tapered: true,
+    symmetric: false,
+    broadHead: false,
+    irregular: true
+  },
+  evidence: {
+    hits: 900,
+    fill: 0.18,
+    aspect: 2,
+    slenderness: 4.5,
+    symmetry: 0.58,
+    taper: 0.45,
+    bulge: 1.0,
+    widthCv: 0.36,
+    edgeThinness: 0.42
+  }
+});
+const plainProfile = adaptiveAssetProfile({
+  category: "rifles",
+  width: 64,
+  height: 128,
+  volumeSize: 64,
+  mode: "model",
+  hasSide: true,
+  hasDepth: true,
+  features: {
+    thin: false,
+    long: false,
+    tapered: false,
+    symmetric: true,
+    broadHead: false,
+    irregular: false
+  },
+  evidence: {
+    hits: 3200,
+    fill: 0.58,
+    aspect: 1.2,
+    slenderness: 1.4,
+    symmetry: 0.88,
+    taper: 0.92,
+    bulge: 1.02,
+    widthCv: 0.08,
+    edgeThinness: 0.04
+  }
+});
+assert(
+  "P18 raises budget demand for thin/long detailed assets",
+  detailProfile.budgetScale > plainProfile.budgetScale
+);
+assert(
+  "P18 adaptive budget remains bounded",
+  detailProfile.budgetScale <= 1.1
+);
+
+const thinBudget = dynamicVoxelBudget({
+  volumeSize: 64,
+  mode: "model",
+  defaultCap: 100000,
+  width: 26,
+  height: 58,
+  depth: 10,
+  projectedFill: 0.16,
+  category: "rifles",
+  profileScale: detailProfile.budgetScale
+});
+const plainBudget = dynamicVoxelBudget({
+  volumeSize: 64,
+  mode: "model",
+  defaultCap: 100000,
+  width: 38,
+  height: 46,
+  depth: 8,
+  projectedFill: 0.58,
+  category: "objects",
+  profileScale: plainProfile.budgetScale
+});
+const repeatedBudget = dynamicVoxelBudget({
+  volumeSize: 64,
+  mode: "model",
+  defaultCap: 100000,
+  width: 26,
+  height: 58,
+  depth: 10,
+  projectedFill: 0.16,
+  category: "rifles",
+  profileScale: detailProfile.budgetScale
+});
+assert(
+  "P18 allocates at least as much budget to detailed rifle silhouettes",
+  thinBudget >= plainBudget
+);
+assert(
+  "P18 never exceeds the historical 100k default cap",
+  thinBudget <= 100000 && plainBudget <= 100000
+);
+assert("P18 budget allocation is deterministic", repeatedBudget === thinBudget);
+
+const makeMask = (w, h) =>
+  Array.from({ length: h }, () => Array(w).fill(false));
 const front = makeMask(20, 20);
 const side = makeMask(20, 20);
 for (let y = 4; y < 16; y += 1) {
@@ -84,7 +214,6 @@ for (let y = 4; y < 16; y += 1) {
     side[y][x] = true;
   }
 }
-
 side[9][9] = false;
 const recovered = fuseSideMaskConfidence(
   front,
@@ -94,7 +223,10 @@ const recovered = fuseSideMaskConfidence(
   0,
   64
 );
-assert("P16 recovers a high-confidence single-pixel SIDE hole", side[9][9] === true && recovered.recovered >= 1);
+assert(
+  "P16 recovers a high-confidence single-pixel SIDE hole",
+  side[9][9] === true && recovered.recovered >= 1
+);
 
 side[9][9] = false;
 side[9][10] = false;
@@ -109,7 +241,12 @@ const broad = fuseSideMaskConfidence(
   0,
   64
 );
-assert("P16 does not bridge a broad missing SIDE region", side[9][10] === false && side[9][11] === false && broad.recovered < 4);
+assert(
+  "P16 does not bridge a broad missing SIDE region",
+  side[9][10] === false &&
+    side[9][11] === false &&
+    broad.recovered < 4
+);
 
 const frontGap = makeMask(20, 20);
 const sideGap = makeMask(20, 20);
@@ -125,7 +262,10 @@ const gated = fuseSideMaskConfidence(
   0,
   64
 );
-assert("P16 keeps FRONT as the hard occupancy gate", sideGap[9][9] === false && gated.recovered === 0);
+assert(
+  "P16 keeps FRONT as the hard occupancy gate",
+  sideGap[9][9] === false && gated.recovered === 0
+);
 
 const alignedFront = makeMask(20, 20);
 const alignedSide = makeMask(20, 20);
@@ -145,13 +285,18 @@ const align = bestSideYShiftBins(
 );
 assert(
   "P16 keeps FRONT/SIDE alignment deterministic",
-  Number.isInteger(align.shiftBins) && align.shiftBins >= -5 && align.shiftBins <= 5
+  Number.isInteger(align.shiftBins) &&
+    align.shiftBins >= -5 &&
+    align.shiftBins <= 5
 );
-assert("P16 fusion is active inside the established alignment path", alignedSide[8][9] === true);
+assert(
+  "P16 fusion is active inside the established alignment path",
+  alignedSide[8][9] === true
+);
 
 if (failed) {
   console.error(`\n${failed} assertion(s) failed`);
   process.exit(1);
 }
 
-console.log("\nAll P15/P16/P17 AI precision regressions passed.");
+console.log("\nAll P15/P16/P17/P18 AI precision regressions passed.");
