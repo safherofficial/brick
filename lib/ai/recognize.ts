@@ -25,7 +25,6 @@ export type RecognitionEvidence = {
   widthCv: number;
   edgeThinness: number;
 };
-
 export type RecognitionFeatures = {
   thin: boolean;
   long: boolean;
@@ -44,7 +43,6 @@ export type ShapeGuess = {
   features: RecognitionFeatures;
 };
 
-
 export type CategoryResolution = {
   category: AiCategory;
   source: "manual" | "auto";
@@ -54,7 +52,6 @@ export type CategoryResolution = {
 };
 
 export const AUTO_CATEGORY_CONFIDENCE = 0.64;
-
 function categoryEvidenceIsConsistent(guess: ShapeGuess): boolean {
   switch (guess.category) {
     case "swords":
@@ -68,7 +65,6 @@ function categoryEvidenceIsConsistent(guess: ShapeGuess): boolean {
       return true;
   }
 }
-
 export function resolveRecognizedCategory(
   guess: ShapeGuess,
   manualCategory?: AiCategory
@@ -82,7 +78,6 @@ export function resolveRecognizedCategory(
       manualOverride: guess.category !== manualCategory
     };
   }
-
   const confident = guess.confidence >= AUTO_CATEGORY_CONFIDENCE;
   const structurallyConsistent = categoryEvidenceIsConsistent(guess);
   const category = confident && structurallyConsistent ? guess.category : "objects";
@@ -94,7 +89,6 @@ export function resolveRecognizedCategory(
     manualOverride: false
   };
 }
-
 export function categoryFromKind(kind: ShapeKind, slenderness = 1, aspect = 1): AiCategory {
   if (kind === "sword" && aspect <= 0.78 && slenderness >= 3.15) return "rifles";
   if (kind === "sword") return "swords";
@@ -102,7 +96,6 @@ export function categoryFromKind(kind: ShapeKind, slenderness = 1, aspect = 1): 
   if (kind === "axe") return "objects";
   return "objects";
 }
-
 function maskStats(mask: boolean[][]) {
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
@@ -112,7 +105,6 @@ function maskStats(mask: boolean[][]) {
   let maxX = -1;
   let maxY = -1;
   const rowW = new Array<number>(h).fill(0);
-
   for (let y = 0; y < h; y += 1) {
     let lo = w;
     let hi = -1;
@@ -128,7 +120,6 @@ function maskStats(mask: boolean[][]) {
     }
     rowW[y] = hi >= 0 ? hi - lo + 1 : 0;
   }
-
   const bw = Math.max(1, maxX - minX + 1);
   const bh = Math.max(1, maxY - minY + 1);
   const mid = minX + bw / 2;
@@ -142,7 +133,6 @@ function maskStats(mask: boolean[][]) {
       if (Boolean(mask[y][x]) === Boolean(mask[y][mx])) same += 1;
     }
   }
-
   const live = rowW.filter((n) => n > 0);
   const widths = live.slice().sort((a, b) => a - b);
   const median = widths[Math.floor(widths.length / 2)] ?? 1;
@@ -153,7 +143,6 @@ function maskStats(mask: boolean[][]) {
       ? 0
       : live.reduce((a, v) => a + (v - mean) * (v - mean), 0) / live.length;
   const cv = mean > 1e-6 ? Math.sqrt(variance) / mean : 1;
-
   const midW = live[Math.floor(live.length / 2)] ?? mean;
   const endW = ((live[0] ?? 0) + (live[live.length - 1] ?? 0)) / 2;
   const bulge = endW > 1e-6 ? midW / endW : 1;
@@ -164,7 +153,6 @@ function maskStats(mask: boolean[][]) {
   const edgeThinness = live.length
     ? Math.max(0, Math.min(1, 1 - minWidth / Math.max(1, median)))
     : 0;
-
   return {
     hits,
     fill: hits / (bw * bh),
@@ -178,7 +166,6 @@ function maskStats(mask: boolean[][]) {
     edgeThinness
   };
 }
-
 function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence {
   return {
     hits: s.hits,
@@ -192,7 +179,6 @@ function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence
     edgeThinness: s.edgeThinness
   };
 }
-
 function featuresFromEvidence(evidence: RecognitionEvidence): RecognitionFeatures {
   return {
     thin: evidence.slenderness >= 2.8 || evidence.edgeThinness >= 0.18,
@@ -204,6 +190,122 @@ function featuresFromEvidence(evidence: RecognitionEvidence): RecognitionFeature
   };
 }
 
+export type RecognitionCategoryScores = Readonly<Record<AiCategory, number>>;
+
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function greaterFit(value: number, start: number, full: number) {
+  return clamp01((value - start) / Math.max(1e-6, full - start));
+}
+
+function lesserFit(value: number, full: number, zero: number) {
+  return clamp01((zero - value) / Math.max(1e-6, zero - full));
+}
+
+function bandFit(value: number, center: number, radius: number) {
+  return clamp01(1 - Math.abs(value - center) / Math.max(1e-6, radius));
+}
+
+/**
+ * P21 Semantic Recognition 2.0
+ *
+ * Keeps the existing geometric evidence but scores all weapon categories
+ * against multiple signals at once. This deliberately rejects silhouettes
+ * that are only long/thin and therefore prevents rods, bars and blank blades
+ * from becoming weapons.
+ */
+export function semanticCategoryScores(evidence: RecognitionEvidence): RecognitionCategoryScores {
+  const aspect = Math.max(0.01, evidence.aspect);
+  const horizontal = greaterFit(1 / aspect, 1.18, 2.15);
+  const vertical = greaterFit(aspect, 1.22, 2.8);
+  const elongated = greaterFit(evidence.slenderness, 2.05, 4.2);
+  const veryElongated = greaterFit(evidence.slenderness, 2.65, 4.6);
+  const lowFill = lesserFit(evidence.fill, 0.3, 0.62);
+  const compactFill = bandFit(evidence.fill, 0.32, 0.2);
+  const edgeSignal = clamp01(evidence.edgeThinness * 1.25);
+  const taperSignal = lesserFit(evidence.taper, 0.55, 0.9);
+  const contourVariation = clamp01(evidence.widthCv / 0.3);
+  const massVariation = clamp01(Math.max(0, evidence.bulge - 1) / 1.8);
+  const structure = clamp01(contourVariation * 0.58 + massVariation * 0.42);
+
+  const swords = clamp01(
+    vertical * 0.34 +
+      elongated * 0.18 +
+      lesserFit(evidence.fill, 0.34, 0.72) * 0.18 +
+      taperSignal * 0.18 +
+      edgeSignal * 0.12
+  );
+
+  const rifles = clamp01(
+    horizontal * 0.28 +
+      veryElongated * 0.25 +
+      structure * 0.21 +
+      lesserFit(evidence.fill, 0.38, 0.64) * 0.16 +
+      edgeSignal * 0.1
+  );
+
+  const guns = clamp01(
+    horizontal * 0.24 +
+      bandFit(evidence.slenderness, 2.55, 1.25) * 0.19 +
+      compactFill * 0.25 +
+      taperSignal * 0.2 +
+      edgeSignal * 0.12
+  );
+
+  const dense = greaterFit(evidence.fill, 0.45, 0.92);
+  const uniformContour = 1 - clamp01(evidence.widthCv / 0.26);
+  const ambiguity = ambiguityFor(
+    evidence.aspect,
+    evidence.fill,
+    evidence.symmetry,
+    evidence.slenderness
+  );
+  const objects = clamp01(
+    0.22 +
+      dense * 0.36 +
+      uniformContour * 0.18 +
+      ambiguity * 0.14
+  );
+
+  return { swords, guns, rifles, objects };
+}
+
+/**
+ * P22 Confidence Calibration. The margin between the selected category and
+ * the strongest alternative now affects confidence, so near-ties cannot look
+ * as certain as clean semantic matches.
+ */
+export function calibrateCategoryConfidence(
+  baseConfidence: number,
+  topScore: number,
+  runnerUpScore: number,
+  evidence: RecognitionEvidence
+) {
+  const margin = clamp01(topScore - runnerUpScore);
+  const ambiguity = ambiguityFor(
+    evidence.aspect,
+    evidence.fill,
+    evidence.symmetry,
+    evidence.slenderness
+  );
+  const evidenceQuality = clamp01(
+    0.34 +
+      greaterFit(evidence.hits, 24, 320) * 0.2 +
+      clamp01(evidence.edgeThinness) * 0.12 +
+      clamp01(evidence.widthCv / 0.3) * 0.12 +
+      clamp01(Math.max(0, evidence.bulge - 1) / 1.8) * 0.12 +
+      clamp01(evidence.symmetry) * 0.1
+  );
+  const marginBoost = (margin - 0.18) * 0.18;
+  const ambiguityPenalty = ambiguity * 0.11;
+  const lowEvidencePenalty = (1 - evidenceQuality) * 0.08;
+  return Math.max(
+    0.18,
+    Math.min(0.98, baseConfidence + marginBoost - ambiguityPenalty - lowEvidencePenalty)
+  );
+}
 function confidenceFromEvidence(
   base: number,
   support: number,
@@ -213,7 +315,6 @@ function confidenceFromEvidence(
   const ambiguityPenalty = ambiguity * 0.16;
   return Math.max(0.18, Math.min(0.98, base + evidenceBoost - ambiguityPenalty));
 }
-
 function ambiguityFor(
   aspect: number,
   fill: number,
@@ -225,6 +326,72 @@ function ambiguityFor(
   if (fill > 0.45 && fill < 0.7) score += 0.2;
   if (symmetry > 0.68 && slenderness > 1.6 && slenderness < 2.8) score += 0.2;
   return Math.min(1, score);
+}
+function semanticWeaponGuess(
+  stats: ReturnType<typeof maskStats>,
+  category: Extract<AiCategory, "swords" | "guns" | "rifles">
+): ShapeGuess {
+  const evidence = evidenceFromStats(stats);
+  const scores = semanticCategoryScores(evidence);
+  const runnerUpScore = Math.max(
+    ...(["swords", "guns", "rifles"] as const)
+      .filter((item) => item !== category)
+      .map((item) => scores[item])
+  );
+  const calibrated = calibrateCategoryConfidence(
+    0.54 + scores[category] * 0.38,
+    scores[category],
+    Math.max(runnerUpScore, scores.objects),
+    evidence
+  );
+  const kind: ShapeKind = category === "swords" ? "sword" : "prop";
+  return {
+    kind,
+    style: "weapon",
+    category,
+    confidence: calibrated,
+    evidence,
+    features: featuresFromEvidence(evidence)
+  };
+}
+
+function semanticWeaponCategory(stats: ReturnType<typeof maskStats>) {
+  const evidence = evidenceFromStats(stats);
+  const scores = semanticCategoryScores(evidence);
+  const eligible = (["swords", "guns", "rifles"] as const).filter((category) => {
+    if (category === "swords") {
+      return (
+        evidence.aspect >= 1.5 &&
+        evidence.slenderness >= 2.4 &&
+        (evidence.taper <= 0.82 || evidence.edgeThinness >= 0.22)
+      );
+    }
+    if (category === "rifles") {
+      return (
+        evidence.aspect <= 0.9 &&
+        evidence.slenderness >= 2.65 &&
+        evidence.fill <= 0.55 &&
+        (evidence.widthCv >= 0.12 || evidence.taper <= 0.82 || evidence.edgeThinness >= 0.2)
+      );
+    }
+    return (
+      evidence.aspect <= 0.95 &&
+      evidence.slenderness >= 2.05 &&
+      evidence.fill <= 0.55 &&
+      evidence.taper <= 0.88
+    );
+  });
+
+  if (!eligible.length) return null;
+  const ranked = eligible.slice().sort((a, b) => scores[b] - scores[a]);
+  const best = ranked[0];
+  const runner = ranked[1];
+  const objectScore = scores.objects;
+  const runnerScore = runner ? scores[runner] : 0;
+  const margin = scores[best] - Math.max(runnerScore, objectScore);
+
+  if (scores[best] < 0.58 || margin < 0.06) return null;
+  return best;
 }
 
 function withEvidence(
@@ -241,7 +408,6 @@ function withEvidence(
     features: featuresFromEvidence(evidenceFromStats(stats))
   };
 }
-
 export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
   const s = maskStats(mask);
   const fallbackEvidence = evidenceFromStats(s);
@@ -255,7 +421,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       features: featuresFromEvidence(fallbackEvidence)
     };
   }
-
   if (
     s.aspect >= 0.78 &&
     s.aspect <= 1.28 &&
@@ -270,7 +435,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       0.86
     );
   }
-
   if (
     s.aspect >= 1.12 &&
     s.aspect <= 2.6 &&
@@ -287,7 +451,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       0.84
     );
   }
-
   if (
     s.aspect >= 1.05 &&
     s.aspect <= 1.9 &&
@@ -303,7 +466,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       0.82
     );
   }
-
   if (
     s.aspect >= 1.22 &&
     s.fill >= 0.26 &&
@@ -318,7 +480,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       0.8
     );
   }
-
   if (
     s.aspect >= 1.3 &&
     s.fill >= 0.3 &&
@@ -343,26 +504,10 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       0.84
     );
   }
-
-  if (s.aspect <= 0.78 && s.fill >= 0.12 && s.fill <= 0.48 && s.slenderness >= 2.05) {
-    const category = s.slenderness >= 3.15 ? "rifles" : "guns";
-    return withEvidence(
-      s,
-      { kind: "prop", style: "weapon", category },
-      category === "rifles" ? 0.76 : 0.72,
-      Math.min(0.92, 0.52 + Math.min(0.28, s.edgeThinness * 0.9) + Math.min(0.12, (s.slenderness - 2) * 0.05))
-    );
+  const semanticCategory = semanticWeaponCategory(s);
+  if (semanticCategory) {
+    return semanticWeaponGuess(s, semanticCategory);
   }
-
-  if (s.aspect >= 1.7 && s.fill <= 0.28 && s.slenderness >= 2.4 && s.head < 2.2) {
-    return withEvidence(
-      s,
-      { kind: "sword", style: "weapon", category: "swords" },
-      0.78,
-      Math.min(0.92, 0.62 + s.edgeThinness * 0.3 + s.symmetry * 0.16)
-    );
-  }
-
   if (s.aspect >= 1.2 && s.head >= 2.3 && s.fill <= 0.42) {
     return withEvidence(
       s,
@@ -371,7 +516,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       Math.min(0.9, 0.58 + s.bulge * 0.08 + s.symmetry * 0.12)
     );
   }
-
   if (s.aspect >= 1.35 && s.symmetry >= 0.78 && s.fill >= 0.28 && s.fill <= 0.62) {
     return withEvidence(
       s,
@@ -380,7 +524,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       Math.min(0.9, 0.62 + s.symmetry * 0.16 + (1 - s.cv) * 0.08)
     );
   }
-
   if (s.aspect >= 1.6 && s.symmetry >= 0.72 && s.fill >= 0.22 && s.fill <= 0.5) {
     return withEvidence(
       s,
@@ -389,7 +532,6 @@ export function recognizeFromMask(mask: boolean[][]): ShapeGuess {
       Math.min(0.86, 0.56 + s.symmetry * 0.18 + Math.max(0, 0.3 - s.cv) * 0.12)
     );
   }
-
   return withEvidence(
     s,
     { kind: "prop", style: "prop", category: "objects" },
