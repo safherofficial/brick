@@ -49,8 +49,11 @@ export function dynamicVoxelBudget(options: DynamicVoxelBudgetOptions) {
   const height = clamp(Math.floor(options.height), 1, volumeSize);
   const depth = clamp(Math.floor(options.depth), 1, volumeSize);
   const fill = clamp(options.projectedFill ?? 0.5, 0, 1);
-
-  const projectedAreaRatio = clamp((width * height) / Math.max(1, volumeSize * volumeSize), 0, 1);
+  const projectedAreaRatio = clamp(
+    (width * height) / Math.max(1, volumeSize * volumeSize),
+    0,
+    1
+  );
   const depthRatio = clamp(depth / volumeSize, 0, 1);
   const shortAxis = Math.max(1, Math.min(width, height));
   const longAxis = Math.max(width, height);
@@ -70,22 +73,42 @@ export function dynamicVoxelBudget(options: DynamicVoxelBudgetOptions) {
   qualityRatio += projectedAreaRatio * 0.08;
   qualityRatio += fill * 0.06;
   qualityRatio += depthRatio * 0.08;
-  qualityRatio -= thinness * 0.05;
 
-  // Keep thin game-readable features protected, but let the budget remain
-  // genuinely dynamic so simple assets do not consume the full default cap.
+  // P18 — protect high-information shapes from becoming under-budgeted.
+  // Thinness, sparse coverage and long axes are exactly the cases where a
+  // modest voxel increase preserves visible features instead of wasting voxels
+  // on uniform interior volume.
+  const sparsity = clamp(1 - fill, 0, 1);
+  const detailDemand = clamp(
+    thinness * 0.46 +
+      sparsity * 0.24 +
+      depthRatio * 0.14 +
+      (options.category === "rifles" ? 0.10 : 0) +
+      (options.category === "guns" ? 0.06 : 0) +
+      (options.category === "swords" ? 0.04 : 0),
+    0,
+    1
+  );
+  qualityRatio += detailDemand * 0.08;
+
+  // Thin assets were previously slightly penalized for their aspect ratio.
+  // P18 removes most of that penalty and replaces it with the bounded detail
+  // demand above, so long weapons do not lose resolution simply for being long.
+  qualityRatio -= thinness * 0.018;
+
   if (options.category === "swords") {
-    qualityRatio = Math.max(qualityRatio, 0.88);
+    qualityRatio = Math.max(qualityRatio, 0.91);
   } else if (options.category === "guns") {
-    qualityRatio = Math.max(qualityRatio, 0.92);
+    qualityRatio = Math.max(qualityRatio, 0.94);
   } else if (options.category === "rifles") {
-    qualityRatio = Math.max(qualityRatio, 0.95);
+    qualityRatio = Math.max(qualityRatio, 0.97);
   } else if (options.category === "objects") {
     qualityRatio = Math.max(qualityRatio, 0.86);
   }
 
   const baseBudget = Math.min(hardCap, physical * baseRatio);
-  const profileScale = clamp(options.profileScale ?? 1, 0.96, 1.1);
+  const profileScale = clamp(options.profileScale ?? 1, 0.96, 1.10);
+
   return roundBudget(
     baseBudget * clamp(qualityRatio, 0.84, 1) * profileScale,
     dynamicMinimum,
