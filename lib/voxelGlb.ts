@@ -1,4 +1,3 @@
-// lib/voxelGlb.ts
 import type { VoxelVolume } from "@/lib/voxelEngine";
 import {
   assertExportable,
@@ -14,7 +13,12 @@ import {
 } from "@/lib/voxelMesh";
 import { encodePng } from "@/lib/png";
 import { GENERATOR_NAME, MAX_VOXELS } from "@/lib/limits";
-import { buildGlbExtras, UNITY_2D_PIXEL, unityBoxCollider, unityUnitMeters } from "@/lib/ai/gameReady";
+import {
+  buildGlbExtras,
+  UNITY_2D_PIXEL,
+  unityBoxCollider,
+  unityUnitMeters
+} from "@/lib/ai/gameReady";
 
 function pad4(n: number) {
   return (4 - (n % 4)) % 4;
@@ -225,7 +229,6 @@ export async function exportGlb(
         voxelCount: volume.count,
         volumeSize: volume.size,
         shape: options?.shape as never,
-        unitMeters: resolved.unitMeters,
         mesh: {
           quads: quads.length,
           triangles: indices.length / 3,
@@ -301,6 +304,7 @@ export async function exportGlbTextured(
   if (volume.count > MAX_VOXELS) {
     throw new Error(`Model too large for GLB (max ${MAX_VOXELS} voxel)`);
   }
+
   const bounds = assertExportable(volume);
   const twoD = (options as { output?: string } | undefined)?.output === "2d";
   const unitMeters = twoD
@@ -330,23 +334,99 @@ export async function exportGlbTextured(
     return [(cx + 0.5) / atlasSize, (cy + 0.5) / atlasSize];
   };
 
+  type MaterialBucket = "metal" | "warm-metal" | "organic";
+  const materialOrder: MaterialBucket[] = ["metal", "warm-metal", "organic"];
+  const materialPreset: Record<MaterialBucket, { metallicFactor: number; roughnessFactor: number }> = {
+    metal: { metallicFactor: 0.75, roughnessFactor: 0.30 },
+    "warm-metal": { metallicFactor: 0.85, roughnessFactor: 0.25 },
+    organic: { metallicFactor: 0.00, roughnessFactor: 0.85 }
+  };
+
+  function paletteMaterial(hex: string): MaterialBucket {
+    const [r, g, b] = hexRgb(hex);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const saturation = max === 0 ? 0 : (max - min) / max;
+    const value = max / 255;
+    const blueBias = b - r;
+    const warmBias = r - b;
+    const warmGreen = g - b;
+
+    if (
+      value >= 0.35 &&
+      ((saturation <= 0.24) || (blueBias >= 8 && saturation <= 0.48))
+    ) {
+      return "metal";
+    }
+    if (
+      value >= 0.28 &&
+      warmBias >= 24 &&
+      warmGreen >= 14 &&
+      g >= 70
+    ) {
+      return "warm-metal";
+    }
+    return "organic";
+  }
+
+  function aoForCorner(face: ReturnType<typeof greedyQuads>[number], cornerIndex: number) {
+    const u = (face.axis + 1) % 3;
+    const v = (face.axis + 2) % 3;
+    const w = face.axis;
+    const corners = quadCorners(face);
+    const corner = corners[cornerIndex];
+
+    const base: [number, number, number] = [...corner] as [number, number, number];
+    const uLow = corner[u] === face.u0;
+    const vLow = corner[v] === face.v0;
+    base[u] = uLow ? face.u0 : Math.max(face.u0, face.u1 - 1);
+    base[v] = vLow ? face.v0 : Math.max(face.v0, face.v1 - 1);
+    base[w] = face.slice;
+
+    const du = uLow ? -1 : 1;
+    const dv = vLow ? -1 : 1;
+    const a = [...base] as [number, number, number];
+    const b = [...base] as [number, number, number];
+    const c = [...base] as [number, number, number];
+    a[u] += du;
+    b[v] += dv;
+    c[u] += du;
+    c[v] += dv;
+
+    const sideA = volume.has(a[0], a[1], a[2]);
+    const sideB = volume.has(b[0], b[1], b[2]);
+    const cornerFill = volume.has(c[0], c[1], c[2]);
+
+    if (sideA && sideB) return 0.70;
+    const occupied = Number(sideA) + Number(sideB) + Number(cornerFill);
+    if (occupied >= 2) return 0.78;
+    if (occupied === 1) return 0.88;
+    return 1;
+  }
+
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
-  const indices: number[] = [];
+  const aoc: number[] = [];
+  const indicesByMaterial = new Map<MaterialBucket, number[]>();
+  for (const key of materialOrder) indicesByMaterial.set(key, []);
+  const allIndices: number[] = [];
   const vertexCache = new Map<string, number>();
+
   const addVertex = (
     p: [number, number, number],
     n: [number, number, number],
-    uv: [number, number]
+    uv: [number, number],
+    ao: number
   ) => {
-    const key = `${p[0]}:${p[1]}:${p[2]}|${n[0]}:${n[1]}:${n[2]}|${uv[0]}:${uv[1]}`;
+    const key = `${p[0]}:${p[1]}:${p[2]}|${n[0]}:${n[1]}:${n[2]}|${uv[0]}:${uv[1]}|${ao}`;
     const existing = vertexCache.get(key);
     if (existing !== undefined) return existing;
     const index = positions.length / 3;
     positions.push(p[0], p[1], p[2]);
     normals.push(n[0], n[1], n[2]);
     uvs.push(uv[0], uv[1]);
+    aoc.push(ao, ao, ao, 1);
     vertexCache.set(key, index);
     return index;
   };
@@ -362,7 +442,10 @@ export async function exportGlbTextured(
     const n = transformNormal(...quadNormal(face), resolved.upAxis);
     const uv: [number, number] = uvFor(face.c);
     const quadIndices: number[] = [];
-    for (const corner of quadCorners(face)) {
+    const corners = quadCorners(face);
+    const bucket = paletteMaterial(palette[face.c] ?? "#e6e6e6");
+    for (let cornerIndex = 0; cornerIndex < corners.length; cornerIndex += 1) {
+      const corner = corners[cornerIndex];
       const p = transformPoint(
         corner[0],
         corner[1],
@@ -371,7 +454,8 @@ export async function exportGlbTextured(
         resolved.unitMeters,
         resolved.upAxis
       );
-      const index = addVertex(p, n, uv);
+      const ao = twoD ? 1 : aoForCorner(face, cornerIndex);
+      const index = addVertex(p, n, uv, ao);
       quadIndices.push(index);
       minPx = Math.min(minPx, p[0]);
       minPy = Math.min(minPy, p[1]);
@@ -380,39 +464,62 @@ export async function exportGlbTextured(
       maxPy = Math.max(maxPy, p[1]);
       maxPz = Math.max(maxPz, p[2]);
     }
-    if (face.dir === 1) {
-      indices.push(quadIndices[0], quadIndices[1], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[3]);
-    } else {
-      indices.push(quadIndices[0], quadIndices[3], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[1]);
-    }
+
+    const localIndices = face.dir === 1
+      ? [quadIndices[0], quadIndices[1], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[3]]
+      : [quadIndices[0], quadIndices[3], quadIndices[2], quadIndices[0], quadIndices[2], quadIndices[1]];
+
+    allIndices.push(...localIndices);
+    const target = indicesByMaterial.get(bucket)!;
+    target.push(...localIndices);
   }
 
   const pos = new Float32Array(positions);
   const nor = new Float32Array(normals);
   const uv = new Float32Array(uvs);
+  const color = new Float32Array(aoc);
   const vertexCount = pos.length / 3;
-  const idx =
-    vertexCount <= 65535 ? new Uint16Array(indices) : new Uint32Array(indices);
+  const indexComponentType = vertexCount <= 65535 ? 5123 : 5125;
 
-  const posBytes = new Uint8Array(pos.buffer);
-  const norBytes = new Uint8Array(nor.buffer);
-  const uvBytes = new Uint8Array(uv.buffer);
-  const idxPad = new Uint8Array(idx.byteLength + pad4(idx.byteLength));
-  idxPad.set(new Uint8Array(idx.buffer));
-  const imgPad = new Uint8Array(atlasPng.length + pad4(atlasPng.length));
-  imgPad.set(atlasPng);
+  const sections: { bytes: Uint8Array; target?: number }[] = [];
+  const sectionOffsets: number[] = [];
+  let cursor = 0;
+  const appendSection = (bytes: Uint8Array, target?: number) => {
+    const alignment = (4 - (cursor % 4)) % 4;
+    cursor += alignment;
+    const offset = cursor;
+    sections.push({ bytes, target });
+    sectionOffsets.push(offset);
+    cursor += bytes.length;
+    return sections.length - 1;
+  };
 
-  const offsets = [0];
-  offsets.push(offsets[0] + posBytes.length);
-  offsets.push(offsets[1] + norBytes.length);
-  offsets.push(offsets[2] + uvBytes.length);
-  offsets.push(offsets[3] + idxPad.length);
-  const bin = new Uint8Array(offsets[4] + imgPad.length);
-  bin.set(posBytes, offsets[0]);
-  bin.set(norBytes, offsets[1]);
-  bin.set(uvBytes, offsets[2]);
-  bin.set(idxPad, offsets[3]);
-  bin.set(imgPad, offsets[4]);
+  const posSection = appendSection(new Uint8Array(pos.buffer), 34962);
+  const norSection = appendSection(new Uint8Array(nor.buffer), 34962);
+  const uvSection = appendSection(new Uint8Array(uv.buffer), 34962);
+  const colorSection = twoD ? -1 : appendSection(new Uint8Array(color.buffer), 34962);
+
+  const materialGroups = twoD
+    ? [{ bucket: "organic" as MaterialBucket, indices: allIndices }]
+    : materialOrder
+      .map((bucket) => ({ bucket, indices: indicesByMaterial.get(bucket)! }))
+      .filter((entry) => entry.indices.length > 0);
+
+  const indexSections = materialGroups.map((entry) => {
+    const typed = indexComponentType === 5123
+      ? new Uint16Array(entry.indices)
+      : new Uint32Array(entry.indices);
+    return {
+      ...entry,
+      section: appendSection(new Uint8Array(typed.buffer), 34963),
+      count: entry.indices.length
+    };
+  });
+
+  const atlasSection = appendSection(atlasPng);
+
+  const bin = new Uint8Array(cursor);
+  sections.forEach((section, i) => bin.set(section.bytes, sectionOffsets[i]));
 
   const sockets = socketNodes(
     volume,
@@ -430,6 +537,73 @@ export async function exportGlbTextured(
   const socketIndex0 = 3;
   const rootChildren = [meshNode, colliderNode, ...sockets.map((_, i) => socketIndex0 + i)];
 
+  const usedMaterials = twoD
+    ? [
+      {
+        name: "voxel-atlas-2d",
+        doubleSided: false,
+        extensions: { KHR_materials_unlit: {} },
+        pbrMetallicRoughness: {
+          baseColorTexture: { index: 0 },
+          metallicFactor: 0,
+          roughnessFactor: 1
+        }
+      }
+    ]
+    : indexSections.map((entry) => {
+      const preset = materialPreset[entry.bucket];
+      return {
+        name: `voxel-${entry.bucket}`,
+        doubleSided: false,
+        pbrMetallicRoughness: {
+          baseColorTexture: { index: 0 },
+          metallicFactor: preset.metallicFactor,
+          roughnessFactor: preset.roughnessFactor
+        }
+      };
+    });
+
+  const primitives = indexSections.map((entry, index) => ({
+    attributes: twoD
+      ? { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 }
+      : { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, COLOR_0: 3 },
+    indices: twoD ? 3 : 4 + index,
+    material: index
+  }));
+
+  const accessors: Record<string, unknown>[] = [
+    {
+      bufferView: posSection,
+      componentType: 5126,
+      count: pos.length / 3,
+      type: "VEC3",
+      min: [minPx, minPy, minPz],
+      max: [maxPx, maxPy, maxPz]
+    },
+    { bufferView: norSection, componentType: 5126, count: nor.length / 3, type: "VEC3" },
+    { bufferView: uvSection, componentType: 5126, count: uv.length / 2, type: "VEC2" }
+  ];
+
+  if (!twoD) {
+    accessors.push({ bufferView: colorSection, componentType: 5126, count: color.length / 4, type: "VEC4" });
+  }
+
+  indexSections.forEach((entry) => {
+    accessors.push({
+      bufferView: entry.section,
+      componentType: indexComponentType,
+      count: entry.count,
+      type: "SCALAR"
+    });
+  });
+
+  const bufferViews: Record<string, unknown>[] = sections.map((section, index) => ({
+    buffer: 0,
+    byteOffset: sectionOffsets[index],
+    byteLength: section.bytes.length,
+    ...(section.target ? { target: section.target } : {})
+  }));
+
   const json = {
     asset: {
       version: "2.0",
@@ -446,13 +620,13 @@ export async function exportGlbTextured(
         collider,
         mesh: {
           quads: quads.length,
-          triangles: indices.length / 3,
+          triangles: allIndices.length / 3,
           vertices: vertexCount,
-          indexComponentType: idx instanceof Uint16Array ? 5123 : 5125
+          indexComponentType
         }
       })
     },
-    extensionsUsed: ["KHR_materials_unlit"],
+    ...(twoD ? { extensionsUsed: ["KHR_materials_unlit"] } : {}),
     scene: 0,
     scenes: [{ nodes: [0], name: resolved.name }],
     nodes: [
@@ -468,27 +642,10 @@ export async function exportGlbTextured(
     meshes: [
       {
         name: resolved.name,
-        primitives: [
-          {
-            attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
-            indices: 3,
-            material: 0
-          }
-        ]
+        primitives
       }
     ],
-    materials: [
-      {
-        name: "voxel-atlas",
-        doubleSided: false,
-        extensions: { KHR_materials_unlit: {} },
-        pbrMetallicRoughness: {
-          baseColorTexture: { index: 0 },
-          metallicFactor: 0,
-          roughnessFactor: 1
-        }
-      }
-    ],
+    materials: usedMaterials,
     textures: [{ source: 0, sampler: 0 }],
     samplers: [
       {
@@ -498,32 +655,9 @@ export async function exportGlbTextured(
         wrapT: 33071
       }
     ],
-    images: [{ mimeType: "image/png", bufferView: 4 }],
-    accessors: [
-      {
-        bufferView: 0,
-        componentType: 5126,
-        count: pos.length / 3,
-        type: "VEC3",
-        min: [minPx, minPy, minPz],
-        max: [maxPx, maxPy, maxPz]
-      },
-      { bufferView: 1, componentType: 5126, count: nor.length / 3, type: "VEC3" },
-      { bufferView: 2, componentType: 5126, count: uv.length / 2, type: "VEC2" },
-      {
-        bufferView: 3,
-        componentType: idx instanceof Uint16Array ? 5123 : 5125,
-        count: indices.length,
-        type: "SCALAR"
-      }
-    ],
-    bufferViews: [
-      { buffer: 0, byteOffset: offsets[0], byteLength: posBytes.length, target: 34962 },
-      { buffer: 0, byteOffset: offsets[1], byteLength: norBytes.length, target: 34962 },
-      { buffer: 0, byteOffset: offsets[2], byteLength: uvBytes.length, target: 34962 },
-      { buffer: 0, byteOffset: offsets[3], byteLength: idx.byteLength, target: 34963 },
-      { buffer: 0, byteOffset: offsets[4], byteLength: atlasPng.length }
-    ],
+    images: [{ mimeType: "image/png", bufferView: atlasSection }],
+    accessors,
+    bufferViews,
     buffers: [{ byteLength: bin.length }]
   };
 
