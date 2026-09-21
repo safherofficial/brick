@@ -40,7 +40,6 @@ export function adaptiveAssetProfile(
 ): AdaptiveAssetProfile {
   const features = input.features;
   const evidence = input.evidence;
-
   let depthScale = 1;
   let budgetScale = 1;
   let thinFeatures = false;
@@ -96,6 +95,36 @@ export function adaptiveAssetProfile(
     depthScale += 0.035;
     budgetScale += 0.02;
     reasons.push("dual-view support");
+  }
+
+  // P18 — detail-preserving budget demand.
+  //
+  // These signals come from the existing recognizer. They do not change the
+  // reconstruction geometry; they only preserve a little more voxel budget
+  // for silhouettes where a small number of voxels carries disproportionate
+  // visual information (thin edges, long weapons, sparse masks and irregular
+  // contours).
+  const edgeDetail = clamp(evidence?.edgeThinness ?? 0, 0, 1);
+  const slenderDetail = clamp(((evidence?.slenderness ?? 1) - 2) / 2.5, 0, 1);
+  const longDetail = features?.long ? 1 : 0;
+  const sparseDetail = clamp(1 - (evidence?.fill ?? 1) / 0.5, 0, 1);
+  const irregularDetail = features?.irregular ? 1 : 0;
+  const broadDetail = features?.broadHead ? 1 : 0;
+
+  const detailDemand = clamp(
+    edgeDetail * 0.30 +
+      slenderDetail * 0.25 +
+      longDetail * 0.15 +
+      sparseDetail * 0.15 +
+      irregularDetail * 0.08 +
+      broadDetail * 0.07,
+    0,
+    1
+  );
+
+  if (detailDemand > 0.08) {
+    budgetScale += 0.06 * detailDemand;
+    reasons.push("detail-preserving voxel budget");
   }
 
   if (input.mode === "flat") {
