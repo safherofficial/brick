@@ -20,6 +20,8 @@ export type AdaptiveAssetProfile = {
   thinFeatures: boolean;
   useDepthHint: boolean;
   shell: boolean;
+  viewMode: "single" | "front+side";
+  viewConfidence: number;
   reason: string;
 };
 
@@ -44,7 +46,29 @@ export function adaptiveAssetProfile(
   let thinFeatures = false;
   let useDepthHint = input.category !== "swords" && input.hasDepth;
   const shell = input.category === "swords";
+  const viewMode = input.hasSide ? "front+side" : "single";
+  const evidenceQuality = clamp(
+    0.42 +
+      clamp((evidence?.hits ?? 0) / 320, 0, 1) * 0.18 +
+      clamp(evidence?.edgeThinness ?? 0, 0, 1) * 0.12 +
+      clamp(evidence?.symmetry ?? 0, 0, 1) * 0.10 +
+      clamp((evidence?.widthCv ?? 0) / 0.3, 0, 1) * 0.08 +
+      clamp((evidence?.thinFeatureScore ?? 0), 0, 1) * 0.10,
+    0,
+    1
+  );
+  // P27 — a second silhouette provides materially stronger structural
+  // evidence than a single front view. This is a reconstruction/view
+  // confidence, not a claim that the two masks are perfectly aligned.
+  const viewConfidence = clamp(
+    (input.hasSide ? 0.78 : 0.60) +
+      evidenceQuality * (input.hasSide ? 0.16 : 0.14) +
+      (input.hasDepth ? 0.03 : 0),
+    0.5,
+    input.hasSide ? 0.94 : 0.82
+  );
   const reasons: string[] = [];
+  reasons.push(input.hasSide ? "front+side confidence" : "single-view confidence");
 
   // P25 — category-specific reconstruction baseline.
   // Swords stay shallow, guns keep compact body mass, rifles get the highest
@@ -143,11 +167,16 @@ export function adaptiveAssetProfile(
   }
 
   if (input.hasSide && input.category !== "swords") {
-    // A real second view supports slightly more depth, but never enough to
-    // exceed the existing category cap later in the engine.
-    depthScale += 0.035;
-    budgetScale += 0.02;
+    // P27 — dual-view evidence can safely unlock a little more depth/detail,
+    // but the existing category caps remain the hard boundary.
+    depthScale += 0.02 + viewConfidence * 0.018;
+    budgetScale += 0.01 + viewConfidence * 0.012;
     reasons.push("dual-view support");
+  } else if (!input.hasSide && input.category !== "swords") {
+    // P27 — FRONT-only reconstruction stays slightly conservative on depth
+    // when the available evidence is weaker. Budget is preserved for details.
+    depthScale -= (1 - viewConfidence) * 0.012;
+    reasons.push("single-view depth guard");
   }
 
   // P18 — detail-preserving budget demand. P25/P26 only refine this demand;
@@ -202,6 +231,8 @@ export function adaptiveAssetProfile(
     thinFeatures,
     useDepthHint,
     shell,
+    viewMode,
+    viewConfidence,
     reason: reasons.join(" · ")
   };
 }
@@ -216,4 +247,3 @@ export function adaptiveHeightMax(
     Math.min(maxAllowed, Math.round(currentHeightMax * profile.depthScale))
   );
 }
- 
