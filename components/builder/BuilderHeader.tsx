@@ -1,6 +1,7 @@
 "use client";
 import type { RefObject } from "react";
 import Link from "next/link";
+import type { ExportMotion } from "@/components/builder/builderHelpers";
 export type BuilderHeaderProps = {
   title: string;
   editingTitle: boolean;
@@ -21,6 +22,8 @@ export type BuilderHeaderProps = {
   fileRef: RefObject<HTMLInputElement | null>;
   frontRef: RefObject<HTMLInputElement | null>;
   sideRef: RefObject<HTMLInputElement | null>;
+  exportMotion: ExportMotion;
+  setExportMotion: (motion: ExportMotion) => void;
 };
 export function BuilderHeader({
   title,
@@ -39,7 +42,9 @@ export function BuilderHeader({
   attachSide,
   fileRef,
   frontRef,
-  sideRef
+  sideRef,
+  exportMotion,
+  setExportMotion
 }: BuilderHeaderProps) {
   return (
     <header className="builderHeader">
@@ -85,11 +90,25 @@ export function BuilderHeader({
         <button onClick={() => void exportFiles("vox")} disabled={busy}>
           VOX
         </button>
+        <button
+          className={exportMotion === "static" ? "modeOn" : ""}
+          disabled={busy}
+          onClick={() => setExportMotion("static")}
+        >
+          STATIC
+        </button>
+        <button
+          className={exportMotion === "dynamic" ? "modeOn" : ""}
+          disabled={busy}
+          onClick={() => setExportMotion("dynamic")}
+        >
+          DYNAMIC
+        </button>
         <button onClick={() => void exportFiles("glb")} disabled={busy}>
-          GLB
+          {exportMotion === "dynamic" ? "GLB ANIM" : "GLB"}
         </button>
         <button onClick={() => void exportFiles("unity-pack")} disabled={busy}>
-          UNITY PACK
+          {exportMotion === "dynamic" ? "UNITY ANIM" : "UNITY PACK"}
         </button>
         <button onClick={() => void exportFiles("png")} disabled={busy}>
           PNG
