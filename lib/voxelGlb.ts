@@ -519,6 +519,15 @@ export async function exportGlbTextured(
 
   const atlasSection = appendSection(atlasPng);
 
+  const sockets = socketNodes(
+    volume,
+    origin,
+    resolved.unitMeters,
+    resolved.upAxis,
+    options?.shape
+  );
+  const grip = sockets.find((node) => node.name === "Socket_Grip")?.translation ?? null;
+
   type AnimSectionEntry = {
     name: string;
     loop: boolean;
@@ -529,7 +538,16 @@ export async function exportGlbTextured(
     translation?: { section: number; count: number };
     rotation?: { section: number; count: number };
   };
-  const animClips = options?.animated ? buildWeaponAnimClips(maxPy - minPy) : [];
+  const bakeAnims = options?.animated === true;
+  const outputLock = (options as { output?: string } | undefined)?.output;
+  const animClips = bakeAnims
+    ? buildWeaponAnimClips({
+        height: Math.max(0.01, maxPy - minPy),
+        output: outputLock,
+        shape: options?.shape,
+        pivot: grip
+      })
+    : [];
   const animSections: AnimSectionEntry[] = animClips.map((clip) => {
     const timeArr = new Float32Array(clip.track.times);
     const entry: AnimSectionEntry = {
@@ -562,13 +580,6 @@ export async function exportGlbTextured(
   const bin = new Uint8Array(cursor);
   sections.forEach((section, i) => bin.set(section.bytes, sectionOffsets[i]));
 
-  const sockets = socketNodes(
-    volume,
-    origin,
-    resolved.unitMeters,
-    resolved.upAxis,
-    options?.shape
-  );
   const collider = unityBoxCollider(
     [minPx, minPy, minPz],
     [maxPx, maxPy, maxPz]
