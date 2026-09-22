@@ -36,18 +36,24 @@ export function unityExportOptions(input: {
   shape?: string;
   voxelSpanY: number;
   output?: "2d" | "25d";
+  animated?: boolean;
 }) {
+  const animated = input.animated === true;
   if (input.output === "2d") {
     return {
       ...unity2dPixelExportOptions(),
       name: input.name,
-      shape: input.shape
+      shape: input.shape,
+      output: "2d" as const,
+      animated
     };
   }
   return {
     ...UNITY_EXPORT,
     unitMeters: unityUnitMeters(input.shape, input.voxelSpanY, input.output),
     name: input.name,
-    shape: input.shape
+    shape: input.shape,
+    output: input.output,
+    animated
   };
 }
