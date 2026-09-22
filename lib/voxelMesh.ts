@@ -10,6 +10,8 @@ export type MeshExportOptions = {
   name?: string;
   /** Optional recognized shape — used for GLB Socket_* placement. */
   shape?: string;
+  /** Opt-in: bake the standard Pickup/Showcase/Equipped idle + swing clips onto the mesh node. */
+  animated?: boolean;
 };
 
 export type ResolvedExport = {
