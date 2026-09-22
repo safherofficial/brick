@@ -31,6 +31,10 @@ export const UNITY_IMPORT_TXT = [
   "Collider: use brick.collider extras",
   "Atlas: embedded in GLB",
   "2D Sprite: PNG + .png.meta when included",
+  "Animations: baked on *_Mesh (not sockets/collider)",
+  "Clip extras.loop: true → Wrap Mode Loop, false → Once",
+  "Parent Socket_Grip (or root) to the hand; clips orbit the grip",
+  "Motion: STATIC = mesh only · DYNAMIC = clips on *_Mesh",
   "Version-locked .unitypackage: not included"
 ].join("\n") + "\n";
 
