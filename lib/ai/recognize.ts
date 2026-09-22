@@ -205,14 +205,23 @@ function maskStats(mask: boolean[][]) {
     (Math.max(bw, bh) / Math.max(1, Math.min(bw, bh)) - 1.3) / 1.7
   );
   const tipSharpness = Math.max(verticalTip, horizontalTip) * elongationGate;
+  // P26 hardening: local thinness must still have enough global shape
+  // structure before it can materially raise the thin-feature score. This
+  // prevents isolated one-pixel noise inside compact props from being treated
+  // like a blade/barrel while preserving long thin silhouettes.
+  const structureGate = clamp01(
+    (Math.max(bw, bh) / Math.max(1, Math.min(bw, bh)) - 1.18) / 1.45
+  );
+  const rawThinFeatureScore =
+    axisThinness * 0.52 +
+    orientedThinRatio * 0.18 +
+    edgeThinness * 0.12 +
+    tipSharpness * 0.18;
   const thinFeatureScore = Math.max(
     0,
     Math.min(
       1,
-      axisThinness * 0.52 +
-        orientedThinRatio * 0.18 +
-        edgeThinness * 0.12 +
-        tipSharpness * 0.18
+      rawThinFeatureScore * (0.42 + structureGate * 0.58)
     )
   );
   return {
