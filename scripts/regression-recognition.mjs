@@ -7,7 +7,8 @@ import {
   resolveRecognizedCategory,
   AUTO_CATEGORY_CONFIDENCE,
   calibrateCategoryConfidence,
-  semanticCategoryScores
+  semanticCategoryScores,
+  viewConfidenceForEvidence
 } from "../lib/ai/recognize.ts";
 import { adaptiveAssetProfile } from "../lib/ai/assetProfiles.ts";
 
@@ -200,6 +201,22 @@ assert("P25 rifle profile receives a higher detail budget than generic props", r
 assert("P25 sword profile enables thin-feature protection", swordProfile.thinFeatures === true);
 assert("P25 rifle profile enables thin-feature protection", rifleProfile.thinFeatures === true);
 
+const singleViewConfidence = viewConfidenceForEvidence(rifleGuess.evidence, false, true);
+const dualViewConfidence = viewConfidenceForEvidence(rifleGuess.evidence, true, true);
+assert(
+  "P27 FRONT+SIDE view evidence confidence is higher than single-view",
+  dualViewConfidence.confidence > singleViewConfidence.confidence
+);
+assert(
+  "P27 view mode is explicit",
+  singleViewConfidence.mode === "single" && dualViewConfidence.mode === "front+side"
+);
+assert(
+  "P27 view confidence stays bounded",
+  singleViewConfidence.confidence >= 0.5 && singleViewConfidence.confidence <= 0.82 &&
+    dualViewConfidence.confidence >= 0.5 && dualViewConfidence.confidence <= 0.94
+);
+
 const rifleDualProfile = adaptiveAssetProfile({
   category: "rifles",
   features: rifleGuess.features,
@@ -212,22 +229,18 @@ const rifleDualProfile = adaptiveAssetProfile({
   hasDepth: true
 });
 assert(
-  "P27 FRONT+SIDE view confidence is higher than single-view confidence",
-  rifleDualProfile.viewConfidence > rifleProfile.viewConfidence
-);
-assert(
-  "P27 FRONT+SIDE is explicitly identified as a dual-view profile",
+  "P27 profile preserves explicit FRONT+SIDE mode",
   rifleDualProfile.viewMode === "front+side" && rifleProfile.viewMode === "single"
 );
 assert(
-  "P27 single-view depth stays more conservative than FRONT+SIDE",
-  rifleProfile.depthScale < rifleDualProfile.depthScale
+  "P27 profile exposes higher FRONT+SIDE view confidence",
+  rifleDualProfile.viewConfidence > rifleProfile.viewConfidence
 );
 assert(
-  "P27 view confidence remains bounded",
-  rifleProfile.viewConfidence >= 0.5 && rifleProfile.viewConfidence <= 0.82 &&
-    rifleDualProfile.viewConfidence >= 0.5 && rifleDualProfile.viewConfidence <= 0.94
+  "P27 existing dual-view depth behavior remains bounded",
+  rifleDualProfile.depthScale > rifleProfile.depthScale
 );
+
 
 const calibrationEvidence = {
   hits: 2600,
@@ -244,6 +257,47 @@ const clearConfidence = calibrateCategoryConfidence(0.82, 0.9, 0.3, calibrationE
 const nearTieConfidence = calibrateCategoryConfidence(0.82, 0.62, 0.6, calibrationEvidence);
 assert("P22 confidence calibration rewards clear semantic margin", clearConfidence > nearTieConfidence);
 assert("P22 confidence calibration stays bounded", clearConfidence >= 0.18 && clearConfidence <= 0.98 && nearTieConfidence >= 0.18 && nearTieConfidence <= 0.98);
+
+const tinyInput = mask(18, 18, (x, y) => {
+  const dx = x - 9;
+  const dy = y - 9;
+  return dx * dx + dy * dy <= 20;
+});
+const borderTouching = mask(48, 48, (x, y) => {
+  const body = x <= 34 && y >= 12 && y <= 35 && x >= 8;
+  return body;
+});
+const tinyInputGuess = recognizeFromMask(tinyInput);
+const borderTouchingGuess = recognizeFromMask(borderTouching);
+assert(
+  "P28 tiny input exposes reduced input quality",
+  (tinyInputGuess.evidence.inputQuality ?? 1) < 0.42
+);
+assert(
+  "P28 tiny input cannot auto-resolve to a weapon",
+  resolveRecognizedCategory({
+    ...tinyInputGuess,
+    category: "rifles",
+    confidence: 0.96
+  }).category === "objects"
+);
+assert(
+  "P28 ambiguity gate rejects high-confidence ambiguous weapon claims",
+  resolveRecognizedCategory({
+    ...ambiguousGuess,
+    category: "rifles",
+    confidence: 0.9
+  }).category === "objects"
+);
+assert(
+  "P28 frame-touching input receives a bounded quality signal",
+  (borderTouchingGuess.evidence.inputQuality ?? 0) >= 0 &&
+    (borderTouchingGuess.evidence.inputQuality ?? 2) <= 1
+);
+assert(
+  "P28 ambiguity signal remains exposed",
+  (ambiguousGuess.evidence.ambiguityScore ?? 0) > 0
+);
 
 if (failed) {
   console.error(`\n${failed} assertion(s) failed`);
