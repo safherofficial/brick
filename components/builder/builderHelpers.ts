@@ -12,6 +12,8 @@ export const TOOLS: { id: Tool; label: string; key: string }[] = [
 
 export type LocalImageMode = "solid" | "flat" | "relief" | "model";
 
+export type ExportMotion = "static" | "dynamic";
+
 export type ContentBounds = {
   minX: number;
   minY: number;
