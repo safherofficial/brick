@@ -10,7 +10,12 @@ export type MeshExportOptions = {
   name?: string;
   /** Optional recognized shape — used for GLB Socket_* placement. */
   shape?: string;
-  /** Opt-in: bake the standard Pickup/Showcase/Equipped idle + swing clips onto the mesh node. */
+  /** 2D sprite lock vs 2.5D relief — drives planar clip selection. */
+  output?: "2d" | "25d";
+  /**
+   * Bake Pickup/Showcase/Equipped clips onto the mesh node.
+   * Off unless the user picks Dynamic output (animated: true).
+   */
   animated?: boolean;
 };
 
