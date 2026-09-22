@@ -51,7 +51,7 @@ import { restorePlan } from "@/lib/solanaCheckout";
 import { connectWallet } from "@/lib/wallet";
 import { publishCreation } from "@/lib/creationsApi";
 import { type Clip, type VoxelHit } from "@/components/builder/VoxelCloud";
-import { boundsOfCells, fitSizeFor, type LocalImageMode } from "@/components/builder/builderHelpers";
+import { boundsOfCells, fitSizeFor, type ExportMotion, type LocalImageMode } from "@/components/builder/builderHelpers";
 import { BuilderHeader } from "@/components/builder/BuilderHeader";
 import { BuilderPanel } from "@/components/builder/BuilderPanel";
 import { BuilderViewport } from "@/components/builder/BuilderViewport";
@@ -84,6 +84,7 @@ export default function Builder() {
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
   const [imageMode, setImageMode] = useState<LocalImageMode>("solid");
   const [outputLock, setOutputLock] = useState<OutputLock | null>(null);
+  const [exportMotion, setExportMotion] = useState<ExportMotion>("static");
   const [imageHeight, setImageHeight] = useState(6);
   const [symmetrize, setSymmetrize] = useState(false);
   /** Optional AI category — drives ONNX depth, matte, 2.5D height presets. */
@@ -606,26 +607,31 @@ export default function Builder() {
         downloadBytes(unity2dZip, `${name}-unity2d.zip`, "application/zip");
         return;
       }
+      const animated = exportMotion === "dynamic";
       if (kind === "glb") {
         const options = {
           ...unityExportOptions({
             voxelSpanY: unityVoxelSpanY(volumeRef.current),
-            output: outputLock === "2d" ? "2d" : undefined,
+            output: outputLock === "2d" || outputLock === "25d" ? outputLock : undefined,
             name: title,
-            shape: lastShape
+            shape: lastShape,
+            animated
           })
         };
         const bytes = await exportGlbTextured(volumeRef.current, palette, options);
-        downloadBytes(new Uint8Array(bytes), `${name}.glb`, "model/gltf-binary");
+        const fileName = animated ? `${name}-anim.glb` : `${name}.glb`;
+        downloadBytes(new Uint8Array(bytes), fileName, "model/gltf-binary");
+        notify(animated ? "GLB · DYNAMIC" : "GLB · STATIC");
         return;
       }
       if (kind === "unity-pack") {
         const options = {
           ...unityExportOptions({
             voxelSpanY: unityVoxelSpanY(volumeRef.current),
-            output: outputLock === "2d" ? "2d" : undefined,
+            output: outputLock === "2d" || outputLock === "25d" ? outputLock : undefined,
             name: title,
-            shape: lastShape
+            shape: lastShape,
+            animated
           })
         };
         const glbBytes = await exportGlbTextured(volumeRef.current, palette, options);
@@ -640,7 +646,8 @@ export default function Builder() {
             ? { png: sprite.png, meta: sprite.unityMeta }
             : undefined
         });
-        downloadBytes(pack, `${name}-unity.zip`, "application/zip");
+        downloadBytes(pack, animated ? `${name}-unity-anim.zip` : `${name}-unity.zip`, "application/zip");
+        notify(animated ? "UNITY PACK · DYNAMIC" : "UNITY PACK · STATIC");
         return;
       }
       const archive = await exportObjArchive(
@@ -648,14 +655,14 @@ export default function Builder() {
         palette,
         unityExportOptions({
           voxelSpanY: unityVoxelSpanY(volumeRef.current),
-          output: outputLock === "2d" ? "2d" : undefined,
+          output: outputLock === "2d" || outputLock === "25d" ? outputLock : undefined,
           name: title,
           shape: lastShape
         })
       );
       downloadBytes(archive, `${name}-obj.zip`, "application/zip");
     },
-    [lastShape, outputLock, palette, title]
+    [exportMotion, lastShape, notify, outputLock, palette, title]
   );
   const publish = useCallback(async () => {
     setBusy(true);
@@ -708,6 +715,8 @@ export default function Builder() {
         fileRef={fileRef}
         frontRef={frontRef}
         sideRef={sideRef}
+        exportMotion={exportMotion}
+        setExportMotion={setExportMotion}
       />
       <div className="builderBody voxelBody">
         <BuilderPanel
@@ -741,6 +750,8 @@ export default function Builder() {
           setImageMode={setImageMode}
           outputLock={outputLock}
           setOutputLock={setOutputLock}
+          exportMotion={exportMotion}
+          setExportMotion={setExportMotion}
           imageHeight={imageHeight}
           setImageHeight={setImageHeight}
           symmetrize={symmetrize}
