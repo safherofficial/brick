@@ -28,6 +28,10 @@ export type RecognitionEvidence = {
   thinFeatureScore?: number;
   /** P26 — terminal narrowing signal for tip/barrel/edge preservation. */
   tipSharpness?: number;
+  /** P28 — bounded input/mask quality used to gate automatic recognition. */
+  inputQuality?: number;
+  /** P28 — ambiguity evidence reused by the automatic recognition gate. */
+  ambiguityScore?: number;
 };
 export type RecognitionFeatures = {
   thin: boolean;
@@ -88,7 +92,17 @@ export function resolveRecognizedCategory(
   }
   const confident = guess.confidence >= AUTO_CATEGORY_CONFIDENCE;
   const structurallyConsistent = categoryEvidenceIsConsistent(guess);
-  const category = confident && structurallyConsistent ? guess.category : "objects";
+  const inputQuality = clamp01(guess.evidence.inputQuality ?? 1);
+  const ambiguityScore = clamp01(guess.evidence.ambiguityScore ?? 0);
+  const qualityGate = inputQuality >= 0.42;
+  const ambiguityGate = ambiguityScore < 0.48 || guess.confidence < 0.72;
+  const category =
+    confident &&
+    structurallyConsistent &&
+    qualityGate &&
+    ambiguityGate
+      ? guess.category
+      : "objects";
   return {
     category,
     source: "auto",
@@ -224,6 +238,30 @@ function maskStats(mask: boolean[][]) {
       rawThinFeatureScore * (0.42 + structureGate * 0.58)
     )
   );
+  const minFrameMargin = Math.max(
+    0,
+    Math.min(minX, minY, Math.max(0, w - 1 - maxX), Math.max(0, h - 1 - maxY))
+  );
+  const resolutionQuality = clamp01(
+    (Math.min(bw, bh) - 8) / 32
+  );
+  const pixelEvidence = greaterFit(hits, 24, 320);
+  const frameMarginQuality = clamp01(
+    minFrameMargin / Math.max(2, Math.min(w, h) * 0.08)
+  );
+  const inputQuality = clamp01(
+    resolutionQuality * 0.48 +
+      pixelEvidence * 0.30 +
+      frameMarginQuality * 0.22
+  );
+  const ambiguityScore = clamp01(
+    ambiguityFor(
+      bh / bw,
+      hits / (bw * bh),
+      checked ? same / checked : 0,
+      Math.max(bw, bh) / Math.min(bw, bh)
+    )
+  );
   return {
     hits,
     fill: hits / (bw * bh),
@@ -236,7 +274,9 @@ function maskStats(mask: boolean[][]) {
     taper,
     edgeThinness,
     thinFeatureScore,
-    tipSharpness
+    tipSharpness,
+    inputQuality,
+    ambiguityScore
   };
 }
 function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence {
@@ -251,7 +291,9 @@ function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence
     widthCv: s.cv,
     edgeThinness: s.edgeThinness,
     thinFeatureScore: s.thinFeatureScore,
-    tipSharpness: s.tipSharpness
+    tipSharpness: s.tipSharpness,
+    inputQuality: s.inputQuality,
+    ambiguityScore: s.ambiguityScore
   };
 }
 function featuresFromEvidence(evidence: RecognitionEvidence): RecognitionFeatures {
@@ -384,6 +426,45 @@ export function semanticCategoryScores(evidence: RecognitionEvidence): Recogniti
 
   return { swords, guns, rifles, objects };
 }
+export type RecognitionViewMode = "single" | "front+side";
+
+export type RecognitionViewConfidence = Readonly<{
+  mode: RecognitionViewMode;
+  confidence: number;
+}>;
+
+/**
+ * P27 — estimates how much structural view evidence is available for
+ * reconstruction. This is a view-evidence confidence, not a probability
+ * that the reconstruction is correct. FRONT+SIDE receives a higher bounded
+ * confidence because depth is constrained by two silhouettes; single-view
+ * remains conservative.
+ */
+export function viewConfidenceForEvidence(
+  evidence: RecognitionEvidence | undefined,
+  hasSide: boolean,
+  hasDepth = true
+): RecognitionViewConfidence {
+  const evidenceQuality = clamp01(
+    0.42 +
+      greaterFit(evidence?.hits ?? 0, 24, 320) * 0.18 +
+      clamp01(evidence?.edgeThinness ?? 0) * 0.12 +
+      clamp01(evidence?.symmetry ?? 0) * 0.1 +
+      clamp01((evidence?.widthCv ?? 0) / 0.3) * 0.08 +
+      clamp01(evidence?.thinFeatureScore ?? 0) * 0.1
+  );
+  const mode: RecognitionViewMode = hasSide ? "front+side" : "single";
+  const confidence = clamp01(
+    (hasSide ? 0.78 : 0.60) +
+      evidenceQuality * (hasSide ? 0.16 : 0.14) +
+      (hasDepth ? 0.03 : 0)
+  );
+  return {
+    mode,
+    confidence: Math.max(0.5, Math.min(hasSide ? 0.94 : 0.82, confidence))
+  };
+}
+
 /**
  * P22 Confidence Calibration. The margin between the selected category and
  * the strongest alternative now affects confidence, so near-ties cannot look
@@ -411,21 +492,34 @@ export function calibrateCategoryConfidence(
       clamp01(evidence.symmetry) * 0.1
   );
   const marginBoost = (margin - 0.18) * 0.18;
-  const ambiguityPenalty = ambiguity * 0.11;
+  const ambiguityPenalty = Math.max(ambiguity, evidence.ambiguityScore ?? 0) * 0.11;
   const lowEvidencePenalty = (1 - evidenceQuality) * 0.08;
+  const inputQualityPenalty = (1 - clamp01(evidence.inputQuality ?? 1)) * 0.14;
   return Math.max(
     0.18,
-    Math.min(0.98, baseConfidence + marginBoost - ambiguityPenalty - lowEvidencePenalty)
+    Math.min(
+      0.98,
+      baseConfidence +
+        marginBoost -
+        ambiguityPenalty -
+        lowEvidencePenalty -
+        inputQualityPenalty
+    )
   );
 }
 function confidenceFromEvidence(
   base: number,
   support: number,
-  ambiguity: number
+  ambiguity: number,
+  inputQuality = 1
 ) {
   const evidenceBoost = (support - 0.5) * 0.18;
   const ambiguityPenalty = ambiguity * 0.16;
-  return Math.max(0.18, Math.min(0.98, base + evidenceBoost - ambiguityPenalty));
+  const inputQualityPenalty = (1 - clamp01(inputQuality)) * 0.10;
+  return Math.max(
+    0.18,
+    Math.min(0.98, base + evidenceBoost - ambiguityPenalty - inputQualityPenalty)
+  );
 }
 function ambiguityFor(
   aspect: number,
@@ -515,7 +609,12 @@ function withEvidence(
   const ambiguity = ambiguityFor(stats.aspect, stats.fill, stats.symmetry, stats.slenderness);
   return {
     ...guess,
-    confidence: confidenceFromEvidence(baseConfidence, support, ambiguity),
+    confidence: confidenceFromEvidence(
+      baseConfidence,
+      support,
+      ambiguity,
+      stats.inputQuality
+    ),
     evidence: evidenceFromStats(stats),
     features: featuresFromEvidence(evidenceFromStats(stats))
   };
