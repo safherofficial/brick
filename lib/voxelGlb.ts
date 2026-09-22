@@ -11,6 +11,7 @@ import {
   transformPoint,
   type MeshExportOptions
 } from "@/lib/voxelMesh";
+import { buildWeaponAnimClips } from "@/lib/voxelAnim";
 import { encodePng } from "@/lib/png";
 import { GENERATOR_NAME, MAX_VOXELS } from "@/lib/limits";
 import {
@@ -518,6 +519,46 @@ export async function exportGlbTextured(
 
   const atlasSection = appendSection(atlasPng);
 
+  type AnimSectionEntry = {
+    name: string;
+    loop: boolean;
+    timeSection: number;
+    timeCount: number;
+    timeMin: number;
+    timeMax: number;
+    translation?: { section: number; count: number };
+    rotation?: { section: number; count: number };
+  };
+  const animClips = options?.animated ? buildWeaponAnimClips(maxPy - minPy) : [];
+  const animSections: AnimSectionEntry[] = animClips.map((clip) => {
+    const timeArr = new Float32Array(clip.track.times);
+    const entry: AnimSectionEntry = {
+      name: clip.name,
+      loop: clip.loop,
+      timeSection: appendSection(new Uint8Array(timeArr.buffer)),
+      timeCount: timeArr.length,
+      timeMin: clip.track.times[0],
+      timeMax: clip.track.times[clip.track.times.length - 1]
+    };
+    if (clip.track.translation) {
+      const flat = new Float32Array(clip.track.translation.length * 3);
+      clip.track.translation.forEach((v, i) => flat.set(v, i * 3));
+      entry.translation = {
+        section: appendSection(new Uint8Array(flat.buffer)),
+        count: clip.track.translation.length
+      };
+    }
+    if (clip.track.rotation) {
+      const flat = new Float32Array(clip.track.rotation.length * 4);
+      clip.track.rotation.forEach((v, i) => flat.set(v, i * 4));
+      entry.rotation = {
+        section: appendSection(new Uint8Array(flat.buffer)),
+        count: clip.track.rotation.length
+      };
+    }
+    return entry;
+  });
+
   const bin = new Uint8Array(cursor);
   sections.forEach((section, i) => bin.set(section.bytes, sectionOffsets[i]));
 
@@ -597,6 +638,43 @@ export async function exportGlbTextured(
     });
   });
 
+  const animations = animSections.map((entry) => {
+    const timeAccessor = accessors.length;
+    accessors.push({
+      bufferView: entry.timeSection,
+      componentType: 5126,
+      count: entry.timeCount,
+      type: "SCALAR",
+      min: [entry.timeMin],
+      max: [entry.timeMax]
+    });
+    const samplers: Record<string, unknown>[] = [];
+    const channels: Record<string, unknown>[] = [];
+    if (entry.translation) {
+      const outAccessor = accessors.length;
+      accessors.push({
+        bufferView: entry.translation.section,
+        componentType: 5126,
+        count: entry.translation.count,
+        type: "VEC3"
+      });
+      samplers.push({ input: timeAccessor, output: outAccessor, interpolation: "LINEAR" });
+      channels.push({ sampler: samplers.length - 1, target: { node: meshNode, path: "translation" } });
+    }
+    if (entry.rotation) {
+      const outAccessor = accessors.length;
+      accessors.push({
+        bufferView: entry.rotation.section,
+        componentType: 5126,
+        count: entry.rotation.count,
+        type: "VEC4"
+      });
+      samplers.push({ input: timeAccessor, output: outAccessor, interpolation: "LINEAR" });
+      channels.push({ sampler: samplers.length - 1, target: { node: meshNode, path: "rotation" } });
+    }
+    return { name: entry.name, channels, samplers, extras: { loop: entry.loop } };
+  });
+
   const bufferViews: Record<string, unknown>[] = sections.map((section, index) => ({
     buffer: 0,
     byteOffset: sectionOffsets[index],
@@ -658,7 +736,8 @@ export async function exportGlbTextured(
     images: [{ mimeType: "image/png", bufferView: atlasSection }],
     accessors,
     bufferViews,
-    buffers: [{ byteLength: bin.length }]
+    buffers: [{ byteLength: bin.length }],
+    ...(animations.length ? { animations } : {})
   };
 
   await new Promise((resolve) => setTimeout(resolve, 0));
