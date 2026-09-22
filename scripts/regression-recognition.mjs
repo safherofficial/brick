@@ -144,6 +144,24 @@ assert("P26 long thin barrel reports thin-feature evidence", (longThinBarrelGues
 assert("P26 tapered blade reports terminal detail evidence", taperedBladeGuess.features.tipLike === true);
 assert("P26 thin-feature evidence does not force weapon classification on its own", resolveRecognizedCategory(longThinBarrelGuess).category === "objects" || longThinBarrelGuess.category === "rifles");
 
+// P26 hardening: isolated thin strokes inside a compact silhouette must not
+// become strong global thin-feature evidence. This guards against noisy
+// segmentation pixels consuming extra reconstruction budget.
+const compactThinNoise = mask(48, 48, (x, y) => {
+  const body = x >= 10 && x <= 37 && y >= 20 && y <= 27;
+  const noiseStroke = x >= 24 && x <= 25 && y >= 10 && y <= 37;
+  return body || noiseStroke;
+});
+const compactThinNoiseGuess = recognizeFromMask(compactThinNoise);
+assert(
+  "P26 hardening: compact local thin noise stays below strong thin-feature threshold",
+  (compactThinNoiseGuess.features.thinFeatureScore ?? 0) < 0.44
+);
+assert(
+  "P26 hardening: compact local thin noise is not marked as terminal detail",
+  compactThinNoiseGuess.features.tipLike === false
+);
+
 const swordProfile = adaptiveAssetProfile({
   category: "swords",
   features: taperedBladeGuess.features,
@@ -181,6 +199,35 @@ assert("P25 sword profile stays shallower than rifle profile", swordProfile.dept
 assert("P25 rifle profile receives a higher detail budget than generic props", rifleProfile.budgetScale > objectProfile.budgetScale);
 assert("P25 sword profile enables thin-feature protection", swordProfile.thinFeatures === true);
 assert("P25 rifle profile enables thin-feature protection", rifleProfile.thinFeatures === true);
+
+const rifleDualProfile = adaptiveAssetProfile({
+  category: "rifles",
+  features: rifleGuess.features,
+  evidence: rifleGuess.evidence,
+  width: 150,
+  height: 44,
+  volumeSize: 128,
+  mode: "model",
+  hasSide: true,
+  hasDepth: true
+});
+assert(
+  "P27 FRONT+SIDE view confidence is higher than single-view confidence",
+  rifleDualProfile.viewConfidence > rifleProfile.viewConfidence
+);
+assert(
+  "P27 FRONT+SIDE is explicitly identified as a dual-view profile",
+  rifleDualProfile.viewMode === "front+side" && rifleProfile.viewMode === "single"
+);
+assert(
+  "P27 single-view depth stays more conservative than FRONT+SIDE",
+  rifleProfile.depthScale < rifleDualProfile.depthScale
+);
+assert(
+  "P27 view confidence remains bounded",
+  rifleProfile.viewConfidence >= 0.5 && rifleProfile.viewConfidence <= 0.82 &&
+    rifleDualProfile.viewConfidence >= 0.5 && rifleDualProfile.viewConfidence <= 0.94
+);
 
 const calibrationEvidence = {
   hits: 2600,
