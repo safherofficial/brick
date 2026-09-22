@@ -216,3 +216,4 @@ export function adaptiveHeightMax(
     Math.min(maxAllowed, Math.round(currentHeightMax * profile.depthScale))
   );
 }
+ 
