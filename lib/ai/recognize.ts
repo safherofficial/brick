@@ -24,6 +24,10 @@ export type RecognitionEvidence = {
   bulge: number;
   widthCv: number;
   edgeThinness: number;
+  /** P26 — orientation-aware thin-feature signal derived from local thickness. */
+  thinFeatureScore?: number;
+  /** P26 — terminal narrowing signal for tip/barrel/edge preservation. */
+  tipSharpness?: number;
 };
 export type RecognitionFeatures = {
   thin: boolean;
@@ -32,6 +36,10 @@ export type RecognitionFeatures = {
   symmetric: boolean;
   broadHead: boolean;
   irregular: boolean;
+  /** P26 — explicit thin-feature confidence used by reconstruction profiles. */
+  thinFeatureScore?: number;
+  /** P26 — useful for preserving tips, muzzles and other terminal features. */
+  tipLike?: boolean;
 };
 
 export type ShapeGuess = {
@@ -105,6 +113,9 @@ function maskStats(mask: boolean[][]) {
   let maxX = -1;
   let maxY = -1;
   const rowW = new Array<number>(h).fill(0);
+  const colH = new Array<number>(w).fill(0);
+  const colLo = new Array<number>(w).fill(h);
+  const colHi = new Array<number>(w).fill(-1);
   for (let y = 0; y < h; y += 1) {
     let lo = w;
     let hi = -1;
@@ -117,8 +128,13 @@ function maskStats(mask: boolean[][]) {
       maxX = Math.max(maxX, x);
       minY = Math.min(minY, y);
       maxY = Math.max(maxY, y);
+      colLo[x] = Math.min(colLo[x], y);
+      colHi[x] = Math.max(colHi[x], y);
     }
     rowW[y] = hi >= 0 ? hi - lo + 1 : 0;
+  }
+  for (let x = 0; x < w; x += 1) {
+    colH[x] = colHi[x] >= 0 ? colHi[x] - colLo[x] + 1 : 0;
   }
   const bw = Math.max(1, maxX - minX + 1);
   const bh = Math.max(1, maxY - minY + 1);
@@ -134,10 +150,16 @@ function maskStats(mask: boolean[][]) {
     }
   }
   const live = rowW.filter((n) => n > 0);
+  const liveCols = colH.filter((n) => n > 0);
   const widths = live.slice().sort((a, b) => a - b);
+  const heights = liveCols.slice().sort((a, b) => a - b);
   const median = widths[Math.floor(widths.length / 2)] ?? 1;
+  const medianCol = heights[Math.floor(heights.length / 2)] ?? 1;
   const maxRow = widths[widths.length - 1] ?? 1;
   const mean = live.length ? live.reduce((a, b) => a + b, 0) / live.length : 1;
+  const meanCol = liveCols.length
+    ? liveCols.reduce((a, b) => a + b, 0) / liveCols.length
+    : 1;
   const variance =
     live.length < 2
       ? 0
@@ -153,6 +175,46 @@ function maskStats(mask: boolean[][]) {
   const edgeThinness = live.length
     ? Math.max(0, Math.min(1, 1 - minWidth / Math.max(1, median)))
     : 0;
+  const rowThinRatio = live.length
+    ? live.filter((value) => value <= Math.max(2, Math.ceil(median * 0.65))).length /
+      live.length
+    : 0;
+  const colThinRatio = liveCols.length
+    ? liveCols.filter((value) => value <= Math.max(2, Math.ceil(medianCol * 0.65))).length /
+      liveCols.length
+    : 0;
+
+  const verticalAxisThinness = Math.max(0, Math.min(1, 1 - mean / Math.max(1, bh)));
+  const horizontalAxisThinness = Math.max(0, Math.min(1, 1 - meanCol / Math.max(1, bw)));
+  const verticalTip = Math.max(
+    0,
+    Math.min(1, 1 - Math.min(first, last) / Math.max(1, median))
+  );
+  const colFirst = liveCols[0] ?? 1;
+  const colLast = liveCols[liveCols.length - 1] ?? 1;
+  const horizontalTip = Math.max(
+    0,
+    Math.min(1, 1 - Math.min(colFirst, colLast) / Math.max(1, medianCol))
+  );
+  const verticalOrientation = bh >= bw;
+  const axisThinness = verticalOrientation
+    ? verticalAxisThinness
+    : horizontalAxisThinness;
+  const orientedThinRatio = verticalOrientation ? rowThinRatio : colThinRatio;
+  const elongationGate = clamp01(
+    (Math.max(bw, bh) / Math.max(1, Math.min(bw, bh)) - 1.3) / 1.7
+  );
+  const tipSharpness = Math.max(verticalTip, horizontalTip) * elongationGate;
+  const thinFeatureScore = Math.max(
+    0,
+    Math.min(
+      1,
+      axisThinness * 0.52 +
+        orientedThinRatio * 0.18 +
+        edgeThinness * 0.12 +
+        tipSharpness * 0.18
+    )
+  );
   return {
     hits,
     fill: hits / (bw * bh),
@@ -163,7 +225,9 @@ function maskStats(mask: boolean[][]) {
     cv,
     bulge,
     taper,
-    edgeThinness
+    edgeThinness,
+    thinFeatureScore,
+    tipSharpness
   };
 }
 function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence {
@@ -176,17 +240,26 @@ function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence
     taper: s.taper,
     bulge: s.bulge,
     widthCv: s.cv,
-    edgeThinness: s.edgeThinness
+    edgeThinness: s.edgeThinness,
+    thinFeatureScore: s.thinFeatureScore,
+    tipSharpness: s.tipSharpness
   };
 }
 function featuresFromEvidence(evidence: RecognitionEvidence): RecognitionFeatures {
+  const thinFeatureScore = clamp01(evidence.thinFeatureScore ?? 0);
+  const tipSharpness = clamp01(evidence.tipSharpness ?? 0);
   return {
-    thin: evidence.slenderness >= 2.8 || evidence.edgeThinness >= 0.18,
+    thin:
+      evidence.slenderness >= 2.8 ||
+      evidence.edgeThinness >= 0.18 ||
+      thinFeatureScore >= 0.44,
     long: evidence.aspect >= 2.2 || evidence.slenderness >= 2.6,
-    tapered: evidence.taper <= 0.6,
+    tapered: evidence.taper <= 0.6 || tipSharpness >= 0.58,
     symmetric: evidence.symmetry >= 0.72,
     broadHead: evidence.fill <= 0.42 && evidence.widthCv >= 0.2,
-    irregular: evidence.widthCv >= 0.32 || evidence.symmetry < 0.55
+    irregular: evidence.widthCv >= 0.32 || evidence.symmetry < 0.55,
+    thinFeatureScore,
+    tipLike: tipSharpness >= 0.58
   };
 }
 
@@ -218,60 +291,90 @@ function bandFit(value: number, center: number, radius: number) {
  */
 export function semanticCategoryScores(evidence: RecognitionEvidence): RecognitionCategoryScores {
   const aspect = Math.max(0.01, evidence.aspect);
-  const horizontal = greaterFit(1 / aspect, 1.18, 2.15);
-  const vertical = greaterFit(aspect, 1.22, 2.8);
+  const vertical = greaterFit(aspect, 1.16, 2.8);
+  const horizontal = greaterFit(1 / aspect, 1.16, 2.8);
   const elongated = greaterFit(evidence.slenderness, 2.05, 4.2);
   const veryElongated = greaterFit(evidence.slenderness, 2.65, 4.6);
-  const lowFill = lesserFit(evidence.fill, 0.3, 0.62);
-  const compactFill = bandFit(evidence.fill, 0.32, 0.2);
+  const compact = bandFit(evidence.slenderness, 2.35, 1.55);
+  const lowFill = lesserFit(evidence.fill, 0.3, 0.68);
+  const mediumFill = bandFit(evidence.fill, 0.36, 0.34);
+  const dense = greaterFit(evidence.fill, 0.48, 0.92);
   const edgeSignal = clamp01(evidence.edgeThinness * 1.25);
+  const thinFeatureSignal = clamp01(evidence.thinFeatureScore ?? 0);
+  const tipSignal = clamp01(evidence.tipSharpness ?? 0);
   const taperSignal = lesserFit(evidence.taper, 0.55, 0.9);
   const contourVariation = clamp01(evidence.widthCv / 0.3);
   const massVariation = clamp01(Math.max(0, evidence.bulge - 1) / 1.8);
   const structure = clamp01(contourVariation * 0.58 + massVariation * 0.42);
-
-  const swords = clamp01(
-    vertical * 0.34 +
-      elongated * 0.18 +
-      lesserFit(evidence.fill, 0.34, 0.72) * 0.18 +
-      taperSignal * 0.18 +
-      edgeSignal * 0.12
-  );
-
-  const rifles = clamp01(
-    horizontal * 0.28 +
-      veryElongated * 0.25 +
-      structure * 0.21 +
-      lesserFit(evidence.fill, 0.38, 0.64) * 0.16 +
-      edgeSignal * 0.1
-  );
-
-  const guns = clamp01(
-    horizontal * 0.24 +
-      bandFit(evidence.slenderness, 2.55, 1.25) * 0.19 +
-      compactFill * 0.25 +
-      taperSignal * 0.2 +
-      edgeSignal * 0.12
-  );
-
-  const dense = greaterFit(evidence.fill, 0.45, 0.92);
+  const asymmetry = clamp01(1 - evidence.symmetry);
   const uniformContour = 1 - clamp01(evidence.widthCv / 0.26);
+
+  const swordSignals = [
+    vertical,
+    elongated,
+    lesserFit(evidence.fill, 0.34, 0.72),
+    taperSignal,
+    Math.max(edgeSignal, thinFeatureSignal),
+    tipSignal
+  ];
+  const rifleSignals = [
+    horizontal,
+    veryElongated,
+    structure,
+    lowFill,
+    thinFeatureSignal,
+    asymmetry
+  ];
+  const gunSignals = [
+    horizontal,
+    compact,
+    mediumFill,
+    taperSignal,
+    Math.max(edgeSignal, thinFeatureSignal * 0.9),
+    structure
+  ];
+
+  const swordContradiction = clamp01(
+    horizontal * 0.42 + dense * 0.18 + (1 - taperSignal) * 0.2 + (1 - tipSignal) * 0.2
+  );
+  const rifleContradiction = clamp01(
+    vertical * 0.44 + bandFit(evidence.slenderness, 1.45, 1.2) * 0.2 + dense * 0.16 +
+      (1 - horizontal) * 0.2
+  );
+  const gunContradiction = clamp01(
+    vertical * 0.18 + veryElongated * 0.34 + lowFill * 0.16 + (1 - compact) * 0.32
+  );
+
+  function fused(signals: number[], contradiction: number) {
+    const mean = signals.reduce((sum, value) => sum + value, 0) / signals.length;
+    const sorted = signals.slice().sort((a, b) => b - a);
+    const top = sorted[0] ?? 0;
+    const second = sorted[1] ?? 0;
+    const lowerTail = sorted.slice(2).reduce((sum, value) => sum + value, 0) /
+      Math.max(1, sorted.length - 2);
+    const agreement = clamp01((second * 0.42 + lowerTail * 0.58));
+    return clamp01(mean * 0.76 + top * 0.12 + agreement * 0.12 - contradiction * 0.14);
+  }
+
+  const swords = fused(swordSignals, swordContradiction);
+  const rifles = fused(rifleSignals, rifleContradiction);
+  const guns = fused(gunSignals, gunContradiction);
   const ambiguity = ambiguityFor(
     evidence.aspect,
     evidence.fill,
     evidence.symmetry,
     evidence.slenderness
   );
-  const objects = clamp01(
+  const objectBase =
     0.22 +
-      dense * 0.36 +
-      uniformContour * 0.18 +
-      ambiguity * 0.14
-  );
+    dense * 0.34 +
+    uniformContour * 0.18 +
+    ambiguity * 0.14 +
+    (1 - Math.max(swords, guns, rifles)) * 0.12;
+  const objects = clamp01(objectBase);
 
   return { swords, guns, rifles, objects };
 }
-
 /**
  * P22 Confidence Calibration. The margin between the selected category and
  * the strongest alternative now affects confidence, so near-ties cannot look
