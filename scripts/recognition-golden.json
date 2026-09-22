@@ -1,0 +1,202 @@
+{
+  "version": "p29.1",
+  "description": "Versioned recognition golden set. These deterministic silhouettes lock category decisions, confidence bounds and ambiguity safety while the real-image fixture tier is assembled.",
+  "cases": [
+    {
+      "id": "sword_01_tapered",
+      "shape": "taperedBlade",
+      "width": 42,
+      "height": 170,
+      "params": {
+        "center": 21,
+        "startHalf": 8,
+        "endHalf": 1,
+        "guardY0": 200,
+        "guardY1": 200,
+        "guardHalf": 0
+      },
+      "expected": "swords",
+      "minConfidence": 0.7
+    },
+    {
+      "id": "sword_02_tapered",
+      "shape": "taperedBlade",
+      "width": 44,
+      "height": 176,
+      "params": {
+        "center": 22,
+        "startHalf": 9,
+        "endHalf": 1,
+        "guardY0": 200,
+        "guardY1": 200,
+        "guardHalf": 0
+      },
+      "expected": "swords",
+      "minConfidence": 0.7
+    },
+    {
+      "id": "rifle_01_structured",
+      "shape": "rifle",
+      "width": 150,
+      "height": 44,
+      "params": {
+        "bodyX0": 20,
+        "bodyX1": 136,
+        "bodyY0": 18,
+        "bodyY1": 25,
+        "stockX": 42,
+        "stockY0": 12,
+        "stockY1": 32,
+        "barrelX0": 136,
+        "barrelX1": 149,
+        "gripX0": 78,
+        "gripX1": 89,
+        "gripY0": 25,
+        "gripY1": 34
+      },
+      "expected": "rifles",
+      "minConfidence": 0.68
+    },
+    {
+      "id": "rifle_02_structured",
+      "shape": "rifle",
+      "width": 170,
+      "height": 48,
+      "params": {
+        "bodyX0": 18,
+        "bodyX1": 150,
+        "bodyY0": 19,
+        "bodyY1": 27,
+        "stockX": 44,
+        "stockY0": 13,
+        "stockY1": 35,
+        "barrelX0": 150,
+        "barrelX1": 169,
+        "gripX0": 88,
+        "gripX1": 100,
+        "gripY0": 27,
+        "gripY1": 38
+      },
+      "expected": "rifles",
+      "minConfidence": 0.68
+    },
+    {
+      "id": "gun_01_compact",
+      "shape": "handgun",
+      "width": 110,
+      "height": 80,
+      "params": {
+        "slideX0": 18,
+        "slideX1": 96,
+        "slideY0": 28,
+        "slideY1": 37,
+        "barrelX0": 96,
+        "barrelX1": 108,
+        "gripX0": 60,
+        "gripX1": 79,
+        "gripY0": 35,
+        "gripY1": 66,
+        "triggerX0": 54,
+        "triggerX1": 63,
+        "triggerY0": 37,
+        "triggerY1": 48
+      },
+      "expected": "guns",
+      "minConfidence": 0.72
+    },
+    {
+      "id": "gun_02_compact",
+      "shape": "handgun",
+      "width": 100,
+      "height": 76,
+      "params": {
+        "slideX0": 16,
+        "slideX1": 84,
+        "slideY0": 28,
+        "slideY1": 36,
+        "barrelX0": 84,
+        "barrelX1": 96,
+        "gripX0": 54,
+        "gripX1": 72,
+        "gripY0": 34,
+        "gripY1": 64,
+        "triggerX0": 48,
+        "triggerX1": 58,
+        "triggerY0": 37,
+        "triggerY1": 47
+      },
+      "expected": "guns",
+      "minConfidence": 0.7
+    },
+    {
+      "id": "object_01_vertical_rod",
+      "shape": "verticalRod",
+      "width": 40,
+      "height": 160,
+      "params": {
+        "center": 20,
+        "half": 4
+      },
+      "expected": "objects",
+      "maxConfidence": 0.64
+    },
+    {
+      "id": "object_02_horizontal_rod",
+      "shape": "horizontalRod",
+      "width": 150,
+      "height": 44,
+      "params": {
+        "center": 22,
+        "half": 4
+      },
+      "expected": "objects",
+      "maxConfidence": 0.9
+    },
+    {
+      "id": "object_03_compact_tool",
+      "shape": "compactTool",
+      "width": 110,
+      "height": 60,
+      "params": {
+        "bodyX0": 24,
+        "bodyX1": 90,
+        "bodyY0": 21,
+        "bodyY1": 39,
+        "headX0": 14,
+        "headX1": 34,
+        "headY0": 12,
+        "headY1": 48
+      },
+      "expected": "objects",
+      "maxConfidence": 0.64
+    },
+    {
+      "id": "object_04_ellipse",
+      "shape": "ellipse",
+      "width": 76,
+      "height": 70,
+      "params": {
+        "cx": 38,
+        "cy": 35,
+        "rx": 30,
+        "ry": 26
+      },
+      "expected": "objects",
+      "maxConfidence": 0.98
+    },
+    {
+      "id": "object_05_crate",
+      "shape": "rect",
+      "width": 50,
+      "height": 50,
+      "params": {
+        "x0": 8,
+        "x1": 41,
+        "y0": 8,
+        "y1": 41
+      },
+      "expected": "objects",
+      "maxConfidence": 0.98
+    }
+  ]
+}
