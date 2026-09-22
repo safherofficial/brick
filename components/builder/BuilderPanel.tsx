@@ -16,7 +16,7 @@ import {
   type ViewMode
 } from "@/lib/voxelEngine";
 import type { Clip } from "@/components/builder/VoxelCloud";
-import { TOOLS, type LocalImageMode } from "@/components/builder/builderHelpers";
+import { TOOLS, type ExportMotion, type LocalImageMode } from "@/components/builder/builderHelpers";
 
 export type BuilderPanelProps = {
   tool: Tool;
@@ -49,6 +49,8 @@ export type BuilderPanelProps = {
   setImageMode: (mode: LocalImageMode) => void;
   outputLock: OutputLock | null;
   setOutputLock: (lock: OutputLock | null) => void;
+  exportMotion: ExportMotion;
+  setExportMotion: (motion: ExportMotion) => void;
   imageHeight: number;
   setImageHeight: (n: number) => void;
   symmetrize: boolean;
@@ -100,6 +102,8 @@ export function BuilderPanel({
   setImageMode,
   outputLock,
   setOutputLock,
+  exportMotion,
+  setExportMotion,
   imageHeight,
   setImageHeight,
   symmetrize,
@@ -350,6 +354,28 @@ export function BuilderPanel({
           FREE
         </button>
       </div>
+      <p className="foldHint">GLB / Unity pack motion</p>
+      <div className="viewRow">
+        <button
+          className={exportMotion === "static" ? "modeOn" : ""}
+          disabled={busy}
+          onClick={() => setExportMotion("static")}
+        >
+          STATIC
+        </button>
+        <button
+          className={exportMotion === "dynamic" ? "modeOn" : ""}
+          disabled={busy}
+          onClick={() => setExportMotion("dynamic")}
+        >
+          DYNAMIC
+        </button>
+      </div>
+      <p className="foldHint">
+        {exportMotion === "dynamic"
+          ? "Dynamic: clips baked into GLB (idle / swing)"
+          : "Static: mesh only, no animation clips"}
+      </p>
       <div className="viewRow">
         {(["solid", "flat", "relief", "model"] as LocalImageMode[]).map((mode) => (
           <button
