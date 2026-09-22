@@ -9,6 +9,7 @@ import {
   calibrateCategoryConfidence,
   semanticCategoryScores
 } from "../lib/ai/recognize.ts";
+import { adaptiveAssetProfile } from "../lib/ai/assetProfiles.ts";
 
 function mask(w, h, predicate) {
   return Array.from({ length: h }, (_, y) =>
@@ -61,6 +62,17 @@ const compactBlockTool = mask(110, 60, (x, y) => {
   const head = x >= 14 && x <= 34 && y >= 12 && y <= 48;
   return body || head;
 });
+const longThinBarrel = mask(180, 42, (x, y) => {
+  const body = x >= 16 && x <= 165 && y >= 18 && y <= 24;
+  const muzzle = x >= 165 && x <= 177 && y >= 19 && y <= 23;
+  return body || muzzle;
+});
+const taperedBlade = mask(42, 170, (x, y) => {
+  const center = 21;
+  const t = y / 169;
+  const half = Math.max(1, Math.round(8 - 7 * t));
+  return Math.abs(x - center) <= half;
+});
 
 const swordGuess = recognizeFromMask(sword);
 const rifleGuess = recognizeFromMask(rifle);
@@ -70,6 +82,8 @@ const rodGuess = recognizeFromMask(verticalRod);
 const horizontalRodGuess = recognizeFromMask(horizontalRod);
 const simpleBladeBlankGuess = recognizeFromMask(simpleBladeBlank);
 const compactBlockToolGuess = recognizeFromMask(compactBlockTool);
+const longThinBarrelGuess = recognizeFromMask(longThinBarrel);
+const taperedBladeGuess = recognizeFromMask(taperedBlade);
 
 assert("sword exposes evidence", swordGuess.evidence?.hits > 0);
 assert("rifle exposes evidence", rifleGuess.evidence?.slenderness > 2);
@@ -78,6 +92,9 @@ assert("P21 rifle semantic category is preserved", rifleGuess.category === "rifl
 assert("P21 handgun semantic category is preserved", gunGuess.category === "guns");
 assert("P21 rifle score beats gun score", semanticCategoryScores(rifleGuess.evidence).rifles > semanticCategoryScores(rifleGuess.evidence).guns);
 assert("P21 handgun score beats rifle score", semanticCategoryScores(gunGuess.evidence).guns > semanticCategoryScores(gunGuess.evidence).rifles);
+assert("P24 rifle fusion keeps horizontal multi-feature evidence coherent", semanticCategoryScores(rifleGuess.evidence).rifles >= 0.5);
+assert("P24 handgun fusion keeps compact evidence coherent", semanticCategoryScores(gunGuess.evidence).guns >= 0.45);
+assert("P24 sword fusion keeps vertical tapered evidence coherent", semanticCategoryScores(swordGuess.evidence).swords >= 0.5);
 assert(
   "confidence remains bounded",
   [
@@ -123,6 +140,47 @@ assert(
   ) > semanticCategoryScores(compactBlockToolGuess.evidence).objects &&
     compactBlockToolGuess.category === "objects"
 );
+assert("P26 long thin barrel reports thin-feature evidence", (longThinBarrelGuess.features.thinFeatureScore ?? 0) >= 0.44);
+assert("P26 tapered blade reports terminal detail evidence", taperedBladeGuess.features.tipLike === true);
+assert("P26 thin-feature evidence does not force weapon classification on its own", resolveRecognizedCategory(longThinBarrelGuess).category === "objects" || longThinBarrelGuess.category === "rifles");
+
+const swordProfile = adaptiveAssetProfile({
+  category: "swords",
+  features: taperedBladeGuess.features,
+  evidence: taperedBladeGuess.evidence,
+  width: 42,
+  height: 170,
+  volumeSize: 128,
+  mode: "model",
+  hasSide: false,
+  hasDepth: true
+});
+const rifleProfile = adaptiveAssetProfile({
+  category: "rifles",
+  features: longThinBarrelGuess.features,
+  evidence: longThinBarrelGuess.evidence,
+  width: 180,
+  height: 42,
+  volumeSize: 128,
+  mode: "model",
+  hasSide: false,
+  hasDepth: true
+});
+const objectProfile = adaptiveAssetProfile({
+  category: "objects",
+  features: compactBlockToolGuess.features,
+  evidence: compactBlockToolGuess.evidence,
+  width: 110,
+  height: 60,
+  volumeSize: 128,
+  mode: "model",
+  hasSide: false,
+  hasDepth: true
+});
+assert("P25 sword profile stays shallower than rifle profile", swordProfile.depthScale < rifleProfile.depthScale);
+assert("P25 rifle profile receives a higher detail budget than generic props", rifleProfile.budgetScale > objectProfile.budgetScale);
+assert("P25 sword profile enables thin-feature protection", swordProfile.thinFeatures === true);
+assert("P25 rifle profile enables thin-feature protection", rifleProfile.thinFeatures === true);
 
 const calibrationEvidence = {
   hits: 2600,
