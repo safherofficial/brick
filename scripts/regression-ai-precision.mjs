@@ -12,6 +12,7 @@ import {
 } from "../lib/ai/enhance.ts";
 import { bestSideYShiftBins, fuseSideMaskConfidence } from "../lib/ai/viewAlign.ts";
 import { adaptiveAssetProfile } from "../lib/ai/assetProfiles.ts";
+import { buildReconstructionConfidenceMap, reconstructionDepthScale } from "../lib/ai/reconstructionConfidence.ts";
 import { dynamicVoxelBudget } from "../lib/image/budget.ts";
 
 let failed = 0;
@@ -292,6 +293,30 @@ assert(
 assert(
   "P16 fusion is active inside the established alignment path",
   alignedSide[8][9] === true
+);
+
+
+// P36 — confidence-aware depth protection. Uncertain silhouette regions may
+// lose some depth, while strong regions remain close to the established scale.
+const confidenceMask = makeMask(16, 16);
+for (let y = 2; y < 14; y += 1) {
+  for (let x = 5; x < 11; x += 1) confidenceMask[y][x] = true;
+}
+const confidenceMap = buildReconstructionConfidenceMap(confidenceMask, 16, 16);
+const highConfidence = confidenceMap.values[7 * 16 + 7];
+const lowConfidence = confidenceMap.values[2 * 16 + 5];
+assert(
+  "P36 confidence map distinguishes interior from silhouette edge",
+  highConfidence > lowConfidence
+);
+assert(
+  "P36 confidence depth scale is bounded",
+  reconstructionDepthScale(lowConfidence) >= 0.55 &&
+    reconstructionDepthScale(highConfidence) <= 1
+);
+assert(
+  "P36 preserves full depth at maximum confidence",
+  reconstructionDepthScale(1) === 1
 );
 
 if (failed) {
