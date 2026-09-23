@@ -3,7 +3,7 @@
  * Non-destructive to the hull loop: scores + optional Y shift plus a conservative
  * SIDE-mask recovery pass before the existing visual-hull math consumes the mask.
  *
- * P16 adds a conservative confidence fusion pass to the SIDE silhouette.  The
+ * P16 adds a conservative confidence fusion pass to the SIDE silhouette. The
  * FRONT silhouette remains the hard occupancy anchor in the visual hull; only
  * small, well-supported SIDE gaps are recovered before the existing hull pass.
  */
@@ -16,6 +16,7 @@ export type BoundsLike = {
   width: number;
   height: number;
 };
+
 export type SideViewAssessment = {
   /** FRONT width/height of content box */
   aspectWH: number;
@@ -30,6 +31,7 @@ export type SideViewAssessment = {
   /** 0..1 quality (1 = ideal thin side for weapons) */
   score: number;
 };
+
 /** Occupancy along normalized Y [0..1] from a binary mask + bounds. */
 function yProfile(
   mask: boolean[][],
@@ -53,6 +55,7 @@ function yProfile(
   if (max > 0) for (let i = 0; i < bins; i += 1) out[i] /= max;
   return out;
 }
+
 function correlate(a: Float32Array, b: Float32Array, shift: number): number {
   let sum = 0;
   let n = 0;
@@ -64,7 +67,6 @@ function correlate(a: Float32Array, b: Float32Array, shift: number): number {
   }
   return n ? sum / n : 0;
 }
-
 function sampleProfile(profile: Float32Array, normalizedY: number) {
   if (!profile.length) return 0;
   const y = Math.max(0, Math.min(1, normalizedY)) * (profile.length - 1);
@@ -73,6 +75,7 @@ function sampleProfile(profile: Float32Array, normalizedY: number) {
   const t = y - y0;
   return profile[y0] * (1 - t) + profile[y1] * t;
 }
+
 
 /**
  * P16: recover only high-confidence SIDE pixels that are likely to be small
@@ -100,7 +103,6 @@ export function fuseSideMaskConfidence(
   if (!frontMask.length || !sideMask.length || !frontBounds.width || !sideBounds.width) {
     return { recovered: 0, considered: 0 };
   }
-
   const frontProfile = yProfile(frontMask, frontBounds, bins);
   const next = sideMask.map((row) => row.slice());
   const width = sideMask[0]?.length ?? 0;
@@ -111,7 +113,6 @@ export function fuseSideMaskConfidence(
   const maxY = Math.min(height - 2, sideBounds.maxY);
   const shift = yShiftBins / Math.max(1, bins);
   const alignment = Math.max(0, Math.min(1, alignmentConfidence));
-
   let recovered = 0;
   let considered = 0;
 
@@ -126,7 +127,6 @@ export function fuseSideMaskConfidence(
   for (let y = minY; y <= maxY; y += 1) {
     const frontSupport = rowSupport(y);
     if (frontSupport < 0.08) continue;
-
     for (let x = minX; x <= maxX; x += 1) {
       if (sideMask[y]?.[x]) continue;
       considered += 1;
@@ -137,7 +137,6 @@ export function fuseSideMaskConfidence(
       const down = Boolean(sideMask[y + 1]?.[x]);
       const neighbours =
         Number(left) + Number(right) + Number(up) + Number(down);
-
       const bridgedHorizontal = left && right;
       const bridgedVertical = up && down;
       const continuity = neighbours / 4;
@@ -147,9 +146,6 @@ export function fuseSideMaskConfidence(
         0.26 * frontSupport +
         0.12 * bridge +
         0.10 * alignment;
-
-      // A one-voxel recovery needs strong local agreement.  Do not fill broad
-      // cavities or silhouette notches merely because FRONT is occupied.
       if (
         confidence >= 0.70 &&
         neighbours >= 3 &&
@@ -172,17 +168,52 @@ export function fuseSideMaskConfidence(
 /**
  * Best integer bin shift of SIDE profile vs FRONT (tip-aligned search).
  * Positive shift = SIDE content should move down relative to FRONT.
- *
- * P16 recovery runs only after the alignment score is established, so it cannot
- * bias the alignment search itself.
  */
+export type SemanticAlignmentAssessment = Readonly<{
+  correlation: number;
+  axisCompatibility: number;
+  scaleAgreement: number;
+  score: number;
+}>;
+
+/**
+ * P34 — semantic FRONT/SIDE alignment confidence. This augments the existing
+ * normalized-Y correlation with axis and scale agreement without changing the
+ * hull occupancy contract.
+ */
+export function assessSemanticAlignment(
+  frontMask: boolean[][],
+  frontBounds: BoundsLike,
+  sideMask: boolean[][],
+  sideBounds: BoundsLike,
+  shiftBins = 0,
+  bins = 64
+): SemanticAlignmentAssessment {
+  const front = yProfile(frontMask, frontBounds, bins);
+  const side = yProfile(sideMask, sideBounds, bins);
+  const correlation = Math.max(0, Math.min(1, correlate(front, side, shiftBins)));
+  const frontVertical = frontBounds.height >= frontBounds.width;
+  const sideVertical = sideBounds.height >= sideBounds.width;
+  const axisCompatibility = frontVertical === sideVertical ? 1 : 0.42;
+  const heightRatio = sideBounds.height / Math.max(1, frontBounds.height);
+  const scaleAgreement = Math.max(0, Math.min(1,
+    1 - Math.abs(Math.log(Math.max(0.125, heightRatio))) / 1.8
+  ));
+  const score = Math.max(0, Math.min(1,
+    correlation * 0.68 +
+    axisCompatibility * 0.18 +
+    scaleAgreement * 0.14
+  ));
+  return { correlation, axisCompatibility, scaleAgreement, score };
+}
+
 export function bestSideYShiftBins(
   frontMask: boolean[][],
   frontBounds: BoundsLike,
   sideMask: boolean[][],
   sideBounds: BoundsLike,
   bins = 64
-): { shiftBins: number; score: number } {
+): { shiftBins: number; score: number; semanticScore: number } {
   const front = yProfile(frontMask, frontBounds, bins);
   const side = yProfile(sideMask, sideBounds, bins);
   const maxShift = Math.max(1, Math.round(bins * 0.08));
@@ -195,9 +226,14 @@ export function bestSideYShiftBins(
       best = s;
     }
   }
-
-  // Recover only small, high-confidence SIDE holes using the established
-  // alignment. FRONT remains the hard occupancy constraint in the hull.
+  const semantic = assessSemanticAlignment(
+    frontMask,
+    frontBounds,
+    sideMask,
+    sideBounds,
+    best,
+    bins
+  );
   fuseSideMaskConfidence(
     frontMask,
     frontBounds,
@@ -205,10 +241,9 @@ export function bestSideYShiftBins(
     sideBounds,
     best,
     bins,
-    bestScore
+    semantic.score
   );
-
-  return { shiftBins: best, score: bestScore };
+  return { shiftBins: best, score: bestScore, semanticScore: semantic.score };
 }
 
 /**
@@ -218,6 +253,7 @@ export function bestSideYShiftBins(
 export function sideYOffsetFromShift(shiftBins: number, bins = 64): number {
   return (shiftBins / Math.max(1, bins)) * 0.08;
 }
+
 export function assessSideView(
   frontBounds: BoundsLike,
   sideBounds: BoundsLike
@@ -229,11 +265,13 @@ export function assessSideView(
   const sideLooksLikeFront =
     aspectDH >= 0.35 && aspectRatio >= 0.8 && aspectRatio <= 1.25;
   const sideLooksLikeProfile = aspectDH < 0.28 && aspectDH < aspectWH * 0.55;
+
   let score = 1;
   if (sideLooksLikeFront) score -= 0.55;
   else if (aspectDH > 0.4) score -= 0.2;
   else if (sideLooksLikeProfile) score += 0.1;
   score = Math.max(0, Math.min(1, score));
+
   let message: string;
   if (sideLooksLikeFront) {
     message =
@@ -253,4 +291,3 @@ export function assessSideView(
     score
   };
 }
-
