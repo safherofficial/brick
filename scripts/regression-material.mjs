@@ -72,7 +72,7 @@ globalThis.document = {
             this._canvas._raster = rasterByUrl.get(image.src);
           },
           getImageData() {
-            return this._canvas._raster.rgba;
+            return { data: this._canvas._raster.rgba };
           },
           _canvas: canvas
         };
