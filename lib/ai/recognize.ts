@@ -1,5 +1,6 @@
 import type { StyleId } from "@/lib/ai/styleProfiles";
 import type { AiCategory } from "@/lib/ai/aiCategories";
+import { buildReconstructionConfidenceMap } from "@/lib/ai/reconstructionConfidence";
 
 export type ShapeKind =
   | "sphere"
@@ -34,6 +35,8 @@ export type RecognitionEvidence = {
   ambiguityScore?: number;
   /** P32 — bounded projection-based silhouette part decomposition. */
   silhouetteParts?: SilhouetteParts;
+  /** P33 — explicit dominant structural axis and confidence. */
+  structuralAxis?: StructuralAxisEvidence;
 };
 export type RecognitionFeatures = {
   thin: boolean;
@@ -54,6 +57,14 @@ export type SilhouetteParts = Readonly<{
   coreRatio: number;
   terminalRatio: number;
   junctionScore: number;
+}>;
+
+export type StructuralAxisEvidence = Readonly<{
+  axis: "vertical" | "horizontal";
+  confidence: number;
+  verticalScore: number;
+  horizontalScore: number;
+  elongation: number;
 }>;
 
 export type RecognitionThresholds = Readonly<{
@@ -198,6 +209,44 @@ function decomposeSilhouette(
     coreRatio: clamp01(coreCount / thickness.length),
     terminalRatio: clamp01(terminalCount / thickness.length),
     junctionScore
+  };
+}
+
+function detectStructuralAxis(
+  rowWidths: number[],
+  colHeights: number[],
+  bw: number,
+  bh: number
+): StructuralAxisEvidence {
+  const verticalRatio = bh / Math.max(1, bw);
+  const horizontalRatio = bw / Math.max(1, bh);
+  const verticalElongation = greaterFit(verticalRatio, 1.08, 3.6);
+  const horizontalElongation = greaterFit(horizontalRatio, 1.08, 3.6);
+
+  const liveRows = rowWidths.filter((n) => n > 0);
+  const liveCols = colHeights.filter((n) => n > 0);
+  const meanRow = liveRows.length
+    ? liveRows.reduce((sum, value) => sum + value, 0) / liveRows.length
+    : 1;
+  const meanCol = liveCols.length
+    ? liveCols.reduce((sum, value) => sum + value, 0) / liveCols.length
+    : 1;
+  const verticalThin = clamp01(1 - meanRow / Math.max(1, bh));
+  const horizontalThin = clamp01(1 - meanCol / Math.max(1, bw));
+
+  const verticalScore = clamp01(verticalElongation * 0.72 + verticalThin * 0.28);
+  const horizontalScore = clamp01(horizontalElongation * 0.72 + horizontalThin * 0.28);
+  const axis = verticalScore >= horizontalScore ? "vertical" : "horizontal";
+  const margin = Math.abs(verticalScore - horizontalScore);
+  const elongation = Math.max(verticalElongation, horizontalElongation);
+  const confidence = clamp01(0.28 + margin * 0.64 + elongation * 0.18);
+
+  return {
+    axis,
+    confidence,
+    verticalScore,
+    horizontalScore,
+    elongation
   };
 }
 
@@ -367,6 +416,7 @@ function maskStats(mask: boolean[][]) {
     )
   );
   const silhouetteParts = decomposeSilhouette(rowW, colH, bw, bh);
+  const structuralAxis = detectStructuralAxis(rowW, colH, bw, bh);
   return {
     hits,
     fill: hits / (bw * bh),
@@ -382,7 +432,8 @@ function maskStats(mask: boolean[][]) {
     tipSharpness,
     inputQuality,
     ambiguityScore,
-    silhouetteParts
+    silhouetteParts,
+    structuralAxis
   };
 }
 function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence {
@@ -400,7 +451,8 @@ function evidenceFromStats(s: ReturnType<typeof maskStats>): RecognitionEvidence
     tipSharpness: s.tipSharpness,
     inputQuality: s.inputQuality,
     ambiguityScore: s.ambiguityScore,
-    silhouetteParts: s.silhouetteParts
+    silhouetteParts: s.silhouetteParts,
+    structuralAxis: s.structuralAxis
   };
 }
 function featuresFromEvidence(evidence: RecognitionEvidence): RecognitionFeatures {
@@ -470,9 +522,12 @@ export function semanticCategoryScores(evidence: RecognitionEvidence): Recogniti
   const multipartSignal = parts ? clamp01((parts.partCount - 1) / 2) : 0;
   const junctionSignal = parts?.junctionScore ?? 0;
   const terminalPartSignal = parts?.terminalRatio ?? 0;
+  const structuralAxis = evidence.structuralAxis;
+  const verticalAxisSignal = structuralAxis?.verticalScore ?? vertical;
+  const horizontalAxisSignal = structuralAxis?.horizontalScore ?? horizontal;
 
   const swordSignals = [
-    vertical,
+    vertical * 0.72 + verticalAxisSignal * 0.28,
     elongated,
     lesserFit(evidence.fill, 0.34, 0.72),
     taperSignal,
@@ -480,7 +535,7 @@ export function semanticCategoryScores(evidence: RecognitionEvidence): Recogniti
     tipSignal
   ];
   const rifleSignals = [
-    horizontal,
+    horizontal * 0.72 + horizontalAxisSignal * 0.28,
     veryElongated,
     structure,
     lowFill,
@@ -489,7 +544,7 @@ export function semanticCategoryScores(evidence: RecognitionEvidence): Recogniti
     multipartSignal * 0.72 + junctionSignal * 0.28
   ];
   const gunSignals = [
-    horizontal,
+    horizontal * 0.78 + horizontalAxisSignal * 0.22,
     compact,
     mediumFill,
     taperSignal,
@@ -812,11 +867,17 @@ export function reconstructionFeedbackFromVoxels(
   const strongObservation = observedCategory !== "objects" && observed.confidence >= 0.7;
   const correctionAllowed = expectedCategory !== "objects" && strongObservation && mismatch;
   const recommendedCategory = correctionAllowed ? observedCategory : expectedCategory;
+  const confidenceMap = buildReconstructionConfidenceMap(projected, width, height);
+  const mapAdjustedConfidence = clamp01(
+    Math.max(observed.confidence, expectedCompatibility.confidence) *
+      (0.86 + confidenceMap.summary.mean * 0.14)
+  );
   return {
     recommendedCategory,
     observedCategory,
-    confidence: clamp01(Math.max(observed.confidence, expectedCompatibility.confidence)),
+    confidence: mapAdjustedConfidence,
     corrected: recommendedCategory !== expectedCategory,
+    confidenceMap,
     reason: recommendedCategory !== expectedCategory
       ? "reconstruction projection disagrees with the previous automatic category"
       : expectedCompatibility.reason
