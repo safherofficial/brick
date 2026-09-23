@@ -6,7 +6,7 @@ import {
 } from "@/lib/ai/aiCategories";
 import { profileById } from "@/lib/ai/styleProfiles";
 import { adaptiveAssetProfile, adaptiveHeightMax, type AdaptiveAssetProfile } from "@/lib/ai/assetProfiles";
-import { buildReconstructionConfidenceMap, reconstructionDepthScale, sampleReconstructionConfidence, type ReconstructionConfidenceMap } from "@/lib/ai/reconstructionConfidence";
+import { buildReconstructionConfidenceMap, buildStructuralDepthProfile, reconstructionDepthScale, sampleReconstructionConfidence, structuralDepthScale, type ReconstructionConfidenceMap, type StructuralDepthProfile } from "@/lib/ai/reconstructionConfidence";
 import { guessRevolve } from "@/lib/ai/revolve";
 import type {
   ImageMode,
@@ -1220,7 +1220,7 @@ function normalizedRowProfile(mask: boolean[][], bounds: Bounds, bins = 64): num
   return profile;
 }
 
-function sampleProfile(profile: number[], normalizedY: number) {
+function sampleProfile(profile: readonly number[], normalizedY: number) {
   if (!profile.length) return 0;
   const y = clamp(normalizedY, 0, 1) * (profile.length - 1);
   const y0 = Math.floor(y);
@@ -1320,6 +1320,13 @@ function reconstructVisualHull(
 
   const voxels: ImageVoxel[] = [];
   const adaptiveDepthGrid = buildAdaptiveDepthGrid(frontDepth, frontRaster, frontMask);
+  const structuralDepthProfile: StructuralDepthProfile = buildStructuralDepthProfile(
+    frontMask,
+    frontBounds.minX,
+    frontBounds.maxX,
+    frontBounds.minY,
+    frontBounds.maxY
+  );
   const h = dimensions.height;
 
   for (let y = 0; y < h; y += 1) {
@@ -1358,6 +1365,11 @@ function reconstructVisualHull(
           )
         : 1;
       const confidenceDepth = reconstructionDepthScale(localConfidence);
+      const structuralWidth = sampleProfile(structuralDepthProfile.bins, ny);
+      const regionalDepth = structuralDepthScale(
+        structuralWidth,
+        structuralDepthProfile.median
+      );
       const depthHalf = useDepthClamp
         ? Math.max(
             1,
@@ -1366,7 +1378,8 @@ function reconstructVisualHull(
                 (options.useDepthThickness
                   ? 0.18 + depthSample * 0.5
                   : 0.22 + depthSample * 0.4) *
-                confidenceDepth
+                confidenceDepth *
+                regionalDepth
             )
           )
         : dimensions.depth;
