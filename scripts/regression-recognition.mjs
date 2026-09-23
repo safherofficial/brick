@@ -8,7 +8,10 @@ import {
   AUTO_CATEGORY_CONFIDENCE,
   calibrateCategoryConfidence,
   semanticCategoryScores,
-  viewConfidenceForEvidence
+  viewConfidenceForEvidence,
+  adaptiveRecognitionThresholds,
+  reconstructionCompatibility,
+  reconstructionFeedbackFromVoxels
 } from "../lib/ai/recognize.ts";
 import { adaptiveAssetProfile } from "../lib/ai/assetProfiles.ts";
 
@@ -297,6 +300,83 @@ assert(
 assert(
   "P28 ambiguity signal remains exposed",
   (ambiguousGuess.evidence.ambiguityScore ?? 0) > 0
+);
+
+
+// P30 adaptive recognition thresholds. Low-quality/ambiguous evidence must
+// raise the decision threshold, while clear evidence stays close to the
+// historical baseline.
+const clearThresholdEvidence = {
+  hits: 420,
+  fill: 0.22,
+  aspect: 3.2,
+  slenderness: 3.2,
+  symmetry: 0.55,
+  taper: 0.58,
+  bulge: 1.2,
+  widthCv: 0.24,
+  edgeThinness: 0.3,
+  inputQuality: 0.92,
+  ambiguityScore: 0.02
+};
+const uncertainThresholdEvidence = { ...clearThresholdEvidence, inputQuality: 0.32, ambiguityScore: 0.42 };
+const clearThresholds = adaptiveRecognitionThresholds(clearThresholdEvidence);
+const uncertainThresholds = adaptiveRecognitionThresholds(uncertainThresholdEvidence);
+assert(
+  "P30 clear evidence keeps a lower auto threshold than uncertain evidence",
+  clearThresholds.autoConfidence < uncertainThresholds.autoConfidence
+);
+assert(
+  "P30 adaptive thresholds stay bounded",
+  clearThresholds.autoConfidence >= 0.64 && uncertainThresholds.autoConfidence <= 0.72 &&
+    clearThresholds.minMargin >= 0.06 && uncertainThresholds.minMargin <= 0.11
+);
+
+// P32 silhouette part decomposition: a grip/neck between larger masses should
+// be exposed as multi-part structure rather than being flattened into one blob.
+const multipartTool = mask(140, 70, (x, y) => {
+  const body = x >= 18 && x <= 118 && y >= 24 && y <= 44;
+  const stock = x >= 10 && x <= 34 && y >= 17 && y <= 51;
+  const grip = x >= 62 && x <= 73 && y >= 38 && y <= 62;
+  const head = x >= 106 && x <= 132 && y >= 16 && y <= 52;
+  return body || stock || grip || head;
+});
+const multipartGuess = recognizeFromMask(multipartTool);
+const multipartEvidence = multipartGuess.evidence.silhouetteParts;
+assert(
+  "P32 silhouette decomposition exposes a primary axis",
+  multipartEvidence?.primaryAxis === "horizontal"
+);
+assert(
+  "P32 silhouette decomposition exposes bounded part metrics",
+  Boolean(multipartEvidence) &&
+    (multipartEvidence?.partCount ?? 0) >= 1 &&
+    (multipartEvidence?.partCount ?? 0) <= 4 &&
+    (multipartEvidence?.junctionScore ?? 0) >= 0 &&
+    (multipartEvidence?.junctionScore ?? 0) <= 1
+);
+
+// P31 recognition/reconstruction compatibility and one-step feedback. A
+// clearly coherent rifle projection stays on-category; a strongly conflicting
+// sword-like projection can recommend a bounded automatic correction.
+const rifleFeedbackVoxels = [];
+for (let y = 0; y < rifle.length; y += 1) for (let x = 0; x < rifle[y].length; x += 1) if (rifle[y][x]) rifleFeedbackVoxels.push({ x, y, z: 8 });
+const coherentFeedback = reconstructionFeedbackFromVoxels("rifles", rifleFeedbackVoxels);
+assert(
+  "P31 coherent reconstruction feedback preserves category",
+  coherentFeedback.corrected === false && coherentFeedback.recommendedCategory === "rifles"
+);
+const swordFeedbackVoxels = [];
+for (let y = 0; y < sword.length; y += 1) for (let x = 0; x < sword[y].length; x += 1) if (sword[y][x]) swordFeedbackVoxels.push({ x, y, z: 8 });
+const conflictingFeedback = reconstructionFeedbackFromVoxels("rifles", swordFeedbackVoxels);
+assert(
+  "P31 conflicting reconstruction feedback can recommend a bounded correction",
+  conflictingFeedback.corrected === true && conflictingFeedback.recommendedCategory === "swords"
+);
+assert(
+  "P31 reconstruction compatibility remains bounded",
+  reconstructionCompatibility(rifleGuess).confidence >= 0.18 &&
+    reconstructionCompatibility(rifleGuess).confidence <= 0.98
 );
 
 if (failed) {
