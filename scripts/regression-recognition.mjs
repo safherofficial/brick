@@ -14,6 +14,8 @@ import {
   reconstructionFeedbackFromVoxels
 } from "../lib/ai/recognize.ts";
 import { adaptiveAssetProfile } from "../lib/ai/assetProfiles.ts";
+import { assessSemanticAlignment, bestSideYShiftBins } from "../lib/ai/viewAlign.ts";
+import { buildReconstructionConfidenceMap } from "../lib/ai/reconstructionConfidence.ts";
 
 function mask(w, h, predicate) {
   return Array.from({ length: h }, (_, y) =>
@@ -377,6 +379,96 @@ assert(
   "P31 reconstruction compatibility remains bounded",
   reconstructionCompatibility(rifleGuess).confidence >= 0.18 &&
     reconstructionCompatibility(rifleGuess).confidence <= 0.98
+);
+
+
+// P33 structural axis detection: long vertical and horizontal structures must
+// expose a dominant axis with bounded confidence.
+const swordAxis = swordGuess.evidence.structuralAxis;
+const rifleAxis = rifleGuess.evidence.structuralAxis;
+assert(
+  "P33 sword exposes a confident vertical structural axis",
+  swordAxis?.axis === "vertical" && (swordAxis?.confidence ?? 0) >= 0.55
+);
+assert(
+  "P33 rifle exposes a confident horizontal structural axis",
+  rifleAxis?.axis === "horizontal" && (rifleAxis?.confidence ?? 0) >= 0.55
+);
+assert(
+  "P33 structural axis scores remain bounded",
+  [swordAxis, rifleAxis].every(
+    (axis) =>
+      Boolean(axis) &&
+      (axis?.verticalScore ?? -1) >= 0 &&
+      (axis?.verticalScore ?? 2) <= 1 &&
+      (axis?.horizontalScore ?? -1) >= 0 &&
+      (axis?.horizontalScore ?? 2) <= 1
+  )
+);
+
+// P34 FRONT/SIDE semantic alignment: compatible silhouettes receive a stronger
+// alignment score than an axis-conflicting side view.
+const frontSwordBounds = { minX: 0, minY: 0, maxX: 39, maxY: 159, width: 40, height: 160 };
+const sideSwordBounds = { minX: 0, minY: 0, maxX: 7, maxY: 159, width: 8, height: 160 };
+const swordSide = mask(8, 160, (x, y) => Math.abs(x - 4) <= (y < 120 ? 2 : 1));
+const swordAlign = assessSemanticAlignment(
+  sword,
+  frontSwordBounds,
+  swordSide,
+  sideSwordBounds,
+  0
+);
+assert(
+  "P34 compatible sword FRONT/SIDE alignment stays strong",
+  swordAlign.score >= 0.58 && swordAlign.axisCompatibility === 1
+);
+const poorSide = mask(160, 40, (x, y) => x >= 48 && x <= 112 && Math.abs(y - 20) <= 5);
+const poorSideBounds = { minX: 48, minY: 15, maxX: 112, maxY: 25, width: 65, height: 11 };
+const poorAlign = assessSemanticAlignment(
+  sword,
+  frontSwordBounds,
+  poorSide,
+  poorSideBounds,
+  0
+);
+assert(
+  "P34 axis conflict lowers semantic FRONT/SIDE alignment",
+  poorAlign.score < swordAlign.score && poorAlign.axisCompatibility < 1
+);
+const alignedSideCopy = swordSide.map((row) => row.slice());
+const alignedShift = bestSideYShiftBins(
+  sword,
+  frontSwordBounds,
+  alignedSideCopy,
+  sideSwordBounds
+);
+assert(
+  "P34 best-side alignment exposes semantic score",
+  alignedShift.semanticScore >= 0 && alignedShift.semanticScore <= 1
+);
+
+// P35 reconstruction confidence map: every occupied projected region receives
+// a bounded local-confidence value and P31 exposes the same map downstream.
+const p35Map = buildReconstructionConfidenceMap(sword);
+assert(
+  "P35 confidence map dimensions match projected silhouette",
+  p35Map.width === 40 && p35Map.height === 160 && p35Map.values.length === 6400
+);
+assert(
+  "P35 confidence summary remains bounded and non-empty",
+  p35Map.summary.mean > 0 &&
+    p35Map.summary.min >= 0 &&
+    p35Map.summary.max <= 1 &&
+    p35Map.summary.lowConfidenceRatio >= 0 &&
+    p35Map.summary.lowConfidenceRatio <= 1
+);
+assert(
+  "P35 reconstruction feedback exposes the confidence map",
+  coherentFeedback.confidenceMap?.summary.mean > 0 &&
+    coherentFeedback.confidenceMap?.width > 0 &&
+    coherentFeedback.confidenceMap?.height > 0 &&
+    coherentFeedback.confidenceMap?.values.length ===
+      coherentFeedback.confidenceMap.width * coherentFeedback.confidenceMap.height
 );
 
 if (failed) {
