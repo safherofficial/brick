@@ -12,7 +12,12 @@ import {
 } from "../lib/ai/enhance.ts";
 import { bestSideYShiftBins, fuseSideMaskConfidence } from "../lib/ai/viewAlign.ts";
 import { adaptiveAssetProfile } from "../lib/ai/assetProfiles.ts";
-import { buildReconstructionConfidenceMap, reconstructionDepthScale } from "../lib/ai/reconstructionConfidence.ts";
+import {
+  buildReconstructionConfidenceMap,
+  buildStructuralDepthProfile,
+  reconstructionDepthScale,
+  structuralDepthScale
+} from "../lib/ai/reconstructionConfidence.ts";
 import { dynamicVoxelBudget } from "../lib/image/budget.ts";
 
 let failed = 0;
@@ -319,9 +324,50 @@ assert(
   reconstructionDepthScale(1) === 1
 );
 
+
+// P37 — regional structural depth. Broad structural bands may receive a
+// slightly larger depth envelope than narrow terminal regions, without
+// replacing MiDaS or P36 confidence protection.
+const regionalMask = makeMask(24, 32);
+for (let y = 4; y < 28; y += 1) {
+  const halfWidth = y >= 10 && y < 22 ? 7 : 2;
+  for (let x = 12 - halfWidth; x <= 12 + halfWidth; x += 1) {
+    regionalMask[y][x] = true;
+  }
+}
+const regionalProfile = buildStructuralDepthProfile(
+  regionalMask,
+  8,
+  16,
+  4,
+  27,
+  32
+);
+const narrowWidth = regionalProfile.bins[3];
+const broadWidth = regionalProfile.bins[16];
+assert(
+  "P37 structural profile detects broad vs narrow regions",
+  broadWidth > narrowWidth
+);
+const narrowScale = structuralDepthScale(narrowWidth, regionalProfile.median);
+const broadScale = structuralDepthScale(broadWidth, regionalProfile.median);
+assert(
+  "P37 broad regions receive more depth support than narrow regions",
+  broadScale > narrowScale
+);
+assert(
+  "P37 regional depth modulation stays deliberately narrow",
+  narrowScale >= 0.92 - 1e-6 &&
+    broadScale <= 1.06 + 1e-6
+);
+assert(
+  "P37 regional depth scaling is deterministic",
+  structuralDepthScale(broadWidth, regionalProfile.median) === broadScale
+);
+
 if (failed) {
   console.error(`\n${failed} assertion(s) failed`);
   process.exit(1);
 }
 
-console.log("\nAll P15/P16/P17/P18 AI precision regressions passed.");
+console.log("\nAll P15/P16/P17/P18/P36/P37 AI precision regressions passed.");
