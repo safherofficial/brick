@@ -30,9 +30,9 @@ const staticGlb = await exportGlbTextured(volume, DEFAULT_PALETTE, {
 });
 const staticJson = parseGlbJson(staticGlb);
 assert("STATIC GLB parses as valid glTF 2.0", staticJson.asset?.version === "2.0");
-assert("STATIC extensionsUsed includes KHR_materials_unlit", staticJson.extensionsUsed?.includes("KHR_materials_unlit"));
-assert("STATIC material extension is unlit", !!staticJson.materials?.[0]?.extensions?.KHR_materials_unlit);
-assert("STATIC material name is voxel-atlas", staticJson.materials?.[0]?.name === "voxel-atlas");
+assert("STATIC extensionsUsed omits KHR_materials_unlit (real PBR lighting)", !staticJson.extensionsUsed?.includes("KHR_materials_unlit"));
+assert("STATIC material uses real PBR metallic-roughness (no unlit extension)", !staticJson.materials?.[0]?.extensions?.KHR_materials_unlit && typeof staticJson.materials?.[0]?.pbrMetallicRoughness?.metallicFactor === "number");
+assert("STATIC material name matches its palette bucket (voxel-metal)", staticJson.materials?.[0]?.name === "voxel-metal");
 assert("STATIC Unity material is single sided", staticJson.materials?.[0]?.doubleSided === false);
 assert("STATIC scene has a single root node", staticJson.scenes?.[0]?.nodes?.length === 1);
 const staticRootIndex = staticJson.scenes[0].nodes[0];
