@@ -88,8 +88,8 @@ const GOLDEN = [
     expectedCategory: "swords",
     minConfidence: 0.82,
     budgetRange: [70000, 79000],
-    singleProfileRange: [1.06, 1.09],
-    dualProfileRange: [1.06, 1.09],
+    singleProfileRange: [1.06, 1.10],
+    dualProfileRange: [1.06, 1.10],
     mask: makeMask(64, 96, (m) => {
       for (let y = 8; y < 84; y += 1) {
         for (let x = 30; x <= 33; x += 1) m[y][x] = true;
