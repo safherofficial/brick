@@ -16,6 +16,26 @@ function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
 }
 
+/** P36 — sample the local confidence field in source-image coordinates. */
+export function sampleReconstructionConfidence(
+  map: ReconstructionConfidenceMap | null | undefined,
+  x: number,
+  y: number
+): number {
+  if (!map || map.width <= 0 || map.height <= 0 || !map.values.length) return 1;
+  const cx = Math.max(0, Math.min(map.width - 1, Math.round(x)));
+  const cy = Math.max(0, Math.min(map.height - 1, Math.round(y)));
+  return clamp01(map.values[cy * map.width + cx] ?? 0);
+}
+
+/** P36 — confidence-aware depth multiplier. High-confidence regions retain
+ * the established depth; uncertain silhouette regions receive a conservative
+ * reduction without changing FRONT occupancy. */
+export function reconstructionDepthScale(confidence: number): number {
+  const c = clamp01(confidence);
+  return 0.55 + c * 0.45;
+}
+
 /**
  * P35 — creates a bounded 2D confidence field from the reconstructed
  * silhouette projection. Foreground pixels with strong local support are
