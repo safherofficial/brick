@@ -6,6 +6,7 @@ import {
 } from "@/lib/ai/aiCategories";
 import { profileById } from "@/lib/ai/styleProfiles";
 import { adaptiveAssetProfile, adaptiveHeightMax, type AdaptiveAssetProfile } from "@/lib/ai/assetProfiles";
+import { buildReconstructionConfidenceMap, reconstructionDepthScale, sampleReconstructionConfidence, type ReconstructionConfidenceMap } from "@/lib/ai/reconstructionConfidence";
 import { guessRevolve } from "@/lib/ai/revolve";
 import type {
   ImageMode,
@@ -1299,7 +1300,9 @@ function reconstructVisualHull(
   /** Fractional Y shift of SIDE vs FRONT from viewAlign (±~0.08). */
   sideYOffset = 0,
   /** Optional ONNX depth [0..1] same size as frontRaster — mild shade only. */
-  frontDepth: Float32Array | null = null
+  frontDepth: Float32Array | null = null,
+  /** P36 local silhouette confidence used only to soften uncertain depth. */
+  frontConfidenceMap: ReconstructionConfidenceMap | null = null
 ) {
   const front = resampleMaskToBounds(
     frontMask,
@@ -1347,6 +1350,14 @@ function reconstructVisualHull(
         Boolean(frontDepth) &&
         dimensions.depth > 2 &&
         (options.sideAmbiguous === true || options.useDepthThickness === true);
+      const localConfidence = frontConfidenceMap
+        ? sampleReconstructionConfidence(
+            frontConfidenceMap,
+            px,
+            py
+          )
+        : 1;
+      const confidenceDepth = reconstructionDepthScale(localConfidence);
       const depthHalf = useDepthClamp
         ? Math.max(
             1,
@@ -1354,7 +1365,8 @@ function reconstructVisualHull(
               dimensions.depth *
                 (options.useDepthThickness
                   ? 0.18 + depthSample * 0.5
-                  : 0.22 + depthSample * 0.4)
+                  : 0.22 + depthSample * 0.4) *
+                confidenceDepth
             )
           )
         : dimensions.depth;
@@ -2612,6 +2624,11 @@ export async function imagesToVoxels(
       sideYOffset = 0;
     }
 
+    const frontConfidenceMap = buildReconstructionConfidenceMap(
+      frontMask,
+      frontMask[0]?.length ?? 0,
+      frontMask.length
+    );
     const hull = reconstructVisualHull(
       frontRaster,
       frontMask,
@@ -2624,7 +2641,8 @@ export async function imagesToVoxels(
       dimensions,
       palette,
       sideYOffset,
-      frontDepth
+      frontDepth,
+      frontConfidenceMap
     );
     const finished = useLocalAi
       ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask, normalized.aiCategory, true)
