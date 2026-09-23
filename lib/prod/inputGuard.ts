@@ -17,7 +17,7 @@ export function assertImportableFile(file: File, label = "IMAGE") {
   }
   const type = file.type || "";
   const name = file.name || "";
-  if (type && type.startsWith("image/") && !ALLOWED_TYPE_RE.test(type)) {
+  if (type && !ALLOWED_TYPE_RE.test(type)) {
     throw new Error(`${label} TYPE NOT SUPPORTED`);
   }
   if (!type && name && !ALLOWED_NAME_RE.test(name)) {
