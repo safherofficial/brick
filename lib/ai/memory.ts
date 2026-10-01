@@ -55,12 +55,12 @@ export const QUALITY_BUDGETS: Record<QualityTier, DetailBudget> = {
   256: {
     volumeSize: 256,
     maxVoxels: 220_000,
-    paletteSize: 64,
-    minFeature: 2,
-    edgePreserve: 0.95,
-    depthBoost: 1.12,
-    textureWeight: 0.85,
-    lintPasses: 2
+    paletteSize: 96,
+    minFeature: 1,
+    edgePreserve: 0.99,
+    depthBoost: 1.16,
+    textureWeight: 0.95,
+    lintPasses: 3
   }
 };
 
