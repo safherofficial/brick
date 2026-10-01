@@ -82,7 +82,7 @@ export default function Builder() {
   const [clipboard] = useState<ClipboardVoxel[]>([]);
   const [clip, setClip] = useState<Clip>({ axis: null, value: 127 });
   const [focus, setFocus] = useState<[number, number, number]>(() => volumeCenter(128));
-  const [imageMode, setImageMode] = useState<LocalImageMode>("solid");
+  // PNG/JPEG imports start on the game-asset reconstruction path.\n  // SOLID / 2D / 2.5D remain explicit user-selectable modes.\n  const [imageMode, setImageMode] = useState<LocalImageMode>("model");
   const [outputLock, setOutputLock] = useState<OutputLock | null>(null);
   const [exportMotion, setExportMotion] = useState<ExportMotion>("static");
   const [imageHeight, setImageHeight] = useState(6);
