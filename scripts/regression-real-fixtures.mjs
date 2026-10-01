@@ -47,7 +47,8 @@ const fixtures = [
     name: "cc0_bird.jpg",
     mime: "image/jpeg",
     url: "https://raw.githubusercontent.com/Tiddybub/2d-assets/e0cbe0d995554a490d4c182fe9beb8769ffbb606/characters/oga-blue-bird-for-jump-and-run-arcade/bird.jpg",
-    gitBlobSha: "19c136a88304d0375dbc8a4dc0de743c2f85e6d5"
+    gitBlobSha: "19c136a88304d0375dbc8a4dc0de743c2f85e6d5",
+    mode: "solid"
   }
 ];
 
@@ -242,7 +243,7 @@ try {
 
     const result = await imageToVoxels(file, {
       volumeSize: 48,
-      mode: "model",
+      mode: fixture.mode ?? "model",
       maxVoxels: 30000,
       useLocalAi: false,
       aiCategory: "objects"
