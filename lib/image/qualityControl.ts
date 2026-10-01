@@ -22,6 +22,8 @@ export type QualityControlResult = {
   componentCount: number;
   paletteCoverage: number;
   voxelCount: number;
+  detailDensity: number;
+  surfaceRatio: number;
 };
 
 function clamp(n: number, lo = 0, hi = 1) {
@@ -218,7 +220,9 @@ export function evaluateVoxelQuality(
       occupancy: 0,
       componentCount: 0,
       paletteCoverage: 0,
-      voxelCount: 0
+      voxelCount: 0,
+      detailDensity: 0,
+      surfaceRatio: 0
     };
   }
 
@@ -227,6 +231,13 @@ export function evaluateVoxelQuality(
   const componentCount = connectedComponents(voxels);
   const { retention, precision } = silhouetteMetrics(voxels, mask);
   const usedPalette = new Set(voxels.map((v) => v.c)).size;
+  const surfaceCount = voxels.filter((v) => {
+    return ![
+      [1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]
+    ].every(([dx,dy,dz]) => voxels.some((n) => n.x === v.x + dx && n.y === v.y + dy && n.z === v.z + dz));
+  }).length;
+  const surfaceRatio = surfaceCount / Math.max(1, voxels.length);
+  const detailDensity = clamp((voxels.length / Math.max(1, volume)) * 1.8, 0, 1);
   const paletteCoverage = usedPalette / Math.max(1, palette.length);
 
   const componentTolerance = category === "swords" || category === "guns" || category === "rifles" ? 2 : 3;
@@ -278,12 +289,14 @@ export function evaluateVoxelQuality(
     }
   ];
 
+  const detailScore = clamp(detailDensity * 0.65 + (1 - Math.abs(surfaceRatio - 0.72)) * 0.35, 0, 1);
   const score = Math.round(
-    (retentionScore * 0.36 +
-      precisionScore * 0.26 +
-      occupancyScore * 0.12 +
-      componentScore * 0.18 +
-      paletteScore * 0.08) *
+    (retentionScore * 0.34 +
+      precisionScore * 0.24 +
+      occupancyScore * 0.10 +
+      componentScore * 0.16 +
+      paletteScore * 0.07 +
+      detailScore * 0.09) *
       100
   );
 
@@ -304,6 +317,8 @@ export function evaluateVoxelQuality(
     occupancy,
     componentCount,
     paletteCoverage,
-    voxelCount: voxels.length
+    voxelCount: voxels.length,
+    detailDensity,
+    surfaceRatio
   };
 }
