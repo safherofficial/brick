@@ -1630,6 +1630,36 @@ function buildRowRunRatios(mask: boolean[][]): number[][] {
   return ratios;
 }
 
+function buildLocalForegroundDensity(mask: boolean[][]): number[][] {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const density = Array.from({ length: h }, () => Array(w).fill(0));
+  if (!w || !h) return density;
+
+  // Local occupancy is a silhouette-aware signal. Unlike distance from the
+  // image bounds, it follows the actual contour and therefore works for
+  // centered, off-center, concave and irregular props alike.
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y]?.[x]) continue;
+      let foreground = 0;
+      let samples = 0;
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          samples += 1;
+          if (mask[yy]?.[xx]) foreground += 1;
+        }
+      }
+      density[y][x] = foreground / Math.max(1, samples);
+    }
+  }
+  return density;
+}
+
 function buildAdaptiveSingleViewVolume(
   raster: Raster,
   mask: boolean[][],
@@ -1646,12 +1676,14 @@ function buildAdaptiveSingleViewVolume(
   const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
   const rowRunRatios = buildRowRunRatios(sourceMask);
   const columnRunRatios = buildColumnRunRatios(sourceMask);
+  const localDensity = buildLocalForegroundDensity(sourceMask);
   const adaptiveDepthGrid = buildAdaptiveDepthGrid(depthMap, raster, mask);
 
-  // FRONT-only has no measured Z silhouette. Infer thickness from three bounded
-  // signals instead of falling back to a flat extrusion:
-  // silhouette mass, distance from the contour, and optional monocular depth.
-  // This keeps the result chunky and readable while remaining deterministic.
+  // FRONT-only has no measured Z silhouette. Infer thickness from bounded
+  // structural signals: connected silhouette mass, true contour support and
+  // optional monocular depth. The local-density term is deliberately derived
+  // from the silhouette itself rather than the image/bounds centre, so an
+  // asymmetric prop does not become artificially thick in the middle.
   const profileDepth = Math.max(3, Math.round(options.heightMax * (
     options.aiCategory === "swords" ? 0.48 :
     options.aiCategory === "rifles" ? 0.62 :
@@ -1685,12 +1717,14 @@ function buildAdaptiveSingleViewVolume(
 
       const rowMass = rowRunRatios[y]?.[x] ?? 0;
       const columnMass = columnRunRatios[y]?.[x] ?? 0;
-      const contourDistance = Math.min(nx, 1 - nx, ny, 1 - ny);
-      const contourSupport = clamp(contourDistance * 7, 0, 1);
+      const silhouetteDensity = localDensity[y]?.[x] ?? 0;
       const centerDistance = Math.abs(nx - 0.5) * 2;
       const centerMass = 1 - Math.pow(centerDistance, 1.35);
       const structuralMass = clamp(
-        rowMass * 0.48 + columnMass * 0.18 + contourSupport * 0.18 + centerMass * 0.16,
+        rowMass * 0.42 +
+          columnMass * 0.18 +
+          silhouetteDensity * 0.25 +
+          centerMass * 0.15,
         0.08,
         1
       );
@@ -1720,12 +1754,7 @@ function buildAdaptiveSingleViewVolume(
 
       const zStart = Math.floor((depthCap - thickness) / 2);
       for (let z = 0; z < thickness; z += 1) {
-        voxels.push({
-          x,
-          y,
-          z: zStart + z,
-          c: colorIndex
-        });
+        voxels.push({ x, y, z: zStart + z, c: colorIndex });
       }
     }
   }
