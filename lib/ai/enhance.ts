@@ -46,13 +46,19 @@ function rasterToCanvas(raster: AiRaster) {
   return canvas;
 }
 
-function toNchw(raster: AiRaster, width: number, height: number, imagenet: boolean) {
+function toNchw(
+  raster: AiRaster,
+  width: number,
+  height: number,
+  imagenet: boolean,
+  sourceCanvas?: HTMLCanvasElement | null
+) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Canvas unavailable");
-  ctx.drawImage(rasterToCanvas(raster), 0, 0, width, height);
+  ctx.drawImage(sourceCanvas ?? rasterToCanvas(raster), 0, 0, width, height);
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const plane = width * height;
   const data = new Float32Array(3 * plane);
@@ -312,19 +318,27 @@ export function hasCutoutAlpha(raster: AiRaster) {
   return transparent / total >= 0.08 && opaque / total >= 0.08 && mid / total <= 0.18;
 }
 
-async function runMap(id: "segment" | "depth", raster: AiRaster) {
+async function runMap(
+  id: "segment" | "depth",
+  raster: AiRaster,
+  sourceCanvas?: HTMLCanvasElement | null
+) {
   const session = await loadModel(id);
   if (!session) return null;
   const ort = await import("onnxruntime-web");
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
   const size = modelSize(dims, id === "segment" ? 320 : 256);
-  const tensor = new ort.Tensor("float32", toNchw(raster, size.width, size.height, true), [
-    1,
-    3,
-    size.height,
-    size.width
-  ]);
+  const tensor = new ort.Tensor(
+    "float32",
+    toNchw(raster, size.width, size.height, true, sourceCanvas),
+    [
+      1,
+      3,
+      size.height,
+      size.width
+    ]
+  );
   const result = await session.run({ [inputName]: tensor });
   const output = result[session.outputNames[0]] as unknown as {
     dims: readonly number[];
@@ -372,10 +386,12 @@ export async function enhanceRaster(
     height: raster.height,
     rgba: new Uint8ClampedArray(raster.rgba)
   };
+  const sourceCanvas =
+    wantSegment || wantDepth ? rasterToCanvas(raster) : null;
   let foregroundAlpha: Float32Array | null = null;
 
   if (wantSegment) {
-    const segmentResult = await runMap("segment", raster);
+    const segmentResult = await runMap("segment", raster, sourceCanvas);
     if (segmentResult) {
       segmentSize = `${segmentResult.size.width}×${segmentResult.size.height}`;
       foregroundAlpha = refineSegmentAlpha(
@@ -408,7 +424,7 @@ export async function enhanceRaster(
 
   let rawDepth: Float32Array | null = null;
   if (wantDepth) {
-    const depthResult = await runMap("depth", raster);
+    const depthResult = await runMap("depth", raster, sourceCanvas);
     if (depthResult) {
       rawDepth = depthResult.map;
       depthStatus = "ok";
