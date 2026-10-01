@@ -116,6 +116,34 @@ function decodeRaster(bytes, name) {
   };
 }
 
+function parseGlbJson(glb) {
+  const bytes =
+    glb instanceof ArrayBuffer
+      ? new Uint8Array(glb)
+      : glb instanceof Uint8Array
+        ? glb
+        : null;
+  if (!bytes || bytes.length < 20) throw new Error("Invalid GLB buffer");
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(0, true) !== 0x46546c67 || view.getUint32(4, true) !== 2) {
+    throw new Error("Invalid GLB header");
+  }
+
+  const totalLength = view.getUint32(8, true);
+  if (totalLength !== bytes.byteLength) throw new Error("Invalid GLB length");
+
+  const jsonChunkLength = view.getUint32(12, true);
+  const jsonChunkType = view.getUint32(16, true);
+  if (jsonChunkType !== 0x4e4f534a) throw new Error("Missing GLB JSON chunk");
+
+  const start = 20;
+  const end = start + jsonChunkLength;
+  if (end > bytes.byteLength) throw new Error("Truncated GLB JSON chunk");
+
+  return JSON.parse(new TextDecoder().decode(bytes.subarray(start, end)));
+}
+
 const rasterByToken = new Map();
 let tokenId = 0;
 const originalUrl = globalThis.URL;
@@ -310,6 +338,38 @@ try {
           glb instanceof ArrayBuffer ? 0 : glb.byteOffset,
           glb instanceof ArrayBuffer ? glb.byteLength : glb.byteLength
         ).getUint32(0, true) === 0x46546c67
+    );
+
+    const gltf = parseGlbJson(glb);
+    const brick = gltf.asset?.extras?.brick;
+    const nodeNames = (gltf.nodes ?? []).map((node) => node.name);
+    const sampler = gltf.samplers?.[0];
+    const image = gltf.images?.[0];
+    assert(
+      `GLB game-ready contract is present: ${fixture.name}`,
+      brick?.gameReady === true &&
+        brick?.engine === "unity" &&
+        brick?.pivot === "bottom-center" &&
+        brick?.upAxis === "y" &&
+        brick?.material === "voxel-atlas" &&
+        brick?.textureFilter === "nearest" &&
+        Array.isArray(brick?.sockets) &&
+        brick.sockets.length > 0 &&
+        brick?.collider?.type === "box" &&
+        Number.isFinite(brick?.unitMeters) &&
+        brick.unitMeters > 0
+    );
+    assert(
+      `GLB contains runtime collider/socket nodes: ${fixture.name}`,
+      nodeNames.includes("Collider_Box") &&
+        nodeNames.some((name) => name === "Socket_Ground") &&
+        nodeNames.some((name) => name.startsWith("Socket_"))
+    );
+    assert(
+      `GLB uses nearest-filtered atlas texture: ${fixture.name}`,
+      sampler?.magFilter === 9728 &&
+        sampler?.minFilter === 9728 &&
+        image?.mimeType === "image/png"
     );
 
     const vox = exportVox(volume, exportPalette);
