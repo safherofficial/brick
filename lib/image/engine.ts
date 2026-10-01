@@ -1630,6 +1630,133 @@ function buildRowRunRatios(mask: boolean[][]): number[][] {
   return ratios;
 }
 
+function buildAdaptiveSingleViewVolume(
+  raster: Raster,
+  mask: boolean[][],
+  bounds: Bounds,
+  options: NormalizedImageVoxelOptions,
+  paletteValues: [number, number, number][],
+  palette: string[],
+  depthMap: Float32Array | null
+): ImageImport {
+  const maxAxis = Math.max(4, options.volumeSize - 8);
+  const scale = Math.min(1, maxAxis / Math.max(bounds.width, bounds.height));
+  const width = Math.max(1, Math.round(bounds.width * scale));
+  const height = Math.max(1, Math.round(bounds.height * scale));
+  const sourceMask = resampleMaskToBounds(mask, bounds, width, height);
+  const rowRunRatios = buildRowRunRatios(sourceMask);
+  const columnRunRatios = buildColumnRunRatios(sourceMask);
+  const adaptiveDepthGrid = buildAdaptiveDepthGrid(depthMap, raster, mask);
+
+  // FRONT-only has no measured Z silhouette. Infer thickness from three bounded
+  // signals instead of falling back to a flat extrusion:
+  // silhouette mass, distance from the contour, and optional monocular depth.
+  // This keeps the result chunky and readable while remaining deterministic.
+  const profileDepth = Math.max(3, Math.round(options.heightMax * (
+    options.aiCategory === "swords" ? 0.48 :
+    options.aiCategory === "rifles" ? 0.62 :
+    options.aiCategory === "guns" ? 0.68 : 0.72
+  )));
+  const depthCap = Math.max(3, Math.min(
+    Math.max(3, Math.floor(maxAxis * 0.34)),
+    Math.round(profileDepth)
+  ));
+
+  const voxels: ImageVoxel[] = [];
+  for (let y = 0; y < height; y += 1) {
+    const ny = height <= 1 ? 0.5 : y / (height - 1);
+    for (let x = 0; x < width; x += 1) {
+      if (!sourceMask[y]?.[x]) continue;
+
+      const nx = width <= 1 ? 0.5 : x / (width - 1);
+      const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
+      const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
+      const d = depthMap
+        ? adaptiveDepthAt(depthMap, raster, mask, px, py, options.aiCategory, adaptiveDepthGrid)
+        : 0.5;
+
+      const rowMass = rowRunRatios[y]?.[x] ?? 0;
+      const columnMass = columnRunRatios[y]?.[x] ?? 0;
+      const contourDistance = Math.min(nx, 1 - nx, ny, 1 - ny);
+      const contourSupport = clamp(contourDistance * 7, 0, 1);
+      const centerDistance = Math.abs(nx - 0.5) * 2;
+      const centerMass = 1 - Math.pow(centerDistance, 1.35);
+      const structuralMass = clamp(
+        rowMass * 0.48 + columnMass * 0.18 + contourSupport * 0.18 + centerMass * 0.16,
+        0.08,
+        1
+      );
+
+      const depthSignal = clamp(0.72 + d * 0.56, 0.72, 1.28);
+      const thickness = Math.max(
+        1,
+        Math.min(
+          depthCap,
+          Math.round(depthCap * (0.24 + structuralMass * 0.76) * depthSignal)
+        )
+      );
+
+      const frontColor = localMaterialSample(raster, px, py);
+      const sharpness =
+        options.aiCategory === "swords" ? 1.16 :
+        options.aiCategory === "guns" ? 1.08 : 1.03;
+      const colorIndex = nearestColor(
+        materialAwareDitheredColor(
+          applySharpness([frontColor.r, frontColor.g, frontColor.b], sharpness),
+          x,
+          y,
+          options.aiCategory === "swords" || options.aiCategory === "guns" ? 4 : 7
+        ),
+        paletteValues
+      );
+
+      const zStart = Math.floor((depthCap - thickness) / 2);
+      for (let z = 0; z < thickness; z += 1) {
+        voxels.push({
+          x,
+          y,
+          z: zStart + z,
+          c: colorIndex
+        });
+      }
+    }
+  }
+
+  if (!voxels.length) throw new Error("No voxels reconstructed");
+
+  const budget = effectiveBudget(
+    options.volumeSize,
+    options.maxVoxelsExplicit ? options.maxVoxels : undefined,
+    "model",
+    {
+      width,
+      height,
+      depth: depthCap,
+      projectedFill: maskFillRatio(sourceMask, {
+        minX: 0,
+        minY: 0,
+        maxX: width - 1,
+        maxY: height - 1,
+        width,
+        height
+      }),
+      category: options.aiCategory,
+      profileScale: options.adaptiveBudgetScale
+    }
+  );
+
+  const limited = voxels.length <= budget ? voxels : spatialBudget(voxels, budget);
+  const packed = normalizeToVolume(limited, options.volumeSize);
+  return {
+    width: raster.width,
+    height: raster.height,
+    voxels: packed,
+    palette,
+    count: packed.length,
+    category: options.aiCategory
+  };
+}
+
 function buildSingleViewModel(
   raster: Raster,
   mask: boolean[][],
@@ -1650,16 +1777,14 @@ function buildSingleViewModel(
   // categories always retain the normal silhouette/depth pipeline.
   const revolve = options.aiCategory === "objects" ? guessRevolve(sourceMask) : null;
   if (!revolve || revolve.confidence < 0.82) {
-    // Generic FRONT-only MODEL keeps the volumetric contract even when the
-    // silhouette is not rotationally inferable. The existing solid/depth
-    // reconstruction remains the conservative source of hidden geometry.
-    return buildNonModel(
+    // Non-rotational FRONT-only assets still receive a real volumetric
+    // reconstruction. Do not silently downgrade MODEL to the legacy solid
+    // extrusion: infer bounded thickness from silhouette mass + depth.
+    return buildAdaptiveSingleViewVolume(
       raster,
       mask,
       bounds,
-      undefined,
-      null,
-      { ...options, mode: "solid" },
+      options,
       paletteValues,
       palette,
       depthMap
