@@ -303,8 +303,13 @@ try {
     });
     assert(
       `real fixture exports to non-empty GLB: ${fixture.name}`,
-      glb instanceof Uint8Array && glb.length > 128 &&
-        new DataView(glb.buffer, glb.byteOffset, glb.byteLength).getUint32(0, true) === 0x46546c67
+      ((glb instanceof ArrayBuffer && glb.byteLength > 128) ||
+        (glb instanceof Uint8Array && glb.byteLength > 128)) &&
+        new DataView(
+          glb instanceof ArrayBuffer ? glb : glb.buffer,
+          glb instanceof ArrayBuffer ? 0 : glb.byteOffset,
+          glb instanceof ArrayBuffer ? glb.byteLength : glb.byteLength
+        ).getUint32(0, true) === 0x46546c67
     );
 
     const vox = exportVox(volume, exportPalette);
