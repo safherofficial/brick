@@ -1,0 +1,313 @@
+/**
+ * Real raster fixture regression.
+ *
+ * Uses real PNG/JPEG bytes pinned to upstream commits, verifies the bytes,
+ * decodes them with ImageMagick, and feeds the decoded RGBA raster through
+ * Brick's existing imageToVoxels() entry point.
+ *
+ * Run:
+ *   node --experimental-strip-types --import ./scripts/_register-aliases.mjs scripts/regression-real-fixtures.mjs
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { imageToVoxels } from "../lib/image/engine.ts";
+
+const tempDir = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../tests/fixtures/.cache"
+);
+
+const fixtures = [
+  {
+    name: "kenney_chest.png",
+    mime: "image/png",
+    url: "https://raw.githubusercontent.com/shorepine/kenney/3694c6879e487c108f55677be7dd2ca75b07cc3b/2d/Cartography%20Pack/chest.png",
+    gitBlobSha: "879a950aa77434e95d17385498bad4e2fc73c965"
+  },
+  {
+    name: "kenney_crate.png",
+    mime: "image/png",
+    url: "https://raw.githubusercontent.com/shorepine/kenney/3694c6879e487c108f55677be7dd2ca75b07cc3b/2d/Brick%20Pack/Special/extra_crate.png",
+    gitBlobSha: "155df67042a9ec44852e8b2da5eba3e10dd287f3"
+  },
+  {
+    name: "kenney_character_man.png",
+    mime: "image/png",
+    url: "https://raw.githubusercontent.com/shorepine/kenney/3694c6879e487c108f55677be7dd2ca75b07cc3b/2d/Block%20Pack/character_man.png",
+    gitBlobSha: "5468d004c4fd1bc2dcce964721ec347e806ffebb"
+  },
+  {
+    name: "cc0_bird.jpg",
+    mime: "image/jpeg",
+    url: "https://raw.githubusercontent.com/Tiddybub/2d-assets/e0cbe0d995554a490d4c182fe9beb8769ffbb606/characters/oga-blue-bird-for-jump-and-run-arcade/bird.jpg",
+    gitBlobSha: "19c136a88304d0375dbc8a4dc0de743c2f85e6d5"
+  }
+];
+
+let failed = 0;
+
+function assert(name, condition) {
+  if (!condition) {
+    console.error("FAIL", name);
+    failed += 1;
+  } else {
+    console.log("OK  ", name);
+  }
+}
+
+async function fetchBytes(fixture) {
+  const response = await fetch(fixture.url);
+  if (!response.ok) {
+    throw new Error(
+      `Fixture download failed: ${fixture.name} HTTP ${response.status}`
+    );
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function gitBlobSha(bytes) {
+  const header = Buffer.from(`blob ${bytes.length}\0`, "utf8");
+  return createHash("sha1")
+    .update(Buffer.concat([header, Buffer.from(bytes)]))
+    .digest("hex");
+}
+
+function findDecoder() {
+  for (const command of ["magick", "convert"]) {
+    const probe = spawnSync(command, ["-version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    if (probe.status === 0) return command;
+  }
+  return null;
+}
+
+function decodeRaster(decoder, filePath, name) {
+  const info = spawnSync(
+    decoder,
+    [filePath, "-auto-orient", "-format", "%w:%h", "info:"],
+    { encoding: "utf8" }
+  );
+  if (info.status !== 0) {
+    throw new Error(
+      `Raster identify failed for ${name}: ${info.stderr || "unknown error"}`
+    );
+  }
+
+  const [widthText, heightText] = String(info.stdout).trim().split(":");
+  const width = Number(widthText);
+  const height = Number(heightText);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) {
+    throw new Error(`Invalid dimensions for ${name}: ${info.stdout}`);
+  }
+
+  const raw = spawnSync(
+    decoder,
+    [
+      filePath,
+      "-auto-orient",
+      "-depth",
+      "8",
+      "-alpha",
+      "on",
+      "RGBA:-"
+    ],
+    { encoding: null }
+  );
+  if (raw.status !== 0) {
+    throw new Error(
+      `Raster decode failed for ${name}: ${raw.stderr?.toString("utf8") || "unknown error"}`
+    );
+  }
+
+  const expectedBytes = width * height * 4;
+  if (raw.stdout.length !== expectedBytes) {
+    throw new Error(
+      `Decoded byte count mismatch for ${name}: ${raw.stdout.length} !== ${expectedBytes}`
+    );
+  }
+
+  return {
+    width,
+    height,
+    rgba: new Uint8ClampedArray(raw.stdout)
+  };
+}
+
+const decoder = findDecoder();
+assert("real PNG/JPEG decoder is available", decoder !== null);
+if (!decoder) process.exit(1);
+
+const rasterByToken = new Map();
+let tokenId = 0;
+const originalUrl = globalThis.URL;
+const originalImage = globalThis.Image;
+const originalDocument = globalThis.document;
+
+globalThis.URL = {
+  createObjectURL(file) {
+    const token = `brick-real-fixture-${++tokenId}`;
+    const bytes = file._fixtureBytes;
+    if (!(bytes instanceof Uint8Array)) {
+      throw new Error(`Missing fixture bytes for ${file.name}`);
+    }
+    const tempPath = path.join(tempDir, `decode-${process.pid}-${tokenId}-${file.name}`);
+    fs.writeFileSync(tempPath, bytes);
+    try {
+      rasterByToken.set(token, decodeRaster(decoder, tempPath, file.name));
+    } finally {
+      fs.rmSync(tempPath, { force: true });
+    }
+    return token;
+  },
+  revokeObjectURL(token) {
+    rasterByToken.delete(token);
+  }
+};
+
+class TestImage {
+  naturalWidth = 0;
+  naturalHeight = 0;
+  width = 0;
+  height = 0;
+  onload = null;
+  onerror = null;
+  _src = "";
+
+  set src(value) {
+    this._src = value;
+    const raster = rasterByToken.get(value);
+    if (!raster) {
+      queueMicrotask(() => this.onerror?.(new Error("Unknown fixture URL")));
+      return;
+    }
+    this.naturalWidth = raster.width;
+    this.naturalHeight = raster.height;
+    this.width = raster.width;
+    this.height = raster.height;
+    queueMicrotask(() => this.onload?.());
+  }
+
+  get src() {
+    return this._src;
+  }
+}
+
+globalThis.Image = TestImage;
+
+globalThis.document = {
+  createElement(tag) {
+    if (tag !== "canvas") {
+      throw new Error(`Unsupported test element: ${tag}`);
+    }
+    const canvas = {
+      width: 0,
+      height: 0,
+      _raster: null,
+      getContext() {
+        return {
+          _canvas: canvas,
+          clearRect() {},
+          drawImage(image) {
+            this._canvas._raster = rasterByToken.get(image.src);
+          },
+          getImageData() {
+            if (!this._canvas._raster) {
+              throw new Error("Fixture raster missing from canvas");
+            }
+            return { data: this._canvas._raster.rgba };
+          }
+        };
+      }
+    };
+    return canvas;
+  }
+};
+
+fs.mkdirSync(tempDir, { recursive: true });
+
+try {
+  for (const fixture of fixtures) {
+    const bytes = await fetchBytes(fixture);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    console.log(`FIXTURE ${fixture.name} sha256=${digest} bytes=${bytes.length}`);
+
+    assert(`git blob is exact: ${fixture.name}`, gitBlobSha(bytes) === fixture.gitBlobSha);
+    assert(`fixture is non-trivial binary: ${fixture.name}`, bytes.length > 256);
+
+    const ext = path.extname(fixture.name).toLowerCase();
+    if (ext === ".png") {
+      const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+      assert(
+        `PNG signature: ${fixture.name}`,
+        signature.every((value, index) => bytes[index] === value)
+      );
+    } else {
+      assert(
+        `JPEG signature: ${fixture.name}`,
+        bytes[0] === 0xff &&
+          bytes[1] === 0xd8 &&
+          bytes.at(-2) === 0xff &&
+          bytes.at(-1) === 0xd9
+      );
+    }
+
+    const file = new File([bytes], fixture.name, { type: fixture.mime });
+    file._fixtureBytes = bytes;
+
+    const result = await imageToVoxels(file, {
+      volumeSize: 48,
+      mode: "model",
+      maxVoxels: 30000,
+      useLocalAi: false,
+      aiCategory: "objects"
+    });
+
+    assert(
+      `voxel output is non-empty: ${fixture.name}`,
+      result.count > 0 && result.voxels.length > 0
+    );
+    assert(
+      `palette is non-empty: ${fixture.name}`,
+      result.palette.length > 0
+    );
+    assert(
+      `voxel coordinates are finite: ${fixture.name}`,
+      result.voxels.every(
+        (voxel) =>
+          Number.isInteger(voxel.x) &&
+          Number.isInteger(voxel.y) &&
+          Number.isInteger(voxel.z) &&
+          Number.isInteger(voxel.c)
+      )
+    );
+
+    const zs = result.voxels.map((voxel) => voxel.z);
+    assert(
+      `model output preserves visible depth: ${fixture.name}`,
+      Math.max(...zs) - Math.min(...zs) + 1 >= 2
+    );
+    assert(
+      `quality control is valid: ${fixture.name}`,
+      result.qualityControl !== undefined &&
+        Number.isFinite(result.qualityControl.score) &&
+        result.qualityControl.score >= 0 &&
+        result.qualityControl.score <= 100
+    );
+  }
+} finally {
+  globalThis.URL = originalUrl;
+  globalThis.Image = originalImage;
+  globalThis.document = originalDocument;
+  fs.rmSync(tempDir, { recursive: true, force: true });
+}
+
+if (failed) {
+  console.error(`\n${failed} real-fixture regression assertion(s) failed`);
+  process.exit(1);
+}
+console.log("\nAll real PNG/JPEG fixture regression checks passed.");
