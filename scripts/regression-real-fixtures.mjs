@@ -116,6 +116,109 @@ function decodeRaster(bytes, name) {
   };
 }
 
+function validateGlbBinaryContract(glb) {
+  const bytes =
+    glb instanceof ArrayBuffer
+      ? new Uint8Array(glb)
+      : glb instanceof Uint8Array
+        ? glb
+        : null;
+  if (!bytes || bytes.length < 20) return false;
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(0, true) !== 0x46546c67 || view.getUint32(4, true) !== 2) {
+    return false;
+  }
+
+  const totalLength = view.getUint32(8, true);
+  if (totalLength !== bytes.byteLength) return false;
+
+  let offset = 12;
+  let json = null;
+  let binStart = -1;
+  let binLength = 0;
+
+  while (offset + 8 <= bytes.length) {
+    const length = view.getUint32(offset, true);
+    const type = view.getUint32(offset + 4, true);
+    const chunkStart = offset + 8;
+    const chunkEnd = chunkStart + length;
+    if (chunkEnd > bytes.length) return false;
+
+    if (type === 0x4e4f534a && json === null) {
+      json = JSON.parse(
+        new TextDecoder().decode(bytes.subarray(chunkStart, chunkEnd))
+      );
+    } else if (type === 0x004e4942 && binStart < 0) {
+      binStart = chunkStart;
+      binLength = length;
+    }
+
+    offset = chunkEnd;
+  }
+
+  if (!json || binStart < 0 || offset !== bytes.length) return false;
+
+  const buffer = json.buffers?.[0];
+  if (!buffer || !Number.isInteger(buffer.byteLength) || buffer.byteLength > binLength) {
+    return false;
+  }
+
+  const views = json.bufferViews ?? [];
+  for (const bufferView of views) {
+    if (
+      bufferView.buffer !== 0 ||
+      !Number.isInteger(bufferView.byteOffset ?? 0) ||
+      !Number.isInteger(bufferView.byteLength) ||
+      (bufferView.byteOffset ?? 0) < 0 ||
+      bufferView.byteLength < 0 ||
+      (bufferView.byteOffset ?? 0) + bufferView.byteLength > buffer.byteLength
+    ) {
+      return false;
+    }
+  }
+
+  const accessors = json.accessors ?? [];
+  for (const accessor of accessors) {
+    if (
+      !Number.isInteger(accessor.bufferView) ||
+      accessor.bufferView < 0 ||
+      accessor.bufferView >= views.length ||
+      !Number.isInteger(accessor.count) ||
+      accessor.count < 0
+    ) {
+      return false;
+    }
+    const viewDef = views[accessor.bufferView];
+    const componentSize =
+      accessor.componentType === 5121 ? 1 :
+      accessor.componentType === 5123 ? 2 :
+      accessor.componentType === 5125 ? 4 :
+      accessor.componentType === 5126 ? 4 : 0;
+    const componentCount =
+      accessor.type === "SCALAR" ? 1 :
+      accessor.type === "VEC2" ? 2 :
+      accessor.type === "VEC3" ? 3 :
+      accessor.type === "VEC4" ? 4 : 0;
+    if (!componentSize || !componentCount) return false;
+
+    const elementSize = componentSize * componentCount;
+    const accessorOffset = accessor.byteOffset ?? 0;
+    if (!Number.isInteger(accessorOffset) || accessorOffset < 0) return false;
+
+    const stride = viewDef.byteStride ?? elementSize;
+    if (!Number.isInteger(stride) || stride < elementSize) return false;
+
+    const required =
+      accessor.count === 0
+        ? accessorOffset
+        : accessorOffset + stride * (accessor.count - 1) + elementSize;
+    if (required > viewDef.byteLength) return false;
+  }
+
+  return true;
+}
+
 function parseGlbJson(glb) {
   const bytes =
     glb instanceof ArrayBuffer
@@ -338,6 +441,11 @@ try {
           glb instanceof ArrayBuffer ? 0 : glb.byteOffset,
           glb instanceof ArrayBuffer ? glb.byteLength : glb.byteLength
         ).getUint32(0, true) === 0x46546c67
+    );
+
+    assert(
+      `GLB binary buffer/accessor contract: ${fixture.name}`,
+      validateGlbBinaryContract(glb)
     );
 
     const gltf = parseGlbJson(glb);
