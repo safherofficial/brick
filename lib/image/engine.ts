@@ -660,26 +660,35 @@ function dominantPalette(
   return chosen.map(([r, g, b]) => hexOf(r, g, b));
 }
 
-function paletteMaterialWeight(raster: Raster, x: number, y: number): number {
-  const center = sampleAt(raster, x, y);
-  if (!center.visible) return 1;
-  let contrast = 0;
-  let samples = 0;
-  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    const neighbour = sampleAt(raster, x + dx, y + dy);
-    if (!neighbour.visible) continue;
-    contrast += Math.sqrt(
-      rgbDistance(
-        [center.r, center.g, center.b],
-        [neighbour.r, neighbour.g, neighbour.b]
-      )
-    );
-    samples += 1;
+function buildPaletteMaterialWeights(raster: Raster): Float32Array {
+  const weights = new Float32Array(raster.width * raster.height);
+  weights.fill(1);
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      const center = sampleAt(raster, x, y);
+      if (!center.visible) continue;
+      let contrast = 0;
+      let samples = 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const neighbour = sampleAt(raster, x + dx, y + dy);
+        if (!neighbour.visible) continue;
+        contrast += Math.sqrt(
+          rgbDistance(
+            [center.r, center.g, center.b],
+            [neighbour.r, neighbour.g, neighbour.b]
+          )
+        );
+        samples += 1;
+      }
+      if (samples) {
+        // Preserve small but meaningful material boundaries in the adaptive palette.
+        // The boost is bounded so large flat regions still dominate the palette.
+        weights[y * raster.width + x] =
+          1 + clamp((contrast / samples - 18) / 70, 0, 1.6);
+      }
+    }
   }
-  if (!samples) return 1;
-  // Preserve small but meaningful material boundaries in the adaptive palette.
-  // The boost is bounded so large flat regions still dominate the palette.
-  return 1 + clamp((contrast / samples - 18) / 70, 0, 1.6);
+  return weights;
 }
 
 function createPalette(rasters: Raster[], masks: boolean[][][], size = 48, viewWeights?: number[]) {
@@ -689,6 +698,7 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48, viewW
     const raster = rasters[view];
     const viewWeight = Math.max(0.1, viewWeights?.[view] ?? 1);
     const mask = masks[view];
+    const materialWeights = buildPaletteMaterialWeights(raster);
     const stride = Math.max(
       1,
       Math.floor(Math.sqrt((raster.width * raster.height) / 50000))
@@ -704,7 +714,7 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48, viewW
         const g = Math.round(s.g / 4) * 4;
         const b = Math.round(s.b / 4) * 4;
         const key = `${r}:${g}:${b}`;
-        const materialWeight = paletteMaterialWeight(raster, x, y);
+        const materialWeight = materialWeights[y * raster.width + x] ?? 1;
         const sampleWeight = viewWeight * materialWeight;
         const existing = buckets.get(key);
         if (existing) existing.weight += sampleWeight;
