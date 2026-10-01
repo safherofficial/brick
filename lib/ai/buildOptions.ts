@@ -19,8 +19,12 @@ export function buildImageOptions(input: {
   outline?: boolean;
 }): ImageVoxelOptions {
   const preset = input.category ? aiCategoryPreset(input.category) : null;
-  const budget = budgetForVolume(input.volumeSize);
+  // Premium raster outputs use a larger working canvas so the final game asset does not lose source contour detail simply because the editor volume starts at 128³.
   const output = input.output;
+  const outputVolumeSize = output === "2d" || output === "25d"
+    ? Math.max(input.volumeSize, 256)
+    : input.volumeSize;
+  const budget = budgetForVolume(outputVolumeSize);
 
   // output lock wins over category-forced model and over solid.
   let mode: ImageMode;
@@ -36,7 +40,8 @@ export function buildImageOptions(input: {
     const categoryHeight = input.category
       ? aiCategoryHeightMax(input.category, input.volumeSize)
       : input.heightMax;
-    heightMax = Math.max(2, Math.min(categoryHeight, 6));
+    // More depth planes produce a smoother, more deliberate relief instead of a visibly stepped extrusion.
+    heightMax = Math.max(4, Math.min(categoryHeight, 8));
     symmetrize = false;
   } else {
     mode = input.category ? "model" : (input.mode ?? "solid");
@@ -47,7 +52,7 @@ export function buildImageOptions(input: {
   }
 
   return {
-    volumeSize: input.volumeSize,
+    volumeSize: outputVolumeSize,
     mode,
     heightMax,
     maxVoxels: Math.min(input.maxVoxels, budget.maxVoxels),
