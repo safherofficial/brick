@@ -114,6 +114,28 @@ assert(
   engine.includes("if (!sourceMask[y]?.[x]) continue;")
 );
 
+assert(
+  "2D uses premium 96-color source palette",
+  engine.includes('normalized.output === "2d" ? 96')
+);
+assert(
+  "2.5D uses premium 80-color source palette",
+  engine.includes('normalized.output === "25d" ? 80')
+);
+assert(
+  "2.5D supports eight stable depth planes",
+  engine.includes("Math.min(8, Math.round(options.heightMax))")
+);
+assert(
+  "2D defaults to no synthetic outline",
+  engine.includes('normalized.outline === undefined) normalized.outline = false')
+);
+assert(
+  "2D/2.5D build at 256 working resolution",
+  fs.readFileSync(new URL("../lib/ai/buildOptions.ts", import.meta.url), "utf8")
+    .includes('output === "2d" || output === "25d"')
+);
+
 if (failed) {
   console.error(`\\n${failed} AI golden assertion(s) failed`);
   process.exit(1);
