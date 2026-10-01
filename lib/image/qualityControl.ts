@@ -231,11 +231,17 @@ export function evaluateVoxelQuality(
   const componentCount = connectedComponents(voxels);
   const { retention, precision } = silhouetteMetrics(voxels, mask);
   const usedPalette = new Set(voxels.map((v) => v.c)).size;
-  const surfaceCount = voxels.filter((v) => {
-    return ![
-      [1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]
-    ].every(([dx,dy,dz]) => voxels.some((n) => n.x === v.x + dx && n.y === v.y + dy && n.z === v.z + dz));
-  }).length;
+  const occupied = new Set(voxels.map(voxelKey));
+  const surfaceCount = voxels.reduce((count, v) => {
+    const hasExposedFace =
+      !occupied.has((v.x + 1) + ":" + v.y + ":" + v.z) ||
+      !occupied.has((v.x - 1) + ":" + v.y + ":" + v.z) ||
+      !occupied.has(v.x + ":" + (v.y + 1) + ":" + v.z) ||
+      !occupied.has(v.x + ":" + (v.y - 1) + ":" + v.z) ||
+      !occupied.has(v.x + ":" + v.y + ":" + (v.z + 1)) ||
+      !occupied.has(v.x + ":" + v.y + ":" + (v.z - 1));
+    return count + (hasExposedFace ? 1 : 0);
+  }, 0);
   const surfaceRatio = surfaceCount / Math.max(1, voxels.length);
   const detailDensity = clamp((voxels.length / Math.max(1, volume)) * 1.8, 0, 1);
   const paletteCoverage = usedPalette / Math.max(1, palette.length);
