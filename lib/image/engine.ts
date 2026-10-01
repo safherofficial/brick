@@ -2325,6 +2325,19 @@ async function attachQualityControl(
       return { ...result, qualityControl: initialQuality };
     }
 
+    // P16.6: reconstruction confidence controls how aggressively QC may
+    // accept a repair. Sparse/uncertain silhouettes are more likely to contain
+    // intentional one-voxel features, so they require a stronger measured
+    // quality gain before geometry is replaced. High-confidence silhouettes
+    // retain the established +3 acceptance threshold.
+    const confidence = buildReconstructionConfidenceMap(
+      mask,
+      mask[0]?.length ?? 0,
+      mask.length
+    );
+    const lowConfidenceRatio = confidence.summary.lowConfidenceRatio;
+    const repairDelta = lowConfidenceRatio >= 0.35 ? 5 : lowConfidenceRatio >= 0.18 ? 4 : 3;
+
     const repairedVoxels = repairVoxelIntegrity(result.voxels);
     if (repairedVoxels === result.voxels) {
       return { ...result, qualityControl: initialQuality };
@@ -2336,7 +2349,7 @@ async function attachQualityControl(
       count: repairedVoxels.length
     };
     const repairedQuality = evaluateVoxelQuality(repaired.voxels, mask, repaired.palette, category);
-    return repairedQuality.score >= initialQuality.score + 3
+    return repairedQuality.score >= initialQuality.score + repairDelta
       ? { ...repaired, qualityControl: repairedQuality }
       : { ...result, qualityControl: initialQuality };
   } catch {
