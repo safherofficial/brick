@@ -300,6 +300,50 @@ function validateGlbTextureMaterialContract(gltf) {
   return true;
 }
 
+function validateGlbSceneGraphContract(gltf) {
+  const nodes = gltf.nodes ?? [];
+  const scenes = gltf.scenes ?? [];
+  const roots = new Set();
+
+  if (!Number.isInteger(gltf.scene) || gltf.scene < 0 || gltf.scene >= scenes.length) {
+    return false;
+  }
+
+  for (const scene of scenes) {
+    if (!Array.isArray(scene.nodes)) return false;
+    for (const nodeIndex of scene.nodes) {
+      if (!Number.isInteger(nodeIndex) || nodeIndex < 0 || nodeIndex >= nodes.length) {
+        return false;
+      }
+      roots.add(nodeIndex);
+    }
+  }
+
+  const visiting = new Set();
+  const visited = new Set();
+  const walk = (nodeIndex) => {
+    if (visiting.has(nodeIndex)) return false;
+    if (visited.has(nodeIndex)) return true;
+    const node = nodes[nodeIndex];
+    if (!node) return false;
+    visiting.add(nodeIndex);
+    for (const child of node.children ?? []) {
+      if (!Number.isInteger(child) || child < 0 || child >= nodes.length || !walk(child)) {
+        return false;
+      }
+    }
+    visiting.delete(nodeIndex);
+    visited.add(nodeIndex);
+    return true;
+  };
+
+  for (const root of roots) {
+    if (!walk(root)) return false;
+  }
+
+  return visited.size > 0;
+}
+
 function parseGlbJson(glb) {
   const bytes =
     glb instanceof ArrayBuffer
@@ -537,6 +581,10 @@ try {
     assert(
       `GLB texture/material linkage contract: ${fixture.name}`,
       validateGlbTextureMaterialContract(gltf)
+    );
+    assert(
+      `GLB scene graph contract: ${fixture.name}`,
+      validateGlbSceneGraphContract(gltf)
     );
     const brick = gltf.asset?.extras?.brick;
     const nodeNames = (gltf.nodes ?? []).map((node) => node.name);
