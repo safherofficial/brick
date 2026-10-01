@@ -5,6 +5,7 @@
  * confidence fusion, the P17 single-view shape-aware depth prior, and the P18
  * detail-preserving voxel budget allocation.
  */
+import fs from "node:fs";
 import {
   refineSegmentAlpha,
   normalizeDepthToForeground,
