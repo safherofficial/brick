@@ -399,6 +399,33 @@ try {
       typeof obj?.obj === "string" && /^v /m.test(obj.obj) &&
         typeof obj?.mtl === "string" && obj.mtl.length > 0
     );
+
+    const objText = obj.obj;
+    const mtlText = obj.mtl;
+    const mtllibName = objText.match(/^mtllib (.+)$/m)?.[1];
+    const objectName = objText.match(/^o (.+)$/m)?.[1];
+    const usedMaterials = [...objText.matchAll(/^usemtl (.+)$/gm)].map(
+      (match) => match[1]
+    );
+    const definedMaterials = [...mtlText.matchAll(/^newmtl (.+)$/gm)].map(
+      (match) => match[1]
+    );
+    assert(
+      `OBJ game-ready header contract: ${fixture.name}`,
+      mtllibName === `${obj.name}.mtl` &&
+        objectName === obj.name &&
+        /^# unit: [0-9.]+ meters per voxel$/m.test(objText) &&
+        /^# pivot: bottom-center$/m.test(objText) &&
+        /^# up: y$/m.test(objText)
+    );
+    assert(
+      `OBJ contains mesh geometry and materials: ${fixture.name}`,
+      /^v /m.test(objText) &&
+        /^vn /m.test(objText) &&
+        /^f /m.test(objText) &&
+        usedMaterials.length > 0 &&
+        usedMaterials.every((name) => definedMaterials.includes(name))
+    );
   }
 } finally {
   globalThis.URL = originalUrl;
