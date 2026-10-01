@@ -2208,12 +2208,27 @@ function spatialBudget(voxels: ImageVoxel[], budget: number) {
         if (map.has(`${voxel.x}:${voxel.y - 1}:${voxel.z}`)) neighbours += 1;
         if (map.has(`${voxel.x}:${voxel.y}:${voxel.z + 1}`)) neighbours += 1;
         if (map.has(`${voxel.x}:${voxel.y}:${voxel.z - 1}`)) neighbours += 1;
+        const xp = map.has(`${voxel.x + 1}:${voxel.y}:${voxel.z}`);
+        const xm = map.has(`${voxel.x - 1}:${voxel.y}:${voxel.z}`);
+        const yp = map.has(`${voxel.x}:${voxel.y + 1}:${voxel.z}`);
+        const ym = map.has(`${voxel.x}:${voxel.y - 1}:${voxel.z}`);
+        const zp = map.has(`${voxel.x}:${voxel.y}:${voxel.z + 1}`);
+        const zm = map.has(`${voxel.x}:${voxel.y}:${voxel.z - 1}`);
         const xyBoundary =
-          (!map.has(`${voxel.x + 1}:${voxel.y}:${voxel.z}`) ? 1 : 0) +
-          (!map.has(`${voxel.x - 1}:${voxel.y}:${voxel.z}`) ? 1 : 0) +
-          (!map.has(`${voxel.x}:${voxel.y + 1}:${voxel.z}`) ? 1 : 0) +
-          (!map.has(`${voxel.x}:${voxel.y - 1}:${voxel.z}`) ? 1 : 0);
-        const score = (6 - neighbours) * 2 + xyBoundary * 1.5;
+          (!xp ? 1 : 0) +
+          (!xm ? 1 : 0) +
+          (!yp ? 1 : 0) +
+          (!ym ? 1 : 0);
+        // P16.5: reward contour turns and terminal geometry. A voxel with
+        // asymmetric occupancy across an axis is more likely to represent a
+        // curve, tip, slanted transition or handle/barrel termination than a
+        // flat surface voxel, so it receives a small deterministic reserve
+        // boost when the budget is tight.
+        const curvature =
+          (xp !== xm ? 1 : 0) +
+          (yp !== ym ? 1 : 0) +
+          (zp !== zm ? 1 : 0);
+        const score = (6 - neighbours) * 2 + xyBoundary * 1.5 + curvature * 1.25;
         return { voxel, score };
       });
       scored.sort(
