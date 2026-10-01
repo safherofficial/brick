@@ -2701,7 +2701,7 @@ export async function imageToVoxels(
   const palette = createPalette(
     [raster],
     [mask],
-    normalized.output === "2d" ? 96 : normalized.output === "25d" ? 80 : normalized.mode === "model" ? 64 : 48
+    normalized.output === "2d" ? 96 : normalized.output === "25d" ? 80 : normalized.mode === "model" ? 96 : 48
   );
   const paletteValues = paletteRgb(palette);
 
