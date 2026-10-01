@@ -59,14 +59,15 @@ function applyOutputLock(normalized: NormalizedImageVoxelOptions) {
     normalized.symmetrize = false;
     normalized.useDepthThickness = false;
     normalized.sideAmbiguous = false;
-    if (normalized.outline === undefined) normalized.outline = true;
+    // 2D is source-faithful by default: no synthetic black outline or darkening.
+    if (normalized.outline === undefined) normalized.outline = false;
     return;
   }
   if (normalized.output === "25d") {
     if (normalized.mode === "flat" || normalized.mode === "solid" || normalized.mode === "model") {
       normalized.mode = "relief";
     }
-    normalized.heightMax = Math.max(2, Math.min(normalized.heightMax, 6));
+    normalized.heightMax = Math.max(4, Math.min(normalized.heightMax, 8));
     normalized.symmetrize = false;
   }
 }
@@ -1532,7 +1533,7 @@ function buildFlatSprite(
       const frontColor = localMaterialSample(raster, bounds.minX + nx * (bounds.maxX - bounds.minX), bounds.minY + ny * (bounds.maxY - bounds.minY));
       voxels.push({
         x, y, z: 0,
-        c: nearestColor(applySharpness([frontColor.r, frontColor.g, frontColor.b], options.aiCategory === "swords" ? 1.18 : 1.12), paletteValues)
+        c: nearestColor([frontColor.r, frontColor.g, frontColor.b], paletteValues)
       });
     }
   }
@@ -2038,7 +2039,8 @@ function buildNonModel(
   const voxels: ImageVoxel[] = [];
 
   if (useQuantizedRelief) {
-    const levels = Math.max(3, Math.min(5, Math.round(options.heightMax)));
+    // Eight stable depth planes provide a smoother premium relief without leaving voxel-safe discrete geometry.
+    const levels = Math.max(4, Math.min(8, Math.round(options.heightMax)));
     const raw: number[][] = Array.from({ length: height }, () => Array(width).fill(1));
     for (let y = 0; y < height; y += 1) {
       const ny = height <= 1 ? 0.5 : y / (height - 1);
@@ -2132,18 +2134,7 @@ function buildNonModel(
           x,
           y,
           z,
-          c: nearestColor(
-            materialAwareDitheredColor(
-              applySharpness(
-                [colorSample.r, colorSample.g, colorSample.b],
-                options.aiCategory === "swords" ? 1.18 : options.aiCategory === "guns" ? 1.08 : 1
-              ),
-              x,
-              y + z,
-              options.aiCategory === "swords" || options.aiCategory === "guns" ? 4 : 10
-            ),
-            paletteValues
-          )
+          c: nearestColor([colorSample.r, colorSample.g, colorSample.b], paletteValues)
         });
       }
     }
@@ -2710,7 +2701,7 @@ export async function imageToVoxels(
   const palette = createPalette(
     [raster],
     [mask],
-    normalized.mode === "model" ? 64 : 48
+    normalized.output === "2d" ? 96 : normalized.output === "25d" ? 80 : normalized.mode === "model" ? 64 : 48
   );
   const paletteValues = paletteRgb(palette);
 
@@ -2831,7 +2822,7 @@ export async function imagesToVoxels(
   const palette = createPalette(
     rasters,
     masks,
-    normalized.mode === "model" ? 64 : 48,
+    normalized.output === "2d" ? 96 : normalized.output === "25d" ? 80 : normalized.mode === "model" ? 64 : 48,
     rasters.length > 1 ? [1.45, 0.85] : undefined
   );
   const paletteValues = paletteRgb(palette);
