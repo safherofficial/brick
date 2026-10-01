@@ -140,7 +140,7 @@ const qualityControl = fs.readFileSync(new URL("../lib/image/qualityControl.ts",
 assert(
   "voxel QC surface analysis uses O(1) occupancy lookups",
   qualityControl.includes("const occupied = new Set(voxels.map(voxelKey));") &&
-    qualityControl.includes("occupied.has((v.x + 1) + ":"")
+    qualityControl.includes('occupied.has((v.x + 1) + ":"')
 );
 assert(
   "voxel QC exposes detail density and surface ratio",
