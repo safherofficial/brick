@@ -2228,7 +2228,23 @@ function spatialBudget(voxels: ImageVoxel[], budget: number) {
           (xp !== xm ? 1 : 0) +
           (yp !== ym ? 1 : 0) +
           (zp !== zm ? 1 : 0);
-        const score = (6 - neighbours) * 2 + xyBoundary * 1.5 + curvature * 1.25;
+        // P38: protect material boundaries when the voxel budget is tight.
+        // A boundary voxel whose occupied neighbours carry different palette
+        // indices is more informative than an equivalent flat-surface voxel.
+        // The bonus is deliberately bounded so isolated colour noise cannot
+        // outrank silhouette turns or terminal geometry.
+        const materialBoundary =
+          (xp && map.get(`${voxel.x + 1}:${voxel.y}:${voxel.z}`)?.c !== voxel.c ? 1 : 0) +
+          (xm && map.get(`${voxel.x - 1}:${voxel.y}:${voxel.z}`)?.c !== voxel.c ? 1 : 0) +
+          (yp && map.get(`${voxel.x}:${voxel.y + 1}:${voxel.z}`)?.c !== voxel.c ? 1 : 0) +
+          (ym && map.get(`${voxel.x}:${voxel.y - 1}:${voxel.z}`)?.c !== voxel.c ? 1 : 0) +
+          (zp && map.get(`${voxel.x}:${voxel.y}:${voxel.z + 1}`)?.c !== voxel.c ? 1 : 0) +
+          (zm && map.get(`${voxel.x}:${voxel.y}:${voxel.z - 1}`)?.c !== voxel.c ? 1 : 0);
+        const score =
+          (6 - neighbours) * 2 +
+          xyBoundary * 1.5 +
+          curvature * 1.25 +
+          Math.min(3, materialBoundary) * 0.75;
         return { voxel, score };
       });
       scored.sort(
