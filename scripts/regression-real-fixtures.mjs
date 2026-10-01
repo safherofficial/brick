@@ -14,6 +14,9 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { imageToVoxels } from "../lib/image/engine.ts";
+import { VoxelVolume } from "../lib/voxelEngine.ts";
+import { exportObj, exportVox } from "../lib/voxelExport.ts";
+import { exportGlbTextured } from "../lib/voxelGlb.ts";
 
 const require = createRequire(import.meta.url);
 const jpeg = require("jpeg-js");
@@ -279,6 +282,43 @@ try {
         Number.isFinite(result.qualityControl.score) &&
         result.qualityControl.score >= 0 &&
         result.qualityControl.score <= 100
+    );
+
+    // Integration gate: take the exact real-fixture import output and push it
+    // through the same game-ready exporters used by the Builder UI. This does
+    // not replace the existing exporter regressions; it verifies that the real
+    // PNG/JPEG -> voxel importer contract is actually consumable downstream.
+    const volume = new VoxelVolume(48);
+    for (const voxel of result.voxels) {
+      if (volume.inBounds(voxel.x, voxel.y, voxel.z)) {
+        volume.apply(voxel.x, voxel.y, voxel.z, voxel.c);
+      }
+    }
+    const exportPalette = result.palette.length ? result.palette : ["#ffffff"];
+    const exportName = fixture.name.replace(/\\.[^.]+$/, "");
+
+    const glb = await exportGlbTextured(volume, exportPalette, {
+      name: exportName,
+      shape: result.shape
+    });
+    assert(
+      `real fixture exports to non-empty GLB: ${fixture.name}`,
+      glb instanceof Uint8Array && glb.length > 128 &&
+        new DataView(glb.buffer, glb.byteOffset, glb.byteLength).getUint32(0, true) === 0x46546c67
+    );
+
+    const vox = exportVox(volume, exportPalette);
+    assert(
+      `real fixture exports to valid VOX: ${fixture.name}`,
+      vox instanceof Uint8Array && vox.length > 16 &&
+        new TextDecoder().decode(vox.subarray(0, 4)) === "VOX "
+    );
+
+    const obj = exportObj(volume, exportPalette, { name: exportName });
+    assert(
+      `real fixture exports to non-empty OBJ/MTL: ${fixture.name}`,
+      typeof obj?.obj === "string" && /^v /m.test(obj.obj) &&
+        typeof obj?.mtl === "string" && obj.mtl.length > 0
     );
   }
 } finally {
