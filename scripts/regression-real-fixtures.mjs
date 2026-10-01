@@ -32,10 +32,10 @@ const fixtures = [
     gitBlobSha: "879a950aa77434e95d17385498bad4e2fc73c965"
   },
   {
-    name: "kenney_crate.png",
+    name: "kenney_character_wizard.png",
     mime: "image/png",
-    url: "https://raw.githubusercontent.com/shorepine/kenney/3694c6879e487c108f55677be7dd2ca75b07cc3b/2d/Brick%20Pack/Special/extra_crate.png",
-    gitBlobSha: "155df67042a9ec44852e8b2da5eba3e10dd287f3"
+    url: "https://raw.githubusercontent.com/shorepine/kenney/3694c6879e487c108f55677be7dd2ca75b07cc3b/2d/Block%20Pack/character_wizard.png",
+    gitBlobSha: "93928e4616a7556514ba349e88811214d3460729"
   },
   {
     name: "kenney_character_man.png",
