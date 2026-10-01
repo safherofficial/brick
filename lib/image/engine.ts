@@ -697,6 +697,7 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48, viewW
   else if (unique >= 120) target = Math.min(96, size + 16);
   return dominantPalette(samples, target);
 }
+
 function ditheredColor(
   rgb: [number, number, number],
   px: number,
@@ -1397,6 +1398,7 @@ function reconstructVisualHull(
           frontColor.g,
           frontColor.b
         ];
+
         if (sideRaster && sideBounds && side?.[ySide]?.[z]) {
           const sideX = sideBounds.minX + clamp(nz, 0, 1) * (sideBounds.maxX - sideBounds.minX);
           const sideY = sideBounds.minY + clamp(ny + sideYOffset, 0, 1) * (sideBounds.maxY - sideBounds.minY);
@@ -2106,7 +2108,8 @@ function buildNonModel(
           x,
           y,
           z,
-          c: nearestColor(            materialAwareDitheredColor(
+          c: nearestColor(
+            materialAwareDitheredColor(
               applySharpness(
                 [colorSample.r, colorSample.g, colorSample.b],
                 options.aiCategory === "swords" ? 1.18 : options.aiCategory === "guns" ? 1.08 : 1
@@ -2806,3 +2809,85 @@ export async function imagesToVoxels(
         frontRaster,
         frontMask,
         frontBounds,
+        normalized,
+        paletteValues,
+        palette,
+        frontDepth
+      );
+      const finished = useLocalAi
+        ? await finalizeLocalAi(singleView, normalized.volumeSize, frontMask, normalized.aiCategory, false)
+        : singleView;
+      const checked = await attachQualityControl(finished, frontMask, normalized.aiCategory);
+      return {
+        ...checked,
+        aiStatus: formatAiStatus(aiDiag, dimensions)
+      };
+    }
+
+    // Metrics + Y-align + optional depth clamp flag (ambiguous SIDE only).
+    let sideYOffset = 0;
+    try {
+      const { computeHullMetrics } = await import("@/lib/ai/importMetrics");
+      const { bestSideYShiftBins, sideYOffsetFromShift } = await import("@/lib/ai/viewAlign");
+      const metrics = computeHullMetrics(frontBounds, sideBounds);
+      normalized.sideAmbiguous = metrics.sideAmbiguous;
+      const align = bestSideYShiftBins(frontMask, frontBounds, sideMask, sideBounds);
+      const initialYOffset = sideYOffsetFromShift(align.shiftBins);
+      sideYOffset = refineSideYOffset(
+        frontMask,
+        frontBounds,
+        sideMask,
+        sideBounds,
+        initialYOffset
+      );
+    } catch {
+      sideYOffset = 0;
+    }
+
+    const frontConfidenceMap = buildReconstructionConfidenceMap(
+      frontMask,
+      frontMask[0]?.length ?? 0,
+      frontMask.length
+    );
+    const hull = reconstructVisualHull(
+      frontRaster,
+      frontMask,
+      frontBounds,
+      sideRaster,
+      sideMask,
+      sideBounds,
+      normalized,
+      paletteValues,
+      dimensions,
+      palette,
+      sideYOffset,
+      frontDepth,
+      frontConfidenceMap
+    );
+    const finished = useLocalAi
+      ? await finalizeLocalAi(hull, normalized.volumeSize, frontMask, normalized.aiCategory, true)
+      : hull;
+    const checked = await attachQualityControl(finished, frontMask, normalized.aiCategory);
+    return {
+      ...checked,
+      aiStatus: formatAiStatus(aiDiag, dimensions)
+    };
+  }
+
+  const flat = buildNonModel(
+    frontRaster,
+    frontMask,
+    frontBounds,
+    sideMask,
+    sideBounds,
+    normalized,
+    paletteValues,
+    palette,
+    frontDepth
+  );
+  const finished = useLocalAi
+    ? await finalizeLocalAi(flat, normalized.volumeSize, frontMask, normalized.aiCategory, Boolean(views.side))
+    : flat;
+  const checked = await attachQualityControl(finished, frontMask, normalized.aiCategory);
+  return { ...checked, aiStatus: formatAiStatus(aiDiag) };
+}
