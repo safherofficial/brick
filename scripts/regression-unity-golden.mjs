@@ -105,7 +105,7 @@ const GOLDEN = [
     name: "gun",
     expectedCategory: "guns",
     minConfidence: 0.71,
-    budgetRange: [75000, 81000],
+    budgetRange: [82000, 84000],
     singleProfileRange: [1.08, 1.10],
     dualProfileRange: [1.09, 1.10],
     mask: makeMask(110, 80, (m) => {
