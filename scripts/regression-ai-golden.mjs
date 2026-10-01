@@ -97,9 +97,7 @@ const engine = fs.readFileSync(new URL("../lib/image/engine.ts", import.meta.url
 
 assert(
   "FRONT-only MODEL routes through buildSingleViewModel",
-  engine.includes(
-    "const singleView = buildSingleViewModel(\n        frontRaster,\n        frontMask,\n        frontBounds,\n        normalized,"
-  )
+  /const singleView = buildSingleViewModel\(\s*frontRaster,\s*frontMask,\s*frontBounds,\s*normalized,/.test(engine)
 );
 const builder = fs.readFileSync(new URL("../components/builder/Builder.tsx", import.meta.url), "utf8");
 assert(
