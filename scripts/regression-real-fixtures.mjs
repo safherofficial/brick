@@ -2,7 +2,7 @@
  * Real raster fixture regression.
  *
  * Uses real PNG/JPEG bytes pinned to upstream commits, verifies the bytes,
- * decodes them with a real raster decoder, and feeds the decoded RGBA raster
+ * decodes them with pure-JS raster decoders, and feeds the decoded RGBA raster
  * through Brick's existing imageToVoxels() entry point.
  *
  * Run:
@@ -10,10 +10,14 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { imageToVoxels } from "../lib/image/engine.ts";
+
+const require = createRequire(import.meta.url);
+const jpeg = require("jpeg-js");
+const { PNG } = require("pngjs");
 
 const tempDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -75,132 +79,30 @@ function gitBlobSha(bytes) {
     .digest("hex");
 }
 
-function findDecoder() {
-  for (const candidate of [
-    { video: "ffmpeg", probe: "ffprobe" },
-    { video: "magick", probe: null },
-    { video: "convert", probe: null }
-  ]) {
-    const videoProbe = spawnSync(candidate.video, ["-version"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    if (videoProbe.status !== 0) continue;
-    if (candidate.probe) {
-      const probe = spawnSync(candidate.probe, ["-version"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-      if (probe.status !== 0) continue;
-    }
-    return candidate;
-  }
-  return null;
-}
+function decodeRaster(bytes, name) {
+  const extension = path.extname(name).toLowerCase();
 
-function decodeRaster(decoder, filePath, name) {
-  if (decoder.video === "ffmpeg") {
-    const probe = spawnSync(
-      decoder.probe,
-      [
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=width,height",
-        "-of",
-        "csv=p=0:s=x",
-        filePath
-      ],
-      { encoding: "utf8" }
-    );
-    if (probe.status !== 0) {
-      throw new Error(
-        `ffprobe failed for ${name}: ${probe.stderr || "unknown error"}`
-      );
-    }
-
-    const [widthText, heightText] = String(probe.stdout).trim().split("x");
-    const width = Number(widthText);
-    const height = Number(heightText);
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) {
-      throw new Error(`Invalid dimensions for ${name}: ${probe.stdout}`);
-    }
-
-    const raw = spawnSync(
-      decoder.video,
-      [
-        "-v",
-        "error",
-        "-i",
-        filePath,
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgba",
-        "pipe:1"
-      ],
-      { encoding: null }
-    );
-    if (raw.status !== 0) {
-      throw new Error(
-        `ffmpeg decode failed for ${name}: ${raw.stderr?.toString("utf8") || "unknown error"}`
-      );
-    }
-
-    const expectedBytes = width * height * 4;
-    if (raw.stdout.length !== expectedBytes) {
-      throw new Error(
-        `Decoded byte count mismatch for ${name}: ${raw.stdout.length} !== ${expectedBytes}`
-      );
-    }
-
+  if (extension === ".png") {
+    const decoded = PNG.sync.read(Buffer.from(bytes));
     return {
-      width,
-      height,
-      rgba: new Uint8ClampedArray(raw.stdout)
+      width: decoded.width,
+      height: decoded.height,
+      rgba: new Uint8ClampedArray(decoded.data)
     };
   }
 
-  const info = spawnSync(
-    decoder.video,
-    [filePath, "-auto-orient", "-format", "%w:%h", "info:"],
-    { encoding: "utf8" }
-  );
-  if (info.status !== 0) {
-    throw new Error(
-      `Raster identify failed for ${name}: ${info.stderr || "unknown error"}`
-    );
-  }
+  const decoded = jpeg.decode(Buffer.from(bytes), {
+    useTArray: true,
+    formatAsRGBA: true,
+    tolerantDecoding: false
+  });
 
-  const [widthText, heightText] = String(info.stdout).trim().split(":");
-  const width = Number(widthText);
-  const height = Number(heightText);
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) {
-    throw new Error(`Invalid dimensions for ${name}: ${info.stdout}`);
-  }
-
-  const raw = spawnSync(
-    decoder.video,
-    [filePath, "-auto-orient", "-depth", "8", "-alpha", "on", "RGBA:-"],
-    { encoding: null }
-  );
-  if (raw.status !== 0 || raw.stdout.length !== width * height * 4) {
-    throw new Error(
-      `Raster decode failed for ${name}: ${raw.stderr?.toString("utf8") || "invalid raw output"}`
-    );
-  }
-
-  return { width, height, rgba: new Uint8ClampedArray(raw.stdout) };
+  return {
+    width: decoded.width,
+    height: decoded.height,
+    rgba: new Uint8ClampedArray(decoded.data)
+  };
 }
-
-const decoder = findDecoder();
-assert(
-  "real PNG/JPEG decoder is available",
-  decoder !== null
-);
-if (!decoder) process.exit(1);
 
 const rasterByToken = new Map();
 let tokenId = 0;
@@ -217,19 +119,7 @@ globalThis.URL = {
     if (!(bytes instanceof Uint8Array)) {
       throw new Error(`Missing fixture bytes for ${file.name}`);
     }
-    const tempPath = path.join(
-      tempDir,
-      `decode-${process.pid}-${tokenId}-${file.name}`
-    );
-    fs.writeFileSync(tempPath, bytes);
-    try {
-      rasterByToken.set(
-        token,
-        decodeRaster(decoder, tempPath, file.name)
-      );
-    } finally {
-      fs.rmSync(tempPath, { force: true });
-    }
+    rasterByToken.set(token, decodeRaster(bytes, file.name));
     return token;
   },
   revokeObjectURL(token) {
@@ -299,9 +189,9 @@ globalThis.document = {
 try {
   for (const fixture of fixtures) {
     const bytes = await fetchBytes(fixture);
-    const digest = createHash("sha256").update(bytes).digest("hex");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
     console.log(
-      `FIXTURE ${fixture.name} sha256=${digest} bytes=${bytes.length}`
+      `FIXTURE ${fixture.name} sha256=${sha256} bytes=${bytes.length}`
     );
 
     assert(
@@ -313,8 +203,8 @@ try {
       bytes.length > 256
     );
 
-    const ext = path.extname(fixture.name).toLowerCase();
-    if (ext === ".png") {
+    const extension = path.extname(fixture.name).toLowerCase();
+    if (extension === ".png") {
       const signature = [137, 80, 78, 71, 13, 10, 26, 10];
       assert(
         `PNG signature: ${fixture.name}`,
@@ -329,6 +219,15 @@ try {
           bytes.at(-1) === 0xd9
       );
     }
+
+    const decoded = decodeRaster(bytes, fixture.name);
+    assert(
+      `decoded raster is valid: ${fixture.name}`,
+      decoded.width > 1 &&
+        decoded.height > 1 &&
+        decoded.rgba.length === decoded.width * decoded.height * 4 &&
+        decoded.rgba.some((value) => value !== 0)
+    );
 
     const file = new File([bytes], fixture.name, { type: fixture.mime });
     file._fixtureBytes = bytes;
