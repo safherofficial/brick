@@ -27,10 +27,10 @@ function mask(w, h, predicate) {
   );
 }
 
-const swordMask = mask(32, 96, (x, y) => {
-  const p = y / 95;
-  const half = Math.max(1, Math.round(5 - 3 * p));
-  return Math.abs(x - 15.5) <= half || (y >= 78 && y <= 84 && Math.abs(x - 15.5) <= 8);
+const swordMask = mask(42, 170, (x, y) => {
+  const p = y / 169;
+  const half = Math.max(1, Math.round(8 - 7 * p));
+  return Math.abs(x - 21) <= half;
 });
 
 const rifleMask = mask(128, 36, (x, y) => {
