@@ -136,6 +136,17 @@ assert(
     .includes('output === "2d" || output === "25d"')
 );
 
+const qualityControl = fs.readFileSync(new URL("../lib/image/qualityControl.ts", import.meta.url), "utf8");
+assert(
+  "voxel QC surface analysis uses O(1) occupancy lookups",
+  qualityControl.includes("const occupied = new Set(voxels.map(voxelKey));") &&
+    qualityControl.includes("occupied.has((v.x + 1) + ":"")
+);
+assert(
+  "voxel QC exposes detail density and surface ratio",
+  qualityControl.includes("detailDensity") && qualityControl.includes("surfaceRatio")
+);
+
 if (failed) {
   console.error(`\\n${failed} AI golden assertion(s) failed`);
   process.exit(1);
