@@ -175,6 +175,11 @@ export function mergeTinyColorRegions(voxels: ImageVoxel[], minSize = 6): ImageV
           bestN = n;
         }
       }
+      // P16.4: only collapse a tiny color island when the local 6-neighbour
+      // evidence is strong enough to identify it as noise. A 1-voxel material
+      // accent sitting on a boundary often has a 3/3 or 2/3 split and must
+      // survive instead of being flattened into the surrounding material.
+      if (best === color || bestN < 4) continue;
       const target = index.get(key(v.x, v.y, v.z));
       if (target) target.c = best;
     }
