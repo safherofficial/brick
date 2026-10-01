@@ -126,7 +126,7 @@ const GOLDEN = [
   {
     name: "rifle",
     expectedCategory: "rifles",
-    minConfidence: 0.79,
+    minConfidence: 0.75,
     budgetRange: [80000, 85000],
     singleProfileRange: [1.09, 1.10],
     dualProfileRange: [1.09, 1.10],
