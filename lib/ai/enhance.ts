@@ -1,7 +1,7 @@
 // lib/ai/enhance.ts
 
 import type { AiCategory } from "@/lib/ai/aiCategories";
-import { aiAvailable, loadModel } from "@/lib/ai/runtime";
+import { aiAvailable, loadModel, runModel } from "@/lib/ai/runtime";
 
 export type AiRaster = {
   width: number;
@@ -339,7 +339,7 @@ async function runMap(
       size.width
     ]
   );
-  const result = await session.run({ [inputName]: tensor });
+  const result = await runModel(id, session, { [inputName]: tensor });
   const output = result[session.outputNames[0]] as unknown as {
     dims: readonly number[];
     data: Float32Array;
