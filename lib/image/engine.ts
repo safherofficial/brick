@@ -660,6 +660,28 @@ function dominantPalette(
   return chosen.map(([r, g, b]) => hexOf(r, g, b));
 }
 
+function paletteMaterialWeight(raster: Raster, x: number, y: number): number {
+  const center = sampleAt(raster, x, y);
+  if (!center.visible) return 1;
+  let contrast = 0;
+  let samples = 0;
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const neighbour = sampleAt(raster, x + dx, y + dy);
+    if (!neighbour.visible) continue;
+    contrast += Math.sqrt(
+      rgbDistance(
+        [center.r, center.g, center.b],
+        [neighbour.r, neighbour.g, neighbour.b]
+      )
+    );
+    samples += 1;
+  }
+  if (!samples) return 1;
+  // Preserve small but meaningful material boundaries in the adaptive palette.
+  // The boost is bounded so large flat regions still dominate the palette.
+  return 1 + clamp((contrast / samples - 18) / 70, 0, 1.6);
+}
+
 function createPalette(rasters: Raster[], masks: boolean[][][], size = 48, viewWeights?: number[]) {
   const buckets = new Map<string, { r: number; g: number; b: number; weight: number }>();
 
@@ -682,9 +704,11 @@ function createPalette(rasters: Raster[], masks: boolean[][][], size = 48, viewW
         const g = Math.round(s.g / 4) * 4;
         const b = Math.round(s.b / 4) * 4;
         const key = `${r}:${g}:${b}`;
+        const materialWeight = paletteMaterialWeight(raster, x, y);
+        const sampleWeight = viewWeight * materialWeight;
         const existing = buckets.get(key);
-        if (existing) existing.weight += viewWeight;
-        else buckets.set(key, { r, g, b, weight: viewWeight });
+        if (existing) existing.weight += sampleWeight;
+        else buckets.set(key, { r, g, b, weight: sampleWeight });
       }
     }
   }
