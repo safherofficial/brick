@@ -219,6 +219,62 @@ function validateGlbBinaryContract(glb) {
   return true;
 }
 
+function validateGlbRuntimeReferences(gltf) {
+  const accessors = gltf.accessors ?? [];
+  const materials = gltf.materials ?? [];
+  const meshes = gltf.meshes ?? [];
+  const nodes = gltf.nodes ?? [];
+  const scenes = gltf.scenes ?? [];
+
+  const validIndex = (value, length) =>
+    Number.isInteger(value) && value >= 0 && value < length;
+
+  for (const mesh of meshes) {
+    if (!Array.isArray(mesh.primitives) || mesh.primitives.length === 0) {
+      return false;
+    }
+    for (const primitive of mesh.primitives) {
+      if (!validIndex(primitive.indices, accessors.length)) {
+        return false;
+      }
+      if (primitive.material !== undefined && !validIndex(primitive.material, materials.length)) {
+        return false;
+      }
+      if (!primitive.attributes || typeof primitive.attributes !== "object") {
+        return false;
+      }
+      for (const accessorIndex of Object.values(primitive.attributes)) {
+        if (!validIndex(accessorIndex, accessors.length)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  for (const node of nodes) {
+    if (node.mesh !== undefined && !validIndex(node.mesh, meshes.length)) {
+      return false;
+    }
+    if (node.children !== undefined) {
+      if (!Array.isArray(node.children) || node.children.some((child) => !validIndex(child, nodes.length))) {
+        return false;
+      }
+    }
+  }
+
+  if (!validIndex(gltf.scene, scenes.length)) {
+    return false;
+  }
+
+  for (const scene of scenes) {
+    if (!Array.isArray(scene.nodes) || scene.nodes.some((node) => !validIndex(node, nodes.length))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function parseGlbJson(glb) {
   const bytes =
     glb instanceof ArrayBuffer
@@ -449,6 +505,10 @@ try {
     );
 
     const gltf = parseGlbJson(glb);
+    assert(
+      `GLB mesh/node/scene reference contract: ${fixture.name}`,
+      validateGlbRuntimeReferences(gltf)
+    );
     const brick = gltf.asset?.extras?.brick;
     const nodeNames = (gltf.nodes ?? []).map((node) => node.name);
     const sampler = gltf.samplers?.[0];
