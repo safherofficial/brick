@@ -275,6 +275,31 @@ function validateGlbRuntimeReferences(gltf) {
   return true;
 }
 
+function validateGlbTextureMaterialContract(gltf) {
+  const materials = gltf.materials ?? [];
+  const textures = gltf.textures ?? [];
+  const images = gltf.images ?? [];
+  const samplers = gltf.samplers ?? [];
+
+  for (const material of materials) {
+    const baseColor = material.pbrMetallicRoughness?.baseColorTexture;
+    if (!baseColor || !Number.isInteger(baseColor.index) || baseColor.index < 0 || baseColor.index >= textures.length) {
+      return false;
+    }
+    const texture = textures[baseColor.index];
+    if (!Number.isInteger(texture.source) || texture.source < 0 || texture.source >= images.length) {
+      return false;
+    }
+    if (texture.sampler !== undefined) {
+      if (!Number.isInteger(texture.sampler) || texture.sampler < 0 || texture.sampler >= samplers.length) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 function parseGlbJson(glb) {
   const bytes =
     glb instanceof ArrayBuffer
@@ -508,6 +533,10 @@ try {
     assert(
       `GLB mesh/node/scene reference contract: ${fixture.name}`,
       validateGlbRuntimeReferences(gltf)
+    );
+    assert(
+      `GLB texture/material linkage contract: ${fixture.name}`,
+      validateGlbTextureMaterialContract(gltf)
     );
     const brick = gltf.asset?.extras?.brick;
     const nodeNames = (gltf.nodes ?? []).map((node) => node.name);
