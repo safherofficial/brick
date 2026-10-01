@@ -295,7 +295,7 @@ try {
       }
     }
     const exportPalette = result.palette.length ? result.palette : ["#ffffff"];
-    const exportName = fixture.name.replace(/\\.[^.]+$/, "");
+    const exportName = fixture.name.replace(/\.[^.]+$/, "");
 
     const glb = await exportGlbTextured(volume, exportPalette, {
       name: exportName,
