@@ -1775,13 +1775,13 @@ function buildAdaptiveSingleViewVolume(
       const rowMass = rowRunRatios[y]?.[x] ?? 0;
       const columnMass = columnRunRatios[y]?.[x] ?? 0;
       const silhouetteDensity = localDensity[y]?.[x] ?? 0;
-      const centerDistance = Math.abs(nx - 0.5) * 2;
-      const centerMass = 1 - Math.pow(centerDistance, 1.35);
+      // Thickness follows measured silhouette structure, not image-center bias.
+      // This keeps asymmetric props thin where the source is thin and dense where
+      // the actual contour supports volume.
       const structuralMass = clamp(
-        rowMass * 0.42 +
-          columnMass * 0.18 +
-          silhouetteDensity * 0.25 +
-          centerMass * 0.15,
+        rowMass * 0.45 +
+          columnMass * 0.25 +
+          silhouetteDensity * 0.30,
         0.08,
         1
       );
