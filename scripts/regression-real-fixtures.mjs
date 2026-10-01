@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { imageToVoxels } from "../lib/image/engine.ts";
 import { VoxelVolume } from "../lib/voxelEngine.ts";
-import { exportObj, exportVox } from "../lib/voxelExport.ts";
+import { exportObj, exportVox, importVox } from "../lib/voxelExport.ts";
 import { exportGlbTextured } from "../lib/voxelGlb.ts";
 
 const require = createRequire(import.meta.url);
@@ -377,6 +377,20 @@ try {
       `real fixture exports to valid VOX: ${fixture.name}`,
       vox instanceof Uint8Array && vox.length > 16 &&
         new TextDecoder().decode(vox.subarray(0, 4)) === "VOX "
+    );
+
+    const importedVox = importVox(vox.buffer.slice(vox.byteOffset, vox.byteOffset + vox.byteLength));
+    assert(
+      `VOX round-trip preserves voxels: ${fixture.name}`,
+      importedVox.voxels.length === volume.count &&
+        importedVox.voxels.length > 0 &&
+        importedVox.voxels.every(
+          (voxel) =>
+            Number.isInteger(voxel.x) &&
+            Number.isInteger(voxel.y) &&
+            Number.isInteger(voxel.z) &&
+            Number.isInteger(voxel.c)
+        )
     );
 
     const obj = exportObj(volume, exportPalette, { name: exportName });
