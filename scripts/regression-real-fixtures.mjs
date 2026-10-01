@@ -63,13 +63,21 @@ function assert(name, condition) {
 }
 
 async function fetchBytes(fixture) {
-  const response = await fetch(fixture.url);
-  if (!response.ok) {
-    throw new Error(
-      `Fixture download failed: ${fixture.name} HTTP ${response.status}`
-    );
+  // The importer test later replaces globalThis.URL with a browser mock.
+  // Keep native URL handling in place while fetching the external fixture.
+  const previousUrl = globalThis.URL;
+  globalThis.URL = originalUrl;
+  try {
+    const response = await fetch(fixture.url);
+    if (!response.ok) {
+      throw new Error(
+        `Fixture download failed: ${fixture.name} HTTP ${response.status}`
+      );
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  } finally {
+    globalThis.URL = previousUrl;
   }
-  return new Uint8Array(await response.arrayBuffer());
 }
 
 function gitBlobSha(bytes) {
