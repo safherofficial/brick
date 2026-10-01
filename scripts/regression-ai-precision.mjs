@@ -370,4 +370,15 @@ if (failed) {
   process.exit(1);
 }
 
-console.log("\nAll P15/P16/P17/P18/P36/P37 AI precision regressions passed.");
+const engineSource = fs.readFileSync(new URL("../lib/image/engine.ts", import.meta.url), "utf8");
+assert(
+  "P38 spatial budget scores material boundaries",
+  engineSource.includes("const materialBoundary =") &&
+    engineSource.includes("Math.min(3, materialBoundary) * 0.75")
+);
+assert(
+  "P38 material-boundary bonus remains bounded",
+  engineSource.includes("Math.min(3, materialBoundary)")
+);
+
+console.log("\nAll P15/P16/P17/P18/P36/P37/P38 AI precision regressions passed.");
