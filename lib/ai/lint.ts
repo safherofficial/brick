@@ -198,7 +198,7 @@ export function dropSpikes(voxels: ImageVoxel[]): ImageVoxel[] {
     if (occupied.has(key(v.x, v.y - 1, v.z))) face += 1;
     if (occupied.has(key(v.x, v.y, v.z + 1))) face += 1;
     if (occupied.has(key(v.x, v.y, v.z - 1))) face += 1;
-    return face >= 1;
+    return face >= 1 || v.y === 0;
   });
   return kept.length ? kept : voxels;
 }
