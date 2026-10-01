@@ -1672,7 +1672,15 @@ function buildAdaptiveSingleViewVolume(
       const px = bounds.minX + nx * (bounds.maxX - bounds.minX);
       const py = bounds.minY + ny * (bounds.maxY - bounds.minY);
       const d = depthMap
-        ? adaptiveDepthAt(depthMap, raster, mask, px, py, options.aiCategory, adaptiveDepthGrid)
+        ? adaptiveDepthAt(
+            depthMap,
+            raster,
+            mask,
+            px,
+            py,
+            options.aiCategory,
+            adaptiveDepthGrid
+          )
         : 0.5;
 
       const rowMass = rowRunRatios[y]?.[x] ?? 0;
