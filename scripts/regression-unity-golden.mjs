@@ -108,12 +108,19 @@ const GOLDEN = [
     budgetRange: [75000, 81000],
     singleProfileRange: [1.08, 1.10],
     dualProfileRange: [1.09, 1.10],
-    mask: makeMask(96, 32, (m) => {
-      for (let y = 12; y < 18; y += 1) {
-        for (let x = 12; x < 84; x += 1) m[y][x] = true;
+    mask: makeMask(110, 80, (m) => {
+      for (let y = 28; y <= 37; y += 1) {
+        for (let x = 18; x <= 96; x += 1) m[y][x] = true;
       }
-      m[2][48] = true;
-      m[29][48] = true;
+      for (let y = 38; y <= 66; y += 1) {
+        for (let x = 60; x <= 79; x += 1) m[y][x] = true;
+      }
+      for (let y = 36; y <= 48; y += 1) {
+        for (let x = 54; x <= 63; x += 1) m[y][x] = true;
+      }
+      for (let y = 31; y <= 35; y += 1) {
+        for (let x = 96; x <= 108; x += 1) m[y][x] = true;
+      }
     })
   },
   {
