@@ -113,6 +113,13 @@ assert(
   "FRONT remains the hard silhouette anchor",
   engine.includes("if (!sourceMask[y]?.[x]) continue;")
 );
+assert(
+  "single-view thickness is driven by silhouette structure",
+  engine.includes("rowMass * 0.45") &&
+    engine.includes("columnMass * 0.25") &&
+    engine.includes("silhouetteDensity * 0.30") &&
+    !engine.includes("const centerMass =")
+);
 
 assert(
   "2D uses premium 96-color source palette",
