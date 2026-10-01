@@ -98,8 +98,13 @@ const engine = fs.readFileSync(new URL("../lib/image/engine.ts", import.meta.url
 assert(
   "FRONT-only MODEL routes through buildSingleViewModel",
   engine.includes(
-    "const result = buildSingleViewModel(\n      raster,\n      mask,\n      bounds,\n      normalized,"
+    "const singleView = buildSingleViewModel(\n        frontRaster,\n        frontMask,\n        frontBounds,\n        normalized,"
   )
+);
+const builder = fs.readFileSync(new URL("../components/builder/Builder.tsx", import.meta.url), "utf8");
+assert(
+  "PNG/JPEG Builder default is MODEL",
+  builder.includes('const [imageMode, setImageMode] = useState<LocalImageMode>("model")')
 );
 assert(
   "single-view MODEL keeps volumetric fallback for non-revolved assets",
