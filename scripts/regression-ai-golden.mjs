@@ -126,6 +126,11 @@ assert(
   "2.5D supports eight stable depth planes",
   engine.includes("Math.min(8, Math.round(options.heightMax))")
 );
+
+assert(
+  "MODEL uses premium 96-color source palette",
+  engine.includes('normalized.mode === "model" ? 96')
+);
 assert(
   "2D defaults to no synthetic outline",
   engine.includes('normalized.outline === undefined) normalized.outline = false')
