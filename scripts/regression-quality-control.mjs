@@ -12,7 +12,7 @@ const checks = [
   ["reject gate is conservative", /const hardFailure = retention < 0\.42/.test(source)],
   ["repair gate exists", /const repairable =/.test(source)],
   ["safe integrity repair exists", /export function repairVoxelIntegrity/.test(source)],
-  ["repair only wins with material score improvement", /initialQuality\.score \+ 3/.test(engine)]
+  ["repair is confidence-gated", /repairDelta = lowConfidenceRatio >= 0\.35 \? 5 : lowConfidenceRatio >= 0\.18 \? 4 : 3/.test(engine) && /repairedQuality\.score >= initialQuality\.score \+ repairDelta/.test(engine)]
 ];
 
 for (const [name, ok] of checks) {
