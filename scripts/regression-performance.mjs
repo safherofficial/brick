@@ -12,7 +12,7 @@ function ok(label, value) {
 
 ok('adaptive depth is cached on the source grid', /buildAdaptiveDepthGrid\(/.test(engineSource));
 ok('adaptive depth callers pass the cache',
-  ((engineSource.match(/adaptiveDepthAt\\(/g) ?? []).length - 1) === 4 && engineSource.includes('options.aiCategory,\n        adaptiveDepthGrid'));
+  ((engineSource.match(/adaptiveDepthAt\(/g) ?? []).length - 1) === 4 && engineSource.includes('options.aiCategory,\n        adaptiveDepthGrid'));
 ok(
   'Local AI reuses one source Canvas',
   /const sourceCanvas\s*=\s*wantSegment\s*\|\|\s*wantDepth\s*\?\s*rasterToCanvas\(raster\)\s*:\s*null/.test(enhanceSource)
