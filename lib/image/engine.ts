@@ -1650,6 +1650,9 @@ function buildSingleViewModel(
   // categories always retain the normal silhouette/depth pipeline.
   const revolve = options.aiCategory === "objects" ? guessRevolve(sourceMask) : null;
   if (!revolve || revolve.confidence < 0.82) {
+    // Generic FRONT-only MODEL keeps the volumetric contract even when the
+    // silhouette is not rotationally inferable. The existing solid/depth
+    // reconstruction remains the conservative source of hidden geometry.
     return buildNonModel(
       raster,
       mask,
@@ -2596,13 +2599,11 @@ export async function imagesToVoxels(
       // FRONT-only MODEL: keep the MODEL contract but reconstruct a volumetric
       // asset from the segmented FRONT, category profile and local depth hint.
       // FRONT + SIDE continues through the existing true visual-hull path.
-      const singleView = buildNonModel(
+      const singleView = buildSingleViewModel(
         frontRaster,
         frontMask,
         frontBounds,
-        undefined,
-        null,
-        { ...normalized, mode: "solid" },
+        normalized,
         paletteValues,
         palette,
         frontDepth
