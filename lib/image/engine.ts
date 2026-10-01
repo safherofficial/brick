@@ -1636,28 +1636,60 @@ function buildLocalForegroundDensity(mask: boolean[][]): number[][] {
   const density = Array.from({ length: h }, () => Array(w).fill(0));
   if (!w || !h) return density;
 
-  // Local occupancy is a silhouette-aware signal. Unlike distance from the
-  // image bounds, it follows the actual contour and therefore works for
-  // centered, off-center, concave and irregular props alike.
+  // Use an integral image so the 5x5 occupancy window stays O(width*height)
+  // instead of scanning up to 24 neighbours for every foreground pixel.
+  const integral = Array.from({ length: h + 1 }, () => Array(w + 1).fill(0));
+  for (let y = 0; y < h; y += 1) {
+    let rowSum = 0;
+    for (let x = 0; x < w; x += 1) {
+      rowSum += mask[y]?.[x] ? 1 : 0;
+      integral[y + 1][x + 1] = integral[y][x + 1] + rowSum;
+    }
+  }
+
+  const rectSum = (x0: number, y0: number, x1: number, y1: number) =>
+    integral[y1 + 1][x1 + 1] -
+    integral[y0][x1 + 1] -
+    integral[y1 + 1][x0] +
+    integral[y0][x0];
+
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
       if (!mask[y]?.[x]) continue;
-      let foreground = 0;
-      let samples = 0;
-      for (let dy = -2; dy <= 2; dy += 1) {
-        for (let dx = -2; dx <= 2; dx += 1) {
-          if (dx === 0 && dy === 0) continue;
-          const xx = x + dx;
-          const yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-          samples += 1;
-          if (mask[yy]?.[xx]) foreground += 1;
-        }
-      }
-      density[y][x] = foreground / Math.max(1, samples);
+      const x0 = Math.max(0, x - 2);
+      const y0 = Math.max(0, y - 2);
+      const x1 = Math.min(w - 1, x + 2);
+      const y1 = Math.min(h - 1, y + 2);
+      const samples = Math.max(1, (x1 - x0 + 1) * (y1 - y0 + 1) - 1);
+      density[y][x] = (rectSum(x0, y0, x1, y1) - 1) / samples;
     }
   }
   return density;
+}
+
+function materialEdgeFactor(raster: Raster, x: number, y: number) {
+  const center = sampleAt(raster, x, y);
+  if (!center.visible) return 1;
+
+  let contrast = 0;
+  let samples = 0;
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const neighbour = sampleAt(raster, x + dx, y + dy);
+    if (!neighbour.visible) continue;
+    contrast += Math.sqrt(
+      rgbDistance(
+        [center.r, center.g, center.b],
+        [neighbour.r, neighbour.g, neighbour.b]
+      )
+    );
+    samples += 1;
+  }
+
+  const averageContrast = contrast / Math.max(1, samples);
+  // Strong local color changes are likely material boundaries. Reduce Bayer
+  // dithering there so a palette approximation does not invent a false band
+  // across two distinct materials.
+  return clamp(1 - clamp((averageContrast - 22) / 100, 0, 0.62), 0.38, 1);
 }
 
 function buildAdaptiveSingleViewVolume(
@@ -1747,7 +1779,8 @@ function buildAdaptiveSingleViewVolume(
           applySharpness([frontColor.r, frontColor.g, frontColor.b], sharpness),
           x,
           y,
-          options.aiCategory === "swords" || options.aiCategory === "guns" ? 4 : 7
+          (options.aiCategory === "swords" || options.aiCategory === "guns" ? 4 : 7) *
+            materialEdgeFactor(raster, px, py)
         ),
         paletteValues
       );
