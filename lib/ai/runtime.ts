@@ -15,6 +15,7 @@ type RuntimeModule = typeof import("onnxruntime-web");
 const LOCAL_MODELS: Record<AiModelId, string[]> = {
   segment: [
     "/models/birefnet-lite.onnx",
+    "/models/isnet-general-use-q8.onnx",
     "/models/u2netp.onnx",
     "/models/rmbg.onnx"
   ],
@@ -42,7 +43,6 @@ const loadedBackends = new Map<AiModelId, "webgpu" | "wasm">();
 const inferenceTails = new Map<AiModelId, Promise<void>>();
 
 const ORT_WASM_LOCAL = "/ort/";
-const ORT_WASM_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
 
 function resetModel(id: AiModelId) {
   sessions.delete(id);
@@ -169,9 +169,11 @@ export async function loadModel(id: AiModelId) {
     // browsers. CPU-only browsers retain U2NetP/RMBG as the fast/stable path.
     const candidates =
       id === "segment" && !webGpu
-        ? baseCandidates.filter((url) => !url.includes("birefnet")).concat(
-            baseCandidates.filter((url) => url.includes("birefnet"))
-          )
+        ? [
+            ...baseCandidates.filter((url) => url.includes("isnet")),
+            ...baseCandidates.filter((url) => url.includes("u2net") || url.includes("rmbg")),
+            ...baseCandidates.filter((url) => url.includes("birefnet"))
+          ]
         : baseCandidates;
 
     for (const url of candidates) {
@@ -196,15 +198,8 @@ export async function loadModel(id: AiModelId) {
         loadedBackends.set(id, "wasm");
         return session;
       } catch {
-        try {
-          const ort = await loadOrt(false);
-          const session = await createSession(ort, url, false, ORT_WASM_CDN);
-          loadedPaths.set(id, url);
-          loadedBackends.set(id, "wasm");
-          return session;
-        } catch {
-          // Keep trying the next local model candidate.
-        }
+        // Keep trying the next local model candidate. Runtime assets are
+        // always served from the app itself; there is no CDN inference/runtime fallback.
       }
     }
 
