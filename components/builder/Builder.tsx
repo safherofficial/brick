@@ -170,6 +170,21 @@ export default function Builder() {
   useEffect(() => {
     refreshCredits();
   }, [refreshCredits]);
+
+  useEffect(() => {
+    const start = () => {
+      void import("@/lib/ai/runtime").then(({ preloadAiModels }) => {
+        preloadAiModels();
+      });
+    };
+    const idle = "requestIdleCallback" in window
+      ? window.requestIdleCallback(start, { timeout: 1200 })
+      : window.setTimeout(start, 450);
+    return () => {
+      if (typeof idle === "number") window.clearTimeout(idle);
+      else window.cancelIdleCallback?.(idle);
+    };
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
@@ -204,6 +219,8 @@ export default function Builder() {
           : await imageToVoxels(views.front, opts);
         if (job !== imageJobRef.current) return;
         if (!result.voxels.length) throw new Error("Empty image");
+        setPendingHash(await hashJob);
+        if (job !== imageJobRef.current) return;
         setPendingImage(result);
         const tag =
           opts.mode === "model" && views.side
@@ -247,7 +264,9 @@ export default function Builder() {
         }
         setFrontFile(file);
         setPendingName(file.name.replace(/\.(png|jpe?g|webp)$/i, ""));
-        setPendingHash(await hashImageFile(file));
+        // Hashing and image reconstruction are independent. Start them
+        // together so input latency is max(hash, process), not hash + process.
+        const hashJob = hashImageFile(file);
         if (job !== imageJobRef.current) return;
         const opts = imageOptions();
         if (opts.mode === "model" && !sideFile) {
