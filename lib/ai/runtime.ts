@@ -11,7 +11,7 @@ export type AiModelId = "segment" | "depth";
 
 type RuntimeModule = typeof import("onnxruntime-web");
 
-/** Local-first. Remote URLs only outside production (dev fallback). */
+/** Production inference is fully local: models are vendored by the build step. */
 const LOCAL_MODELS: Record<AiModelId, string[]> = {
   segment: [
     "/models/birefnet-lite.onnx",
@@ -25,18 +25,9 @@ const LOCAL_MODELS: Record<AiModelId, string[]> = {
   ]
 };
 
-const REMOTE_MODELS: Record<AiModelId, string[]> = {
-  segment: [
-    "https://huggingface.co/Heliosoph/u2net-onnx/resolve/main/u2netp.onnx",
-    "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
-  ],
-  depth: ["https://huggingface.co/Heliosoph/midas-small-onnx/resolve/main/midas_v21_small_256.onnx"]
-};
 
 function modelCandidates(id: AiModelId): string[] {
-  const local = LOCAL_MODELS[id];
-  if (process.env.NODE_ENV === "production") return local;
-  return [...local, ...REMOTE_MODELS[id]];
+  return LOCAL_MODELS[id];
 }
 
 export const MODEL_FILES: Record<AiModelId, string[]> = {
@@ -172,8 +163,16 @@ export export async function loadModel(id: AiModelId) {
 
   const job = (async () => {
     if (!localAiSupported()) return null;
-    const candidates = modelCandidates(id);
+    const baseCandidates = modelCandidates(id);
     const webGpu = supportsWebGpu();
+    // BiRefNet-lite is the high-quality segmentation tier for GPU-capable
+    // browsers. CPU-only browsers retain U2NetP/RMBG as the fast/stable path.
+    const candidates =
+      id === "segment" && !webGpu
+        ? baseCandidates.filter((url) => !url.includes("birefnet")).concat(
+            baseCandidates.filter((url) => url.includes("birefnet"))
+          )
+        : baseCandidates;
 
     for (const url of candidates) {
       if (!(await probe(url))) continue;
