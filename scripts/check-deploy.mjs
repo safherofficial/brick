@@ -34,7 +34,8 @@ const runtimeHasOnlyLocalModelCandidates =
   runtime.includes("function modelCandidates") &&
   runtime.includes("return LOCAL_MODELS[id];") &&
   runtime.includes('"/models/') &&
-  !/https?:\\/\\/[^"'\`\\s]+/i.test(runtime);
+  !runtime.includes("http://") &&
+  !runtime.includes("https://");
 
 check("production models stay local", runtimeHasOnlyLocalModelCandidates);
 check("ONNX load timeout exists", runtime.includes("ONNX_LOAD_TIMEOUT_MS"));
