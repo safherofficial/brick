@@ -9,10 +9,20 @@ import { localAiSupported } from "@/lib/prod/compat";
 
 export type AiModelId = "segment" | "depth";
 
+type RuntimeModule = typeof import("onnxruntime-web");
+
 /** Local-first. Remote URLs only outside production (dev fallback). */
 const LOCAL_MODELS: Record<AiModelId, string[]> = {
-  segment: ["/models/u2netp.onnx", "/models/rmbg.onnx"],
-  depth: ["/models/midas-small.onnx", "/models/depth-small.onnx"]
+  segment: [
+    "/models/birefnet-lite.onnx",
+    "/models/u2netp.onnx",
+    "/models/rmbg.onnx"
+  ],
+  depth: [
+    "/models/depth-anything-v2-small-q4f16.onnx",
+    "/models/midas-small.onnx",
+    "/models/depth-small.onnx"
+  ]
 };
 
 const REMOTE_MODELS: Record<AiModelId, string[]> = {
@@ -36,6 +46,7 @@ export const MODEL_FILES: Record<AiModelId, string[]> = {
 
 const sessions = new Map<AiModelId, Promise<InferenceSession | null>>();
 const resolved = new Map<AiModelId, Promise<string | null>>();
+const loadedPaths = new Map<AiModelId, string>();
 const inferenceTails = new Map<AiModelId, Promise<void>>();
 
 const ORT_WASM_LOCAL = "/ort/";
@@ -44,6 +55,18 @@ const ORT_WASM_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/"
 function resetModel(id: AiModelId) {
   sessions.delete(id);
   resolved.delete(id);
+  loadedPaths.delete(id);
+}
+
+function supportsWebGpu() {
+  return typeof navigator !== "undefined" && "gpu" in navigator;
+}
+
+async function loadOrt(preferWebGpu: boolean): Promise<RuntimeModule> {
+  if (preferWebGpu) {
+    return (await import("onnxruntime-web/webgpu")) as RuntimeModule;
+  }
+  return (await import("onnxruntime-web")) as RuntimeModule;
 }
 
 async function probe(url: string) {
@@ -116,17 +139,23 @@ function configureWasm(
 }
 
 async function createSession(
-  ort: typeof import("onnxruntime-web"),
+  ort: RuntimeModule,
   url: string,
+  preferWebGpu: boolean,
   wasmPaths: string
 ): Promise<InferenceSession> {
-  configureWasm(ort, wasmPaths);
-  const options = {
-    executionProviders: ["wasm"] as string[],
-    graphOptimizationLevel: "all" as const,
+  if (!preferWebGpu) configureWasm(ort, wasmPaths);
+  const options: Record<string, unknown> = {
+    executionProviders: [preferWebGpu ? "webgpu" : "wasm"],
+    graphOptimizationLevel: "all",
     enableCpuMemArena: true,
     enableMemPattern: true
   };
+  if (preferWebGpu) {
+    options.preferredLayout = "NCHW";
+    options.powerPreference = "high-performance";
+    if (url.includes("birefnet")) options.enableGraphCapture = true;
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return withTimeout(
     ort.InferenceSession.create(url, options as any),
@@ -135,30 +164,42 @@ async function createSession(
   );
 }
 
-export async function loadModel(id: AiModelId) {
+export export async function loadModel(id: AiModelId) {
   const existing = sessions.get(id);
   if (existing) return existing;
 
   const job = (async () => {
     if (!localAiSupported()) return null;
     const candidates = modelCandidates(id);
-    let ort: typeof import("onnxruntime-web");
-    try {
-      ort = await import("onnxruntime-web");
-    } catch {
-      return null;
-    }
+    const webGpu = supportsWebGpu();
 
     for (const url of candidates) {
       if (!(await probe(url))) continue;
+
+      if (webGpu) {
+        try {
+          const ort = await loadOrt(true);
+          const session = await createSession(ort, url, true, ORT_WASM_LOCAL);
+          loadedPaths.set(id, url);
+          return session;
+        } catch {
+          // Fall through to the CPU implementation.
+        }
+      }
+
       try {
-        return await createSession(ort, url, ORT_WASM_LOCAL);
+        const ort = await loadOrt(false);
+        const session = await createSession(ort, url, false, ORT_WASM_LOCAL);
+        loadedPaths.set(id, url);
+        return session;
       } catch {
         try {
-          return await createSession(ort, url, ORT_WASM_CDN);
+          const ort = await loadOrt(false);
+          const session = await createSession(ort, url, false, ORT_WASM_CDN);
+          loadedPaths.set(id, url);
+          return session;
         } catch {
-          // Keep trying the next local/remote candidate instead of pinning
-          // the whole model to a single broken or incompatible file.
+          // Keep trying the next local model candidate.
         }
       }
     }
@@ -171,6 +212,10 @@ export async function loadModel(id: AiModelId) {
     if (!session) resetModel(id);
   });
   return job;
+}
+
+export function loadedModelPath(id: AiModelId) {
+  return loadedPaths.get(id) ?? null;
 }
 
 
