@@ -271,6 +271,9 @@ export default function Builder() {
           : await imageToVoxels(file, opts);
         if (job !== imageJobRef.current) return;
         if (!result.voxels.length) throw new Error("Empty image");
+        const hash = await hashJob;
+        if (job !== imageJobRef.current) return;
+        setPendingHash(hash);
         setPendingImage(result);
         const tag =
           opts.mode === "model" && sideFile
