@@ -149,13 +149,48 @@ assert(
     engine.includes("hasFrameResidueRisk")
 );
 assert(
-  "2D/2.5D can escalate contaminated masks to remote cutout",
-  engine.includes("requestRemoteCutout(file, normalized.output)") &&
-    engine.includes("requestRemoteCutout(views.front, normalized.output)")
+  "2D/2.5D use deterministic local frame cleanup",
+  engine.includes("function cleanOutputMask(") &&
+    engine.includes('const edgeBand = output === "2d" ? 2 : 3;')
 );
-const remoteCutoutRoute = fs.readFileSync(
-  new URL("../app/api/image/cutout/route.ts", import.meta.url),
+const runtime = fs.readFileSync(
+  new URL("../lib/ai/runtime.ts", import.meta.url),
   "utf8"
+);
+const enhance = fs.readFileSync(
+  new URL("../lib/ai/enhance.ts", import.meta.url),
+  "utf8"
+);
+const fetchOnnx = fs.readFileSync(
+  new URL("./fetch-onnx.mjs", import.meta.url),
+  "utf8"
+);
+assert(
+  "local segmentation includes BiRefNet-lite",
+  runtime.includes("/models/birefnet-lite.onnx") &&
+    fetchOnnx.includes("studioludens/birefnet-lite-512")
+);
+assert(
+  "local depth includes Depth Anything V2 Small",
+  runtime.includes("/models/depth-anything-v2-small-q4f16.onnx") &&
+    fetchOnnx.includes("depth-anything-v2-small")
+);
+assert(
+  "ONNX Runtime prefers WebGPU with WASM fallback",
+  runtime.includes("onnxruntime-web/webgpu") &&
+    runtime.includes('executionProviders: [preferWebGpu ? "webgpu" : "wasm"]') &&
+    runtime.includes('loadedBackends.set(id, "webgpu")')
+);
+assert(
+  "BiRefNet logits are converted to alpha probabilities",
+  enhance.includes("function sigmoidMap") &&
+    enhance.includes("modelPath.includes(\"birefnet\")")
+);
+assert(
+  "2D/2.5D processing contains no remote image-provider dependency",
+  !engine.includes("requestRemoteCutout") &&
+    !engine.includes("PHOTOROOM") &&
+    !engine.includes("CLIPDROP")
 );
 assert(
   "remote cutout providers stay server-side",
