@@ -15,6 +15,13 @@ export type AiRaster = {
   rgba: Uint8ClampedArray;
 };
 
+type InferenceRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 type SegmentationPolicy = {
   strongThreshold: number;
   weakThreshold: number;
@@ -56,7 +63,7 @@ function toNchw(
   raster: AiRaster,
   width: number,
   height: number,
-  imagenet: boolean,
+  normalization: "imagenet" | "isnet",
   sourceCanvas?: HTMLCanvasElement | null
 ) {
   const canvas = document.createElement("canvas");
@@ -68,7 +75,8 @@ function toNchw(
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const plane = width * height;
   const data = new Float32Array(3 * plane);
-  const mean = imagenet ? [0.485, 0.456, 0.406] : [0, 0, 0];
+  const imagenet = normalization === "imagenet";
+  const mean = imagenet ? [0.485, 0.456, 0.406] : [0.5, 0.5, 0.5];
   const std = imagenet ? [0.229, 0.224, 0.225] : [1, 1, 1];
   for (let i = 0; i < plane; i += 1) {
     data[i] = (pixels[i * 4] / 255 - mean[0]) / std[0];
@@ -332,13 +340,130 @@ export function hasCutoutAlpha(raster: AiRaster) {
     else if (a >= 240) opaque += 1;
     else mid += 1;
   }
-  return transparent / total >= 0.08 && opaque / total >= 0.08 && mid / total <= 0.18;
+  const transparentRatio = transparent / total;
+  const opaqueRatio = opaque / total;
+  const midRatio = mid / total;
+  // Anti-aliased cutouts can contain a sizeable mid-alpha edge band.
+  // Transparent support + a real opaque subject are the reliable signal.
+  return transparentRatio >= 0.03 && opaqueRatio >= 0.05 && midRatio <= 0.35;
+}
+
+function alphaInferenceRegion(raster: AiRaster): InferenceRegion | null {
+  let minX = raster.width;
+  let minY = raster.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < raster.height; y += 1) {
+    for (let x = 0; x < raster.width; x += 1) {
+      if (raster.rgba[(y * raster.width + x) * 4 + 3] < 12) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (maxX < 0 || maxY < 0) return null;
+
+  const subjectW = maxX - minX + 1;
+  const subjectH = maxY - minY + 1;
+  const padding = clamp(Math.round(Math.max(subjectW, subjectH) * 0.10), 12, 64);
+  const x = Math.max(0, minX - padding);
+  const y = Math.max(0, minY - padding);
+  const right = Math.min(raster.width, maxX + 1 + padding);
+  const bottom = Math.min(raster.height, maxY + 1 + padding);
+  const region = { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
+
+  return region.width === raster.width && region.height === raster.height ? null : region;
+}
+
+function cropRaster(raster: AiRaster, region: InferenceRegion): AiRaster {
+  const rgba = new Uint8ClampedArray(region.width * region.height * 4);
+  for (let y = 0; y < region.height; y += 1) {
+    const srcStart = ((region.y + y) * raster.width + region.x) * 4;
+    const dstStart = y * region.width * 4;
+    rgba.set(raster.rgba.subarray(srcStart, srcStart + region.width * 4), dstStart);
+  }
+  return { width: region.width, height: region.height, rgba };
+}
+
+function smoothstep(edge0: number, edge1: number, value: number) {
+  const t = clamp((value - edge0) / Math.max(1e-6, edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+export function refineCutoutAlpha(
+  originalAlpha: Float32Array,
+  predictedAlpha: Float32Array,
+  width: number,
+  height: number,
+  category?: AiCategory
+) {
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    originalAlpha.length !== width * height ||
+    predictedAlpha.length !== originalAlpha.length
+  ) return originalAlpha;
+
+  const thinCategory = category === "swords" || category === "rifles" || category === "guns";
+  const out = new Float32Array(originalAlpha);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const original = clamp(originalAlpha[index] ?? 0, 0, 1);
+      if (original <= 0) {
+        out[index] = 0;
+        continue;
+      }
+
+      let neighbourMax = 0;
+      let neighbourMin = 1;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (!dx && !dy) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const neighbour = clamp(originalAlpha[ny * width + nx] ?? 0, 0, 1);
+          neighbourMax = Math.max(neighbourMax, neighbour);
+          neighbourMin = Math.min(neighbourMin, neighbour);
+        }
+      }
+
+      const edgeLike = neighbourMin < 0.30 || neighbourMax - original > 0.08 || original < 0.92;
+      if (!edgeLike) continue;
+
+      const predicted = clamp(predictedAlpha[index] ?? 0, 0, 1);
+      const confidence = smoothstep(0.12, 0.62, predicted);
+      let factor = 0.18 + confidence * 0.82;
+
+      // Do not touch a confident opaque interior. Use the model primarily as
+      // a gate for antialias/halo pixels on the alpha transition.
+      if (original >= 0.97 && predicted >= 0.72) factor = Math.max(factor, 0.97);
+      if (original >= 0.97 && predicted < 0.18) factor = thinCategory ? 0.22 : 0.10;
+
+      if (
+        predicted < (thinCategory ? 0.14 : 0.20) &&
+        original < (thinCategory ? 0.72 : 0.86)
+      ) {
+        out[index] = 0;
+      } else if (original < 0.98 || predicted < 0.45) {
+        out[index] = clamp(original * factor, 0, 1);
+      }
+    }
+  }
+
+  return out;
 }
 
 async function runMap(
   id: "segment" | "depth",
   raster: AiRaster,
-  sourceCanvas?: HTMLCanvasElement | null
+  sourceCanvas?: HTMLCanvasElement | null,
+  region?: InferenceRegion | null
 ) {
   const session = await loadModel(id);
   if (!session) return null;
@@ -351,16 +476,21 @@ async function runMap(
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
   const modelPath = loadedModelPath(id) ?? "";
+  const inferenceRaster = region ? cropRaster(raster, region) : raster;
+  const inferenceCanvas = region ? null : sourceCanvas;
   const defaultSize =
     id === "segment"
       ? modelPath.includes("birefnet")
         ? 512
-        : 320
+        : modelPath.includes("isnet")
+          ? 1024
+          : 320
       : 518;
   const size = modelSize(dims, defaultSize);
+  const normalization = modelPath.includes("isnet") ? "isnet" : "imagenet";
   const tensor = new ort.Tensor(
     "float32",
-    toNchw(raster, size.width, size.height, true, sourceCanvas),
+    toNchw(inferenceRaster, size.width, size.height, normalization, inferenceCanvas),
     [1, 3, size.height, size.width]
   );
 
@@ -377,13 +507,22 @@ async function runMap(
   const modelMap = modelPath.includes("birefnet")
     ? sigmoidMap(sourceMap)
     : normalizeMap(sourceMap);
-  const map = resizeMap(
+  const localMap = resizeMap(
     modelMap,
     plane.width,
     plane.height,
-    raster.width,
-    raster.height
+    inferenceRaster.width,
+    inferenceRaster.height
   );
+
+  if (!region) return { map: localMap, size, model: modelPath, backend };
+
+  const map = new Float32Array(raster.width * raster.height);
+  for (let y = 0; y < region.height; y += 1) {
+    const srcStart = y * region.width;
+    const dstStart = (region.y + y) * raster.width + region.x;
+    map.set(localMap.subarray(srcStart, srcStart + region.width), dstStart);
+  }
   return { map, size, model: modelPath, backend };
 }
 
@@ -399,8 +538,9 @@ export async function enhanceRaster(
 ): Promise<{ raster: AiRaster; depth: Float32Array | null; diagnostics: EnhanceDiagnostics }> {
   const cutout = hasCutoutAlpha(raster);
   const available = await aiAvailable();
-  const wantSegment = Boolean(available.segment) && !cutout;
+  const wantSegment = Boolean(available.segment);
   const wantDepth = options.depth === true && Boolean(available.depth);
+  const cutoutRegion = cutout ? alphaInferenceRegion(raster) : null;
   let segmentStatus = cutout ? "cutout" : "skip";
   let depthStatus = "skip";
   let segmentSize = "-";
@@ -423,34 +563,39 @@ export async function enhanceRaster(
   let foregroundAlpha: Float32Array | null = null;
 
   if (wantSegment) {
-    const segmentResult = await runMap("segment", raster, sourceCanvas);
+    const segmentResult = await runMap("segment", raster, sourceCanvas, cutoutRegion);
     if (segmentResult) {
       segmentSize = `${segmentResult.size.width}×${segmentResult.size.height}`;
-      foregroundAlpha = refineSegmentAlpha(
-        segmentResult.map,
-        raster.width,
-        raster.height,
-        options.category
-      );
+      const sourceAlpha = new Float32Array(raster.width * raster.height);
+      for (let i = 0; i < sourceAlpha.length; i += 1) {
+        sourceAlpha[i] = raster.rgba[i * 4 + 3] / 255;
+      }
+
+      foregroundAlpha = cutout
+        ? refineCutoutAlpha(sourceAlpha, segmentResult.map, raster.width, raster.height, options.category)
+        : refineSegmentAlpha(segmentResult.map, raster.width, raster.height, options.category);
+
       let kept = 0;
       for (let i = 0; i < foregroundAlpha.length; i += 1) {
         if (foregroundAlpha[i] >= 0.08) kept += 1;
       }
-      if (kept >= raster.width * raster.height * 0.01) {
+
+      if (cutout || kept >= raster.width * raster.height * 0.01) {
         for (let i = 0; i < foregroundAlpha.length; i += 1) {
           next.rgba[i * 4 + 3] = clamp(Math.round(foregroundAlpha[i] * 255), 0, 255);
         }
-        segmentStatus = "ok";
+        segmentStatus = cutout ? "refined" : "ok";
       } else {
         segmentStatus = "weak";
       }
+    } else if (cutout) {
+      foregroundAlpha = new Float32Array(raster.width * raster.height);
+      for (let i = 0; i < foregroundAlpha.length; i += 1) {
+        foregroundAlpha[i] = raster.rgba[i * 4 + 3] / 255;
+      }
+      segmentStatus = "cutout";
     } else {
       segmentStatus = "fail";
-    }
-  } else if (cutout) {
-    foregroundAlpha = new Float32Array(raster.width * raster.height);
-    for (let i = 0; i < foregroundAlpha.length; i += 1) {
-      foregroundAlpha[i] = raster.rgba[i * 4 + 3] / 255;
     }
   }
 
