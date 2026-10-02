@@ -437,6 +437,28 @@ export function refineCutoutAlpha(
       if (!edgeLike) continue;
 
       const predicted = clamp(predictedAlpha[index] ?? 0, 0, 1);
+      let lowPredictedNeighbours = 0;
+      let highPredictedNeighbours = 0;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (!dx && !dy) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const neighbour = clamp(predictedAlpha[ny * width + nx] ?? 0, 0, 1);
+          if (neighbour < 0.18) lowPredictedNeighbours += 1;
+          if (neighbour >= 0.62) highPredictedNeighbours += 1;
+        }
+      }
+
+      // A low model score is allowed to remove an opaque edge pixel only when
+      // the local model field agrees that the pixel belongs to background.
+      // This catches residual halos while protecting isolated thin features
+      // from a single bad prediction.
+      const backgroundConsensus =
+        predicted < 0.16 && lowPredictedNeighbours >= 3 && highPredictedNeighbours <= 3;
+      const confidentForegroundConsensus =
+        predicted >= 0.58 || highPredictedNeighbours >= 5;
       const confidence = smoothstep(0.12, 0.62, predicted);
       let factor = 0.18 + confidence * 0.82;
 
@@ -446,6 +468,11 @@ export function refineCutoutAlpha(
       if (original >= 0.97 && predicted < 0.18) factor = thinCategory ? 0.22 : 0.10;
 
       if (
+        backgroundConsensus &&
+        (original < 1 || neighbourMin < 0.95 || !confidentForegroundConsensus)
+      ) {
+        out[index] = 0;
+      } else if (
         predicted < (thinCategory ? 0.14 : 0.20) &&
         original < (thinCategory ? 0.72 : 0.86)
       ) {
@@ -534,12 +561,14 @@ export type EnhanceDiagnostics = {
 
 export async function enhanceRaster(
   raster: AiRaster,
-  options: { depth?: boolean; category?: AiCategory } = {}
+  options: { segment?: boolean; depth?: boolean; category?: AiCategory } = {}
 ): Promise<{ raster: AiRaster; depth: Float32Array | null; diagnostics: EnhanceDiagnostics }> {
   const cutout = hasCutoutAlpha(raster);
-  const available = await aiAvailable();
-  const wantSegment = Boolean(available.segment);
-  const wantDepth = options.depth === true && Boolean(available.depth);
+  const wantSegmentRequested = options.segment !== false;
+  const wantDepthRequested = options.depth === true;
+  const available = await aiAvailable(wantSegmentRequested, wantDepthRequested);
+  const wantSegment = wantSegmentRequested && Boolean(available.segment);
+  const wantDepth = wantDepthRequested && Boolean(available.depth);
   const cutoutRegion = cutout ? alphaInferenceRegion(raster) : null;
   let segmentStatus = cutout ? "cutout" : "skip";
   let depthStatus = "skip";
