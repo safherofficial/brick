@@ -174,7 +174,8 @@ assert(
   runtime.includes("onnxruntime-web/webgpu") &&
     runtime.includes('executionProviders: [preferWebGpu ? "webgpu" : "wasm"]') &&
     runtime.includes('loadedBackends.set(id, "webgpu")') &&
-    runtime.includes('loadedBackends.set(id, "wasm")')
+    runtime.includes('loadedBackends.set(id, "wasm")') &&
+    !runtime.includes("REMOTE_MODELS")
 );
 assert(
   "local ONNX model revisions are pinned",
