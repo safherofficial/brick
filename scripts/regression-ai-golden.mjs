@@ -143,6 +143,27 @@ assert(
   engine.includes('normalized.outline === undefined) normalized.outline = false')
 );
 assert(
+  "2D/2.5D clean mask removes frame residue",
+  engine.includes("function cleanOutputMask(") &&
+    engine.includes('const edgeBand = output === "2d" ? 2 : 3;') &&
+    engine.includes("hasFrameResidueRisk")
+);
+assert(
+  "2D/2.5D can escalate contaminated masks to remote cutout",
+  engine.includes("requestRemoteCutout(file, normalized.output)") &&
+    engine.includes("requestRemoteCutout(views.front, normalized.output)")
+);
+const remoteCutoutRoute = fs.readFileSync(
+  new URL("../app/api/image/cutout/route.ts", import.meta.url),
+  "utf8"
+);
+assert(
+  "remote cutout providers stay server-side",
+  remoteCutoutRoute.includes("process.env.PHOTOROOM_API_KEY") &&
+    remoteCutoutRoute.includes("process.env.CLIPDROP_API_KEY") &&
+    !remoteCutoutRoute.includes("NEXT_PUBLIC_")
+);
+assert(
   "2D/2.5D build at 256 working resolution",
   fs.readFileSync(new URL("../lib/ai/buildOptions.ts", import.meta.url), "utf8")
     .includes('output === "2d" || output === "25d"')
