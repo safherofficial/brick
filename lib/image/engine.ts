@@ -59,8 +59,8 @@ function applyOutputLock(normalized: NormalizedImageVoxelOptions) {
     normalized.symmetrize = false;
     normalized.useDepthThickness = false;
     normalized.sideAmbiguous = false;
-    // 2D is source-faithful by default: no synthetic black outline or darkening.
-    if (normalized.outline === undefined) normalized.outline = false;
+    // 2D uses the detected silhouette boundary as a dedicated black ink layer.
+    if (normalized.outline === undefined) normalized.outline = true;
     return;
   }
   if (normalized.output === "25d") {
@@ -266,7 +266,59 @@ function backgroundLike(
   );
 }
 
+function hasMeaningfulTransparency(raster: Raster) {
+  const total = raster.width * raster.height;
+  if (!total) return false;
+  let transparent = 0;
+  let opaque = 0;
+  for (let i = 3; i < raster.rgba.length; i += 4) {
+    const alpha = raster.rgba[i];
+    if (alpha < MIN_ALPHA) transparent += 1;
+    if (alpha >= 240) opaque += 1;
+  }
+  return transparent / total >= 0.01 && opaque / total >= 0.05;
+}
+
+function alphaSilhouetteMask(raster: Raster): boolean[][] {
+  const w = raster.width;
+  const h = raster.height;
+  return Array.from({ length: h }, (_, y) =>
+    Array.from({ length: w }, (_, x) =>
+      raster.rgba[(y * w + x) * 4 + 3] >= MIN_ALPHA
+    )
+  );
+}
+
+function buildSilhouetteEdgeMask(mask: boolean[][]): boolean[][] {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  const edge = Array.from({ length: h }, () => Array<boolean>(w).fill(false));
+  if (!w || !h) return edge;
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y]?.[x]) continue;
+      let boundary = x === 0 || y === 0 || x === w - 1 || y === h - 1;
+      for (let dy = -1; dy <= 1 && !boundary; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (!dx && !dy) continue;
+          if (!mask[y + dy]?.[x + dx]) {
+            boundary = true;
+            break;
+          }
+        }
+      }
+      edge[y][x] = boundary;
+    }
+  }
+  return edge;
+}
+
 function buildMask(raster: Raster, mode: ImageMode): boolean[][] {
+  // Transparent images already encode the object boundary in alpha.
+  // Do not run RGB/background heuristics on those pixels.
+  if (hasMeaningfulTransparency(raster)) return alphaSilhouetteMask(raster);
+
   const bg = looksLikeBackground(raster);
   const modelProbes = mode === "model" ? modelBackgroundProbes(raster) : [];
   const w = raster.width;
@@ -347,248 +399,92 @@ function cleanModelMask(
   raster: Raster,
   aiCategory?: ImageVoxelOptions["aiCategory"]
 ) {
+  void raster;
   const h = mask.length;
   const w = mask[0]?.length ?? 0;
   if (!w || !h) return mask;
 
   const output = mask.map((row) => row.slice());
-
-  // The image importer is intentionally conservative about the silhouette,
-  // but MODEL needs a production-ready matte: remove detached background
-  // specks and one/two-pixel contour hairs without eroding the actual body.
-  // Keep every meaningful connected component; only discard tiny noise.
   const visited = new Set<string>();
-  const componentSizes: number[] = [];
   const components: [number, number][][] = [];
+  const sizes: number[] = [];
+  const key = (x: number, y: number) => x + ":" + y;
+  const neighbours8 = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [1, 1], [1, -1], [-1, 1], [-1, -1]
+  ] as const;
 
-  const key = (x: number, y: number) => `${x}:${y}`;
-
+  // Geometry-only cleanup. RGB/luminance is deliberately never inspected:
+  // highlights, shadows, reflections and dark material regions are content.
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
-      if (!mask[y][x]) continue;
-      const startKey = key(x, y);
-      if (visited.has(startKey)) continue;
+      if (!mask[y]?.[x]) continue;
+      const start = key(x, y);
+      if (visited.has(start)) continue;
 
       const cells: [number, number][] = [];
       const stack: [number, number][] = [[x, y]];
-      visited.add(startKey);
+      visited.add(start);
 
       while (stack.length) {
         const [cx, cy] = stack.pop()!;
         cells.push([cx, cy]);
-
-        for (const [dx, dy] of [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1]
-        ]) {
+        for (const [dx, dy] of neighbours8) {
           const nx = cx + dx;
           const ny = cy + dy;
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          if (!mask[ny][nx]) continue;
-          const nextKey = key(nx, ny);
-          if (visited.has(nextKey)) continue;
-          visited.add(nextKey);
+          if (!mask[ny]?.[nx]) continue;
+          const next = key(nx, ny);
+          if (visited.has(next)) continue;
+          visited.add(next);
           stack.push([nx, ny]);
         }
       }
 
-      componentSizes.push(cells.length);
       components.push(cells);
+      sizes.push(cells.length);
     }
   }
 
   if (!components.length) return output;
 
-  const bg = looksLikeBackground(raster);
-  const bgProbes = modelBackgroundProbes(raster);
-  const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
-
-  // Opaque reference images often contain a one-to-several-pixel antialias
-  // halo between the subject and its background. Those pixels are connected
-  // to the subject, so a connected-component cleanup cannot remove them.
-  // Trim only boundary pixels that are both background-like and low-contrast
-  // against their immediate subject neighbours; dark outlines remain intact.
-  for (let y = 1; y < h - 1; y += 1) {
-    for (let x = 1; x < w - 1; x += 1) {
-      if (!output[y][x]) continue;
-
-      let hasBackgroundNeighbour = false;
-      let foregroundNeighbours = 0;
-      let neighbourR = 0;
-      let neighbourG = 0;
-      let neighbourB = 0;
-
-      for (const [dx, dy] of [
-        [1, 0],
-        [-1, 0],
-        [0, 1],
-        [0, -1]
-      ]) {
-        if (!output[y + dy]?.[x + dx]) {
-          hasBackgroundNeighbour = true;
-          continue;
-        }
-
-        const neighbour = sampleAt(raster, x + dx, y + dy);
-        foregroundNeighbours += 1;
-        neighbourR += neighbour.r;
-        neighbourG += neighbour.g;
-        neighbourB += neighbour.b;
-      }
-
-      if (!hasBackgroundNeighbour || foregroundNeighbours < 2) continue;
-
-      const current = sampleAt(raster, x, y);
-      const currentL = 0.299 * current.r + 0.587 * current.g + 0.114 * current.b;
-      const distanceToBg = Math.sqrt(
-        (current.r - bg[0]) ** 2 +
-        (current.g - bg[1]) ** 2 +
-        (current.b - bg[2]) ** 2
-      );
-      const averageNeighbour = {
-        r: neighbourR / foregroundNeighbours,
-        g: neighbourG / foregroundNeighbours,
-        b: neighbourB / foregroundNeighbours
-      };
-      const distanceToSubject = Math.sqrt(
-        (current.r - averageNeighbour.r) ** 2 +
-        (current.g - averageNeighbour.g) ** 2 +
-        (current.b - averageNeighbour.b) ** 2
-      );
-
-      const probeMatch = modelBackgroundLike(current, bgProbes);
-      if (
-        probeMatch &&
-        distanceToBg < MODEL_BG_COLOR_TOLERANCE &&
-        Math.abs(currentL - bgL) < MODEL_BG_LUMINANCE_TOLERANCE &&
-        distanceToSubject < 56
-      ) {
-        output[y][x] = false;
-      }
-    }
-  }
-
-  const largestIndex = componentSizes.reduce(
-    (best, size, index) => (size > componentSizes[best] ? index : best),
+  const largestIndex = sizes.reduce(
+    (best, size, index) => (size > sizes[best] ? index : best),
     0
   );
-  const largest = componentSizes[largestIndex];
+  const largest = Math.max(1, sizes[largestIndex] ?? 1);
   const precision = aiPrecisionProfile(aiCategory);
   const minComponent = Math.max(
     precision?.minComponentPixels ?? MODEL_MIN_COMPONENT_PIXELS,
     Math.round(largest * (precision?.minComponentRatio ?? MODEL_MIN_COMPONENT_RATIO))
   );
 
-  // A real asset detail can arrive as a tiny disconnected mask component
-  // (trigger, muzzle tip, guard, stock/end-cap, thin prop handle) after
-  // segmentation. Do not let the generic component-size filter erase it
-  // when it is close to the main subject, has meaningful foreground
-  // contrast, and has a feature-like shape. This is intentionally a local
-  // preservation rule: large detached background noise is still removed.
-  const mainComponent = components[largestIndex] ?? [];
-  const mainSet = new Set(mainComponent.map(([x, y]) => `${x}:${y}`));
-  const featureGap = precision?.preserveThinContour ? 4 : 3;
+  // Keep small detached contour features when they are close to the main
+  // silhouette. This uses geometry only and therefore cannot delete a
+  // reflective/dark/bright material region based on its color.
+  const main = components[largestIndex] ?? [];
+  const mainSet = new Set(main.map(([x, y]) => key(x, y)));
+  const featureGap = precision?.preserveThinContour ? 6 : 4;
 
-  const isSilhouetteFeature = (cells: [number, number][]) => {
-    if (cells.length < 2 || !mainComponent.length) return false;
-
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    let contrastTotal = 0;
-    let contrastHits = 0;
-    const step = Math.max(1, Math.floor(cells.length / 48));
-
-    for (let i = 0; i < cells.length; i += step) {
-      const [x, y] = cells[i];
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-
-      const sample = sampleAt(raster, x, y);
-      const distanceToBg = Math.sqrt(
-        (sample.r - bg[0]) ** 2 +
-        (sample.g - bg[1]) ** 2 +
-        (sample.b - bg[2]) ** 2
-      );
-      contrastTotal += distanceToBg;
-      if (distanceToBg >= (precision?.preserveThinContour ? 38 : 48)) {
-        contrastHits += 1;
-      }
-    }
-
-    const width = Math.max(1, maxX - minX + 1);
-    const height = Math.max(1, maxY - minY + 1);
-    const slenderness = Math.max(width, height) / Math.min(width, height);
-    const averageContrast = contrastTotal / Math.max(1, Math.ceil(cells.length / step));
-
-    let nearMain = false;
+  const nearMain = (cells: [number, number][]) => {
     for (const [x, y] of cells) {
-      let found = false;
-      for (let dy = -featureGap; dy <= featureGap && !found; dy += 1) {
+      for (let dy = -featureGap; dy <= featureGap; dy += 1) {
         for (let dx = -featureGap; dx <= featureGap; dx += 1) {
           if (Math.abs(dx) + Math.abs(dy) > featureGap) continue;
-          if (mainSet.has(`${x + dx}:${y + dy}`)) {
-            found = true;
-            break;
-          }
+          if (mainSet.has(key(x + dx, y + dy))) return true;
         }
       }
-      if (found) {
-        nearMain = true;
-        break;
-      }
     }
-
-    const elongated = slenderness >= 2.2;
-    const compactDetail = cells.length <= Math.max(24, Math.round(minComponent * 1.5));
-    const contrastRatio = contrastHits / Math.max(1, Math.ceil(cells.length / step));
-
-    return (
-      nearMain &&
-      averageContrast >= (precision?.preserveThinContour ? 34 : 44) &&
-      contrastRatio >= 0.5 &&
-      (elongated || compactDetail)
-    );
+    return false;
   };
 
   for (let i = 0; i < components.length; i += 1) {
-    if (componentSizes[i] >= minComponent) continue;
-    if (i !== largestIndex && isSilhouetteFeature(components[i])) continue;
+    if (i === largestIndex || sizes[i] >= minComponent || nearMain(components[i])) continue;
     for (const [x, y] of components[i]) output[y][x] = false;
   }
 
-  // Remove contour hairs only when the local neighborhood confirms that the
-  // pixel is an isolated protrusion. Thin intentional limbs remain intact.
-  for (let y = 1; y < h - 1; y += 1) {
-    for (let x = 1; x < w - 1; x += 1) {
-      if (!output[y][x]) continue;
-
-      let neighbours8 = 0;
-      let local5x5 = 0;
-      for (let oy = -2; oy <= 2; oy += 1) {
-        for (let ox = -2; ox <= 2; ox += 1) {
-          if (output[y + oy]?.[x + ox]) local5x5 += 1;
-          if (Math.abs(ox) <= 1 && Math.abs(oy) <= 1 && (ox || oy)) {
-            if (output[y + oy]?.[x + ox]) neighbours8 += 1;
-          }
-        }
-      }
-
-      if (
-        precision?.preserveThinContour
-          ? neighbours8 === 0
-          : neighbours8 <= 1 || (neighbours8 === 2 && local5x5 <= 6)
-      ) {
-        output[y][x] = false;
-      }
-    }
-  }
-
+  // No contour erosion pass: single-pixel tips and thin features are valid
+  // geometry and must survive.
   return repairSilhouette(output);
 }
 
@@ -598,19 +494,23 @@ function cleanOutputMask(
   output: "2d" | "25d",
   alreadyCleaned = false
 ) {
+  void raster;
+  void output;
   const cleaned = alreadyCleaned ? mask.map((row) => row.slice()) : cleanModelMask(mask, raster);
   const h = cleaned.length;
   const w = cleaned[0]?.length ?? 0;
   if (!w || !h) return cleaned;
 
-  // 2D/2.5D exports are source-faithful products, so the image frame itself
-  // must never become foreground geometry. First remove small border-connected
-  // components, then trim only low-contrast anti-aliased pixels on the frame
-  // of the main component.
+  // Frame cleanup is geometry-only too. Only small components touching the
+  // image frame are discarded; object pixels are never classified by RGB.
   const visited = new Set<string>();
   const components: [number, number][][] = [];
   const sizes: number[] = [];
-  const key = (x: number, y: number) => `${x}:${y}`;
+  const key = (x: number, y: number) => x + ":" + y;
+  const neighbours8 = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [1, 1], [1, -1], [-1, 1], [-1, -1]
+  ] as const;
 
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
@@ -625,7 +525,7 @@ function cleanOutputMask(
       while (stack.length) {
         const [cx, cy] = stack.pop()!;
         cells.push([cx, cy]);
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        for (const [dx, dy] of neighbours8) {
           const nx = cx + dx;
           const ny = cy + dy;
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
@@ -636,7 +536,6 @@ function cleanOutputMask(
           stack.push([nx, ny]);
         }
       }
-
       components.push(cells);
       sizes.push(cells.length);
     }
@@ -649,8 +548,8 @@ function cleanOutputMask(
     0
   );
   const largest = Math.max(1, sizes[largestIndex] ?? 1);
-  const edgeBand = output === "2d" ? 2 : 3;
   const borderNoiseMax = Math.max(16, Math.round(largest * 0.035));
+  const edgeBand = 2;
 
   for (let i = 0; i < components.length; i += 1) {
     if (i === largestIndex || sizes[i] > borderNoiseMax) continue;
@@ -662,69 +561,6 @@ function cleanOutputMask(
     );
     if (!touchesFrame) continue;
     for (const [x, y] of components[i]) cleaned[y][x] = false;
-  }
-
-  const bg = looksLikeBackground(raster);
-  const probes = modelBackgroundProbes(raster);
-  const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
-
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      if (!cleaned[y]?.[x]) continue;
-      const onFrameBand =
-        x < edgeBand ||
-        y < edgeBand ||
-        x >= w - edgeBand ||
-        y >= h - edgeBand;
-      if (!onFrameBand) continue;
-
-      let foregroundNeighbours = 0;
-      let neighbourR = 0;
-      let neighbourG = 0;
-      let neighbourB = 0;
-      for (let oy = -1; oy <= 1; oy += 1) {
-        for (let ox = -1; ox <= 1; ox += 1) {
-          if (!ox && !oy) continue;
-          const nx = x + ox;
-          const ny = y + oy;
-          if (!cleaned[ny]?.[nx]) continue;
-          const sample = sampleAt(raster, nx, ny);
-          foregroundNeighbours += 1;
-          neighbourR += sample.r;
-          neighbourG += sample.g;
-          neighbourB += sample.b;
-        }
-      }
-
-      if (foregroundNeighbours < 2) continue;
-
-      const current = sampleAt(raster, x, y);
-      const currentL = 0.299 * current.r + 0.587 * current.g + 0.114 * current.b;
-      const distanceToBg = Math.sqrt(
-        (current.r - bg[0]) ** 2 +
-        (current.g - bg[1]) ** 2 +
-        (current.b - bg[2]) ** 2
-      );
-      const averageNeighbour = {
-        r: neighbourR / foregroundNeighbours,
-        g: neighbourG / foregroundNeighbours,
-        b: neighbourB / foregroundNeighbours
-      };
-      const distanceToSubject = Math.sqrt(
-        (current.r - averageNeighbour.r) ** 2 +
-        (current.g - averageNeighbour.g) ** 2 +
-        (current.b - averageNeighbour.b) ** 2
-      );
-
-      if (
-        modelBackgroundLike(current, probes) &&
-        distanceToBg < MODEL_BG_COLOR_TOLERANCE &&
-        Math.abs(currentL - bgL) < MODEL_BG_LUMINANCE_TOLERANCE &&
-        distanceToSubject < 48
-      ) {
-        cleaned[y][x] = false;
-      }
-    }
   }
 
   return repairSilhouette(cleaned);
@@ -1623,20 +1459,32 @@ function dropMaskSpurs(mask: boolean[][]) {
 }
 
 function outlineFront1px(voxels: ImageVoxel[], ink: number) {
+  if (!voxels.length) return voxels;
+
   const face = new Map<string, ImageVoxel>();
-  for (const v of voxels) if (v.z === 0) face.set(`${v.x}:${v.y}`, v);
+  let maxX = 0;
+  let maxY = 0;
+  for (const v of voxels) {
+    if (v.z !== 0) continue;
+    face.set(v.x + ":" + v.y, v);
+    maxX = Math.max(maxX, v.x);
+    maxY = Math.max(maxY, v.y);
+  }
+
+  const mask = Array.from({ length: maxY + 1 }, () => Array<boolean>(maxX + 1).fill(false));
+  for (const v of face.values()) mask[v.y][v.x] = true;
+  const edge = buildSilhouetteEdgeMask(mask);
+
   for (const v of face.values()) {
-    const open =
-      !face.has(`${v.x + 1}:${v.y}`) ||
-      !face.has(`${v.x - 1}:${v.y}`) ||
-      !face.has(`${v.x}:${v.y + 1}`) ||
-      !face.has(`${v.x}:${v.y - 1}`);
-    if (open) v.c = ink;
+    if (edge[v.y]?.[v.x]) v.c = ink;
   }
   return voxels;
 }
 
 function pickOutlineIndex(palette: string[]) {
+  const black = palette.findIndex((hex) => hex.toLowerCase() === "#000000");
+  if (black >= 0) return black;
+
   let best = 0, bestL = 256;
   for (let i = 0; i < palette.length; i += 1) {
     const hex = palette[i].replace("#", "");
@@ -1644,7 +1492,10 @@ function pickOutlineIndex(palette: string[]) {
     const g = parseInt(hex.slice(2, 4), 16);
     const b = parseInt(hex.slice(4, 6), 16);
     const l = 0.299 * r + 0.587 * g + 0.114 * b;
-    if (l < bestL) { bestL = l; best = i; }
+    if (l < bestL) {
+      bestL = l;
+      best = i;
+    }
   }
   return best;
 }
@@ -2858,6 +2709,20 @@ export async function imageToVoxels(
     [mask],
     normalized.output === "2d" ? 96 : normalized.output === "25d" ? 80 : normalized.mode === "model" ? 96 : 48
   );
+  if (
+    normalized.outline !== false &&
+    (normalized.output === "2d" || normalized.mode === "flat") &&
+    !palette.some((hex) => hex.toLowerCase() === "#000000")
+  ) {
+    palette.push("#000000");
+  }
+  if (
+    normalized.outline !== false &&
+    (normalized.output === "2d" || normalized.mode === "flat") &&
+    !palette.some((hex) => hex.toLowerCase() === "#000000")
+  ) {
+    palette.push("#000000");
+  }
   const paletteValues = paletteRgb(palette);
 
   const withStatus = async (result: ImageImport) => {
