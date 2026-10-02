@@ -172,18 +172,12 @@ export default function Builder() {
   }, [refreshCredits]);
 
   useEffect(() => {
-    const start = () => {
+    const timer = window.setTimeout(() => {
       void import("@/lib/ai/runtime").then(({ preloadAiModels }) => {
         preloadAiModels();
       });
-    };
-    const idle = "requestIdleCallback" in window
-      ? window.requestIdleCallback(start, { timeout: 1200 })
-      : window.setTimeout(start, 450);
-    return () => {
-      if (typeof idle === "number") window.clearTimeout(idle);
-      else window.cancelIdleCallback?.(idle);
-    };
+    }, 450);
+    return () => window.clearTimeout(timer);
   }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
