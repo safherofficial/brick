@@ -139,13 +139,45 @@ assert(
   engine.includes('normalized.mode === "model" ? 96')
 );
 assert(
-  "2D defaults to no synthetic outline",
-  engine.includes('normalized.outline === undefined) normalized.outline = false')
+  "2D defaults to silhouette black outline",
+  engine.includes('normalized.outline === undefined) normalized.outline = true') &&
+    engine.includes('palette.push("#000000")')
 );
 assert(
   "2D/2.5D use deterministic local frame cleanup",
   engine.includes("function cleanOutputMask(") &&
-    engine.includes('const edgeBand = output === "2d" ? 2 : 3;')
+    engine.includes("const edgeBand = 2;")
+);
+const cleanModelSection = engine.slice(
+  engine.indexOf("function cleanModelMask("),
+  engine.indexOf("function cleanOutputMask(")
+);
+const cleanOutputSection = engine.slice(
+  engine.indexOf("function cleanOutputMask("),
+  engine.indexOf("function findBounds(")
+);
+assert(
+  "silhouette cleanup is geometry-only",
+  !cleanModelSection.includes("distanceToBg") &&
+    !cleanModelSection.includes("modelBackgroundLike") &&
+    !cleanOutputSection.includes("distanceToBg") &&
+    !cleanOutputSection.includes("modelBackgroundLike")
+);
+assert(
+  "transparent cutouts use alpha as the silhouette source",
+  engine.includes("function hasMeaningfulTransparency") &&
+    engine.includes("function alphaSilhouetteMask") &&
+    engine.includes("if (hasMeaningfulTransparency(raster)) return alphaSilhouetteMask(raster);")
+);
+assert(
+  "silhouette edge detection is explicit",
+  engine.includes("function buildSilhouetteEdgeMask") &&
+    engine.includes("const edge = buildSilhouetteEdgeMask(mask);")
+);
+assert(
+  "outline uses the dedicated pure-black palette entry",
+  engine.includes('palette.push("#000000")') &&
+    engine.includes('hex.toLowerCase() === "#000000"')
 );
 const runtime = fs.readFileSync(
   new URL("../lib/ai/runtime.ts", import.meta.url),
