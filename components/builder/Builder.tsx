@@ -213,8 +213,6 @@ export default function Builder() {
           : await imageToVoxels(views.front, opts);
         if (job !== imageJobRef.current) return;
         if (!result.voxels.length) throw new Error("Empty image");
-        setPendingHash(await hashJob);
-        if (job !== imageJobRef.current) return;
         setPendingImage(result);
         const tag =
           opts.mode === "model" && views.side
