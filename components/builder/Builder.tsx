@@ -133,7 +133,7 @@ export default function Builder() {
         mode: imageMode,
         category: imageCategory ?? undefined,
         output: outputLock ?? undefined,
-        outline: outputLock === "2d" ? false : undefined
+        outline: outputLock === "2d" ? true : undefined
       }),
     [imageCategory, imageHeight, imageMode, outputLock, symmetrize]
   );
