@@ -23,6 +23,12 @@ const FILES = [
     ]
   },
   {
+    name: "isnet-general-use-q8.onnx",
+    urls: [
+      "https://huggingface.co/SacredNoir/isnet-general-use-onnx/resolve/ff56cb8/isnet-general-use-q8.onnx"
+    ]
+  },
+  {
     name: "u2netp.onnx",
     urls: [
       "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
