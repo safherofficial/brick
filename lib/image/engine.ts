@@ -2716,13 +2716,6 @@ export async function imageToVoxels(
   ) {
     palette.push("#000000");
   }
-  if (
-    normalized.outline !== false &&
-    (normalized.output === "2d" || normalized.mode === "flat") &&
-    !palette.some((hex) => hex.toLowerCase() === "#000000")
-  ) {
-    palette.push("#000000");
-  }
   const paletteValues = paletteRgb(palette);
 
   const withStatus = async (result: ImageImport) => {
@@ -2851,6 +2844,13 @@ export async function imagesToVoxels(
     normalized.output === "2d" ? 96 : normalized.output === "25d" ? 80 : normalized.mode === "model" ? 96 : 48,
     rasters.length > 1 ? [1.45, 0.85] : undefined
   );
+  if (
+    normalized.outline !== false &&
+    (normalized.output === "2d" || normalized.mode === "flat") &&
+    !palette.some((hex) => hex.toLowerCase() === "#000000")
+  ) {
+    palette.push("#000000");
+  }
   const paletteValues = paletteRgb(palette);
 
   const frontRaster = rasters[0];
