@@ -160,9 +160,11 @@ const fetchOnnx = fs.readFileSync(
   "utf8"
 );
 assert(
-  "local segmentation includes BiRefNet-lite",
+  "local segmentation includes premium BiRefNet-lite + ISNet tiers",
   runtime.includes("/models/birefnet-lite.onnx") &&
-    fetchOnnx.includes("studioludens/birefnet-lite-512")
+    runtime.includes("/models/isnet-general-use-q8.onnx") &&
+    fetchOnnx.includes("studioludens/birefnet-lite-512") &&
+    fetchOnnx.includes("isnet-general-use-q8.onnx")
 );
 assert(
   "local depth includes Depth Anything V2 Small",
@@ -180,12 +182,19 @@ assert(
 assert(
   "local ONNX model revisions are pinned",
   fetchOnnx.includes("resolve/4a3c40c/onnx/model_fp16.onnx") &&
+    fetchOnnx.includes("resolve/ff56cb8/isnet-general-use-q8.onnx") &&
     fetchOnnx.includes("resolve/4472b7362082ad9968fee890ca0f1e5aca36b93d/onnx/model_q4f16.onnx")
 );
 assert(
   "BiRefNet logits are converted to alpha probabilities",
   enhance.includes("function sigmoidMap") &&
     enhance.includes("modelPath.includes(\"birefnet\")")
+);
+assert(
+  "transparent PNGs receive ONNX matte refinement",
+  enhance.includes("function refineCutoutAlpha") &&
+    enhance.includes("alphaInferenceRegion") &&
+    enhance.includes('segmentStatus = cutout ? "refined" : "ok"')
 );
 assert(
   "2D/2.5D processing contains no remote image-provider dependency",
