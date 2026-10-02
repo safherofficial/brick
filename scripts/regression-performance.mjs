@@ -18,12 +18,21 @@ ok(
   /const sourceCanvas\s*=\s*wantSegment\s*\|\|\s*wantDepth\s*\?\s*rasterToCanvas\(raster\)\s*:\s*null/.test(enhanceSource)
 );
 ok('Local AI passes the reused Canvas into inference',
-  enhanceSource.includes('runMap("segment", raster, sourceCanvas)') &&
+  enhanceSource.includes('runMap("segment", raster, sourceCanvas, cutoutRegion)') &&
   enhanceSource.includes('runMap("depth", raster, sourceCanvas)'));
 ok('ONNX inference is serialized per model', runtimeSource.includes('const inferenceTails = new Map<AiModelId, Promise<void>>()'));
 ok('ONNX calls use the serialized runner', enhanceSource.includes('await runModel(id, session'));
 ok('two-view segmentation is processed sequentially', engineSource.includes('for (const raster of rasters)'));
 ok('two-view path no longer launches parallel segmentation', !/Promise\.all\(\s*rasters\.map\(\(raster\) =>\s*applyLocalAiRaster/s.test(engineSource));
+ok('depth refinement disables duplicate segmentation',
+  /applyLocalAiRaster\(raster, \{\s*segment: false,\s*depth: true,/.test(engineSource));
+ok('image import does not rebuild the mask after depth inference',
+  !/masks?\s*\[0\]\s*=\s*cleanModelMask\(\s*buildMask\(/s.test(engineSource) &&
+  !/mask\s*=\s*cleanModelMask\(buildMask\(/s.test(engineSource));
+ok('transparent cutouts use a dedicated matte refinement pass',
+  enhanceSource.includes('function refineCutoutAlpha') &&
+  enhanceSource.includes('alphaInferenceRegion') &&
+  enhanceSource.includes('backgroundConsensus'));
 
 // Reproduce the runtime queue semantics with a local mock of runModel.
 const queues = new Map();
