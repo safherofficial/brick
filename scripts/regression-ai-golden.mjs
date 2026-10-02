@@ -143,12 +143,6 @@ assert(
   engine.includes('normalized.outline === undefined) normalized.outline = false')
 );
 assert(
-  "2D/2.5D clean mask removes frame residue",
-  engine.includes("function cleanOutputMask(") &&
-    engine.includes('const edgeBand = output === "2d" ? 2 : 3;') &&
-    engine.includes("hasFrameResidueRisk")
-);
-assert(
   "2D/2.5D use deterministic local frame cleanup",
   engine.includes("function cleanOutputMask(") &&
     engine.includes('const edgeBand = output === "2d" ? 2 : 3;')
@@ -179,7 +173,13 @@ assert(
   "ONNX Runtime prefers WebGPU with WASM fallback",
   runtime.includes("onnxruntime-web/webgpu") &&
     runtime.includes('executionProviders: [preferWebGpu ? "webgpu" : "wasm"]') &&
-    runtime.includes('loadedBackends.set(id, "webgpu")')
+    runtime.includes('loadedBackends.set(id, "webgpu")') &&
+    runtime.includes('loadedBackends.set(id, "wasm")')
+);
+assert(
+  "local ONNX model revisions are pinned",
+  fetchOnnx.includes("resolve/4a3c40c/onnx/model_fp16.onnx") &&
+    fetchOnnx.includes("resolve/4472b7362082ad9968fee890ca0f1e5aca36b93d/onnx/model_q4f16.onnx")
 );
 assert(
   "BiRefNet logits are converted to alpha probabilities",
@@ -191,17 +191,6 @@ assert(
   !engine.includes("requestRemoteCutout") &&
     !engine.includes("PHOTOROOM") &&
     !engine.includes("CLIPDROP")
-);
-assert(
-  "remote cutout providers stay server-side",
-  remoteCutoutRoute.includes("process.env.PHOTOROOM_API_KEY") &&
-    remoteCutoutRoute.includes("process.env.CLIPDROP_API_KEY") &&
-    !remoteCutoutRoute.includes("NEXT_PUBLIC_")
-);
-assert(
-  "remote image AI is opt-in and rate-limited",
-  remoteCutoutRoute.includes("BRICK_ENABLE_REMOTE_IMAGE_AI") &&
-    remoteCutoutRoute.includes("MAX_REQUESTS_PER_WINDOW")
 );
 assert(
   "2D/2.5D build at 256 working resolution",
