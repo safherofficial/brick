@@ -47,6 +47,7 @@ export const MODEL_FILES: Record<AiModelId, string[]> = {
 const sessions = new Map<AiModelId, Promise<InferenceSession | null>>();
 const resolved = new Map<AiModelId, Promise<string | null>>();
 const loadedPaths = new Map<AiModelId, string>();
+const loadedBackends = new Map<AiModelId, "webgpu" | "wasm">();
 const inferenceTails = new Map<AiModelId, Promise<void>>();
 
 const ORT_WASM_LOCAL = "/ort/";
@@ -56,6 +57,7 @@ function resetModel(id: AiModelId) {
   sessions.delete(id);
   resolved.delete(id);
   loadedPaths.delete(id);
+  loadedBackends.delete(id);
 }
 
 function supportsWebGpu() {
@@ -181,6 +183,7 @@ export export async function loadModel(id: AiModelId) {
           const ort = await loadOrt(true);
           const session = await createSession(ort, url, true, ORT_WASM_LOCAL);
           loadedPaths.set(id, url);
+          loadedBackends.set(id, "webgpu");
           return session;
         } catch {
           // Fall through to the CPU implementation.
@@ -191,12 +194,14 @@ export export async function loadModel(id: AiModelId) {
         const ort = await loadOrt(false);
         const session = await createSession(ort, url, false, ORT_WASM_LOCAL);
         loadedPaths.set(id, url);
+        loadedBackends.set(id, "wasm");
         return session;
       } catch {
         try {
           const ort = await loadOrt(false);
           const session = await createSession(ort, url, false, ORT_WASM_CDN);
           loadedPaths.set(id, url);
+          loadedBackends.set(id, "wasm");
           return session;
         } catch {
           // Keep trying the next local model candidate.
@@ -216,6 +221,10 @@ export export async function loadModel(id: AiModelId) {
 
 export function loadedModelPath(id: AiModelId) {
   return loadedPaths.get(id) ?? null;
+}
+
+export function loadedModelBackend(id: AiModelId) {
+  return loadedBackends.get(id) ?? "wasm";
 }
 
 
