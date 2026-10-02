@@ -5,6 +5,9 @@ export const dynamic = "force-dynamic";
 
 const MAX_FILE_BYTES = 30 * 1024 * 1024;
 const SUPPORTED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const MAX_REQUESTS_PER_WINDOW = 8;
+const RATE_WINDOW_MS = 60_000;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ ok: false, error: message }, { status });
@@ -45,6 +48,10 @@ async function providerRequest(
 }
 
 function providerOrder(): ("photoroom" | "clipdrop")[] {
+  if (process.env.BRICK_ENABLE_REMOTE_IMAGE_AI?.trim().toLowerCase() !== "true") {
+    return [];
+  }
+
   const configured = process.env.BRICK_IMAGE_API_PROVIDER?.trim().toLowerCase();
   const hasPhotoroom = Boolean(process.env.PHOTOROOM_API_KEY?.trim());
   const hasClipdrop = Boolean(process.env.CLIPDROP_API_KEY?.trim());
@@ -70,6 +77,18 @@ export async function POST(request: Request) {
     }
     if (file.size < 1 || file.size > MAX_FILE_BYTES) {
       return jsonError("IMAGE_FILE_TOO_LARGE_OR_EMPTY", 413);
+    }
+
+    const forwarded = request.headers.get("x-forwarded-for");
+    const address = forwarded?.split(",")[0]?.trim() || "unknown";
+    const now = Date.now();
+    const bucket = rateBuckets.get(address);
+    if (!bucket || bucket.resetAt <= now) {
+      rateBuckets.set(address, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    } else if (bucket.count >= MAX_REQUESTS_PER_WINDOW) {
+      return jsonError("REMOTE_IMAGE_AI_RATE_LIMITED", 429);
+    } else {
+      bucket.count += 1;
     }
 
     const providers = providerOrder();
