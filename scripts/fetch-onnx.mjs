@@ -13,13 +13,13 @@ const FILES = [
   {
     name: "birefnet-lite.onnx",
     urls: [
-      "https://huggingface.co/studioludens/birefnet-lite-512/resolve/main/onnx/model_fp16.onnx"
+      "https://huggingface.co/studioludens/birefnet-lite-512/resolve/4a3c40c/onnx/model_fp16.onnx"
     ]
   },
   {
     name: "depth-anything-v2-small-q4f16.onnx",
     urls: [
-      "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_q4f16.onnx"
+      "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/4472b7362082ad9968fee890ca0f1e5aca36b93d/onnx/model_q4f16.onnx"
     ]
   },
   {
