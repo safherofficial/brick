@@ -29,7 +29,14 @@ function check(name, ok) {
   console.log(ok ? "OK  " : "FAIL", name);
 }
 
-check("production models stay local", runtime.includes('if (process.env.NODE_ENV === "production") return local;'));
+const runtimeHasOnlyLocalModelCandidates =
+  runtime.includes("const LOCAL_MODELS") &&
+  runtime.includes("function modelCandidates") &&
+  runtime.includes("return LOCAL_MODELS[id];") &&
+  runtime.includes('"/models/') &&
+  !/https?:\\/\\/[^"'\`\\s]+/i.test(runtime);
+
+check("production models stay local", runtimeHasOnlyLocalModelCandidates);
 check("ONNX load timeout exists", runtime.includes("ONNX_LOAD_TIMEOUT_MS"));
 check("model cache resets after failure", runtime.includes("function resetModel"));
 check("next config caches /models", nextConfig.includes("/models/:path*"));
