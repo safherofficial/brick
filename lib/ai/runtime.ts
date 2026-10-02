@@ -245,8 +245,14 @@ export async function runModel(
   }
 }
 
-export async function aiAvailable() {
-  const [segment, depth] = await Promise.all([resolveModel("segment"), resolveModel("depth")]);
+export async function aiAvailable(
+  wantSegment = true,
+  wantDepth = true
+) {
+  const [segment, depth] = await Promise.all([
+    wantSegment ? resolveModel("segment") : Promise.resolve(null),
+    wantDepth ? resolveModel("depth") : Promise.resolve(null)
+  ]);
   return { segment: Boolean(segment), depth: Boolean(depth) };
 }
 
