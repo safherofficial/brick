@@ -157,7 +157,7 @@ async function createSession(
   );
 }
 
-export export async function loadModel(id: AiModelId) {
+export async function loadModel(id: AiModelId) {
   const existing = sessions.get(id);
   if (existing) return existing;
 
