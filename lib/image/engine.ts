@@ -592,6 +592,143 @@ function cleanModelMask(
   return repairSilhouette(output);
 }
 
+function cleanOutputMask(
+  mask: boolean[][],
+  raster: Raster,
+  output: "2d" | "25d"
+) {
+  const cleaned = cleanModelMask(mask, raster);
+  const h = cleaned.length;
+  const w = cleaned[0]?.length ?? 0;
+  if (!w || !h) return cleaned;
+
+  // 2D/2.5D exports are source-faithful products, so the image frame itself
+  // must never become foreground geometry. First remove small border-connected
+  // components, then trim only low-contrast anti-aliased pixels on the frame
+  // of the main component.
+  const visited = new Set<string>();
+  const components: [number, number][][] = [];
+  const sizes: number[] = [];
+  const key = (x: number, y: number) => `${x}:${y}`;
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!cleaned[y]?.[x]) continue;
+      const start = key(x, y);
+      if (visited.has(start)) continue;
+
+      const cells: [number, number][] = [];
+      const stack: [number, number][] = [[x, y]];
+      visited.add(start);
+
+      while (stack.length) {
+        const [cx, cy] = stack.pop()!;
+        cells.push([cx, cy]);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (!cleaned[ny]?.[nx]) continue;
+          const next = key(nx, ny);
+          if (visited.has(next)) continue;
+          visited.add(next);
+          stack.push([nx, ny]);
+        }
+      }
+
+      components.push(cells);
+      sizes.push(cells.length);
+    }
+  }
+
+  if (!components.length) return cleaned;
+
+  const largestIndex = sizes.reduce(
+    (best, size, index) => (size > sizes[best] ? index : best),
+    0
+  );
+  const largest = Math.max(1, sizes[largestIndex] ?? 1);
+  const edgeBand = output === "2d" ? 2 : 3;
+  const borderNoiseMax = Math.max(16, Math.round(largest * 0.035));
+
+  for (let i = 0; i < components.length; i += 1) {
+    if (i === largestIndex || sizes[i] > borderNoiseMax) continue;
+    const touchesFrame = components[i].some(([x, y]) =>
+      x < edgeBand ||
+      y < edgeBand ||
+      x >= w - edgeBand ||
+      y >= h - edgeBand
+    );
+    if (!touchesFrame) continue;
+    for (const [x, y] of components[i]) cleaned[y][x] = false;
+  }
+
+  const bg = looksLikeBackground(raster);
+  const probes = modelBackgroundProbes(raster);
+  const bgL = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!cleaned[y]?.[x]) continue;
+      const onFrameBand =
+        x < edgeBand ||
+        y < edgeBand ||
+        x >= w - edgeBand ||
+        y >= h - edgeBand;
+      if (!onFrameBand) continue;
+
+      let foregroundNeighbours = 0;
+      let neighbourR = 0;
+      let neighbourG = 0;
+      let neighbourB = 0;
+      for (let oy = -1; oy <= 1; oy += 1) {
+        for (let ox = -1; ox <= 1; ox += 1) {
+          if (!ox && !oy) continue;
+          const nx = x + ox;
+          const ny = y + oy;
+          if (!cleaned[ny]?.[nx]) continue;
+          const sample = sampleAt(raster, nx, ny);
+          foregroundNeighbours += 1;
+          neighbourR += sample.r;
+          neighbourG += sample.g;
+          neighbourB += sample.b;
+        }
+      }
+
+      if (foregroundNeighbours < 2) continue;
+
+      const current = sampleAt(raster, x, y);
+      const currentL = 0.299 * current.r + 0.587 * current.g + 0.114 * current.b;
+      const distanceToBg = Math.sqrt(
+        (current.r - bg[0]) ** 2 +
+        (current.g - bg[1]) ** 2 +
+        (current.b - bg[2]) ** 2
+      );
+      const averageNeighbour = {
+        r: neighbourR / foregroundNeighbours,
+        g: neighbourG / foregroundNeighbours,
+        b: neighbourB / foregroundNeighbours
+      };
+      const distanceToSubject = Math.sqrt(
+        (current.r - averageNeighbour.r) ** 2 +
+        (current.g - averageNeighbour.g) ** 2 +
+        (current.b - averageNeighbour.b) ** 2
+      );
+
+      if (
+        modelBackgroundLike(current, probes) &&
+        distanceToBg < MODEL_BG_COLOR_TOLERANCE &&
+        Math.abs(currentL - bgL) < MODEL_BG_LUMINANCE_TOLERANCE &&
+        distanceToSubject < 48
+      ) {
+        cleaned[y][x] = false;
+      }
+    }
+  }
+
+  return repairSilhouette(cleaned);
+}
+
 function findBounds(mask: boolean[][]): Bounds | null {
   let minX = Infinity;
   let minY = Infinity;
