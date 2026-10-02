@@ -2430,6 +2430,7 @@ function spatialBudget(voxels: ImageVoxel[], budget: number) {
 async function applyLocalAiRaster(
   raster: Raster,
   options: {
+    segment?: boolean;
     depth?: boolean;
     category?: ImageVoxelOptions["aiCategory"];
   }
@@ -2438,7 +2439,11 @@ async function applyLocalAiRaster(
     const { enhanceRaster } = await import("@/lib/ai/enhance");
     const enhanced = await enhanceRaster(
       { width: raster.width, height: raster.height, rgba: raster.rgba },
-      { depth: options.depth === true, category: options.category }
+      {
+        segment: options.segment !== false,
+        depth: options.depth === true,
+        category: options.category
+      }
     );
     return {
       raster: {
