@@ -384,6 +384,14 @@ function cropRaster(raster: AiRaster, region: InferenceRegion): AiRaster {
     const srcStart = ((region.y + y) * raster.width + region.x) * 4;
     const dstStart = y * region.width * 4;
     rgba.set(raster.rgba.subarray(srcStart, srcStart + region.width * 4), dstStart);
+    for (let x = 0; x < region.width; x += 1) {
+      const i = dstStart + x * 4;
+      if (rgba[i + 3] < 12) {
+        rgba[i] = 0;
+        rgba[i + 1] = 0;
+        rgba[i + 2] = 0;
+      }
+    }
   }
   return { width: region.width, height: region.height, rgba };
 }
@@ -480,6 +488,11 @@ export function refineCutoutAlpha(
       } else if (original < 0.98 || predicted < 0.45) {
         out[index] = clamp(original * factor, 0, 1);
       }
+
+      // Voxel masks do not benefit from sub-perceptual alpha fringes. Keep
+      // enough antialiasing for genuine contours, but eliminate the tiny
+      // residual alpha band that would otherwise become a visible voxel rim.
+      if (out[index] < 0.12) out[index] = 0;
     }
   }
 
