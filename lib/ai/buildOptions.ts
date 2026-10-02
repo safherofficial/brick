@@ -60,7 +60,7 @@ export function buildImageOptions(input: {
     useLocalAi: input.useLocalAi ?? true,
     aiCategory: input.category,
     output,
-    outline: output === "2d" ? (input.outline ?? false) : input.outline
+    outline: output === "2d" ? (input.outline ?? true) : input.outline
   };
 }
 
