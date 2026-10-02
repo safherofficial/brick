@@ -11,6 +11,18 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(root, "public", "models");
 const FILES = [
   {
+    name: "birefnet-lite.onnx",
+    urls: [
+      "https://huggingface.co/studioludens/birefnet-lite-512/resolve/main/onnx/model_fp16.onnx"
+    ]
+  },
+  {
+    name: "depth-anything-v2-small-q4f16.onnx",
+    urls: [
+      "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_q4f16.onnx"
+    ]
+  },
+  {
     name: "u2netp.onnx",
     urls: [
       "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx",
