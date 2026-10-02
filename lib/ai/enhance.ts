@@ -1,7 +1,13 @@
 // lib/ai/enhance.ts
 
 import type { AiCategory } from "@/lib/ai/aiCategories";
-import { aiAvailable, loadModel, runModel } from "@/lib/ai/runtime";
+import {
+  aiAvailable,
+  loadModel,
+  loadedModelBackend,
+  loadedModelPath,
+  runModel
+} from "@/lib/ai/runtime";
 
 export type AiRaster = {
   width: number;
@@ -110,6 +116,17 @@ function resizeMap(src: Float32Array, srcW: number, srcH: number, dstW: number, 
         d * fx * fy;
     }
   }
+  return out;
+}
+
+function sigmoid(value: number) {
+  const v = clamp(value, -24, 24);
+  return 1 / (1 + Math.exp(-v));
+}
+
+function sigmoidMap(values: Float32Array) {
+  const out = new Float32Array(values.length);
+  for (let i = 0; i < values.length; i += 1) out[i] = sigmoid(values[i]);
   return out;
 }
 
@@ -325,34 +342,49 @@ async function runMap(
 ) {
   const session = await loadModel(id);
   if (!session) return null;
-  const ort = await import("onnxruntime-web");
+
+  const backend = loadedModelBackend(id);
+  const ort =
+    backend === "webgpu"
+      ? (await import("onnxruntime-web/webgpu"))
+      : (await import("onnxruntime-web"));
   const inputName = session.inputNames[0];
   const dims = session.inputMetadata?.[inputName]?.dims;
-  const size = modelSize(dims, id === "segment" ? 320 : 256);
+  const modelPath = loadedModelPath(id) ?? "";
+  const defaultSize =
+    id === "segment"
+      ? modelPath.includes("birefnet")
+        ? 512
+        : 320
+      : 518;
+  const size = modelSize(dims, defaultSize);
   const tensor = new ort.Tensor(
     "float32",
     toNchw(raster, size.width, size.height, true, sourceCanvas),
-    [
-      1,
-      3,
-      size.height,
-      size.width
-    ]
+    [1, 3, size.height, size.width]
   );
+
   const result = await runModel(id, session, { [inputName]: tensor });
   const output = result[session.outputNames[0]] as unknown as {
     dims: readonly number[];
     data: Float32Array;
   };
   const plane = planeFromOutput(output.data, output.dims);
+  const sourceMap = Float32Array.from(plane.map);
+
+  // BiRefNet emits logits; convert them to a true alpha probability before
+  // resizing. Existing U2Net/RMBG maps remain normalized for compatibility.
+  const modelMap = modelPath.includes("birefnet")
+    ? sigmoidMap(sourceMap)
+    : normalizeMap(sourceMap);
   const map = resizeMap(
-    normalizeMap(Float32Array.from(plane.map)),
+    modelMap,
     plane.width,
     plane.height,
     raster.width,
     raster.height
   );
-  return { map, size };
+  return { map, size, model: modelPath, backend };
 }
 
 export type EnhanceDiagnostics = {
