@@ -18,10 +18,10 @@ function assert(name, condition) {
   }
 }
 
-assert("segment local candidates exist", runtime.includes('segment: ["/models/u2netp.onnx", "/models/rmbg.onnx"]'));
-assert("depth local candidates exist", runtime.includes('depth: ["/models/midas-small.onnx", "/models/depth-small.onnx"]'));
-assert("production returns local candidates only", runtime.includes('if (process.env.NODE_ENV === "production") return local;'));
-assert("runtime retries later candidates after session failure", runtime.includes("Keep trying the next local/remote candidate"));
+assert("segment local candidates include precision tiers", runtime.includes("/models/birefnet-lite.onnx") && runtime.includes("/models/isnet-general-use-q8.onnx") && runtime.includes("/models/u2netp.onnx"));
+assert("depth local candidates include Depth Anything V2", runtime.includes("/models/depth-anything-v2-small-q4f16.onnx") && runtime.includes("/models/midas-small.onnx"));
+assert("runtime is local-only", !runtime.includes("REMOTE_MODELS") && !runtime.includes("cdn.jsdelivr.net"));
+assert("runtime retries later local candidates after session failure", runtime.includes("Keep trying the next local model candidate"));
 assert("runtime prefers local ORT wasm", runtime.includes('const ORT_WASM_LOCAL = "/ort/";'));
 assert("fetch script copies ORT wasm locally", fetcher.includes('public", "ort"'));
 assert("model preparation runs before build", pkg.scripts?.build === "npm run models && next build");
