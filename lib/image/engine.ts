@@ -595,9 +595,10 @@ function cleanModelMask(
 function cleanOutputMask(
   mask: boolean[][],
   raster: Raster,
-  output: "2d" | "25d"
+  output: "2d" | "25d",
+  alreadyCleaned = false
 ) {
-  const cleaned = cleanModelMask(mask, raster);
+  const cleaned = alreadyCleaned ? mask.map((row) => row.slice()) : cleanModelMask(mask, raster);
   const h = cleaned.length;
   const w = cleaned[0]?.length ?? 0;
   if (!w || !h) return cleaned;
@@ -2780,7 +2781,11 @@ async function resolveCategoryAndDepth(
     (aiCategoryWantsDepth(category, normalized.mode) || normalized.useDepthThickness === true);
   if (!want) return { category, depthMap: null, raster, adaptiveProfile };
   if (depthMap) return { category, depthMap, raster, adaptiveProfile };
-  const again = await applyLocalAiRaster(raster, { depth: true, category });
+  const again = await applyLocalAiRaster(raster, {
+    segment: false,
+    depth: true,
+    category
+  });
   return {
     category,
     depthMap: again.depth,
@@ -2829,14 +2834,15 @@ export async function imageToVoxels(
   depthMap = resolved.depthMap;
   normalized.aiCategory = resolved.category;
   if (resolved.extraDiag) aiDiag = resolved.extraDiag;
-  if (normalized.mode === "model" || useLocalAi) {
-    mask = cleanModelMask(buildMask(raster, normalized.mode), raster, normalized.aiCategory);
-  }
-
   if (normalized.output === "2d" || normalized.output === "25d") {
     // 2D/2.5D remain fully local: deterministic cleanup is the final
     // source-processing gate before output reconstruction.
-    mask = cleanOutputMask(mask, raster, normalized.output);
+    mask = cleanOutputMask(
+      mask,
+      raster,
+      normalized.output,
+      normalized.mode === "model" || useLocalAi
+    );
   }
 
   const bounds = findBounds(mask);
@@ -2929,7 +2935,7 @@ export async function imagesToVoxels(
   }
   let masks = rasters.map((raster) => {
     const mask = buildMask(raster, normalized.mode);
-    return normalized.mode === "model"
+    return normalized.mode === "model" || useLocalAi
       ? cleanModelMask(mask, raster, normalized.aiCategory)
       : mask;
   });
@@ -2954,18 +2960,18 @@ export async function imagesToVoxels(
       normalized.useDepthThickness = resolved.adaptiveProfile.useDepthHint;
     }
     if (resolved.extraDiag) aiDiag = resolved.extraDiag;
-    masks[0] = cleanModelMask(
-      buildMask(rasters[0], normalized.mode),
-      rasters[0],
-      normalized.aiCategory
-    );
   }
   applyCategoryProfile(normalized);
   normalized.useDepthThickness = Boolean(frontDepth) && normalized.useDepthThickness === true;
 
   if (normalized.output === "2d" || normalized.output === "25d") {
     masks = masks.map((mask, index) =>
-      cleanOutputMask(mask, rasters[index], normalized.output!)
+      cleanOutputMask(
+        mask,
+        rasters[index],
+        normalized.output!,
+        normalized.mode === "model" || useLocalAi
+      )
     );
   }
 
