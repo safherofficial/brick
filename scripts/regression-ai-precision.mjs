@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import {
   refineSegmentAlpha,
+  refineCutoutAlpha,
   normalizeDepthToForeground,
   refineDepthToShape
 } from "../lib/ai/enhance.ts";
@@ -46,6 +47,50 @@ const swordKept = [...sword].filter((v) => v > 0).length;
 const objectKept = [...object].filter((v) => v > 0).length;
 assert("thin-feature category keeps attached weak contour", swordKept > objectKept);
 assert("strong foreground is preserved", sword[10 * width + 11] > 0.85);
+
+// P39 — transparent PNG matte refinement. The existing alpha remains a hard
+// occupancy gate while a local ONNX prediction tightens only the transition
+// band, so fully transparent pixels can never become foreground.
+const cutoutAlpha = new Float32Array(width * height);
+const cutoutPrediction = new Float32Array(width * height);
+for (let y = 7; y < 17; y += 1) {
+  for (let x = 8; x < 16; x += 1) {
+    const i = y * width + x;
+    cutoutAlpha[i] = 1;
+    cutoutPrediction[i] = 1;
+  }
+}
+for (let y = 7; y < 17; y += 1) {
+  cutoutAlpha[y * width + 7] = 0.26;
+  cutoutAlpha[y * width + 16] = 0.18;
+  cutoutPrediction[y * width + 7] = 0.06;
+  cutoutPrediction[y * width + 16] = 0.09;
+}
+const refinedCutout = refineCutoutAlpha(cutoutAlpha, cutoutPrediction, width, height, "objects");
+assert(
+  "P39 removes weak transparent edge halos",
+  refinedCutout[10 * width + 7] === 0 && refinedCutout[10 * width + 16] === 0
+);
+assert(
+  "P39 preserves the confident opaque core",
+  refinedCutout[10 * width + 11] >= 0.97
+);
+assert(
+  "P39 never creates alpha outside the original cutout",
+  refinedCutout.every((value, index) => value === 0 || cutoutAlpha[index] > 0)
+);
+
+const enhanceSource = fs.readFileSync(new URL("../lib/ai/enhance.ts", import.meta.url), "utf8");
+const runtimeSource = fs.readFileSync(new URL("../lib/ai/runtime.ts", import.meta.url), "utf8");
+assert(
+  "P39 uses cropped alpha-aware inference for transparent PNGs",
+  enhanceSource.includes("alphaInferenceRegion") && enhanceSource.includes("cropRaster") &&
+    enhanceSource.includes('runMap("segment", raster, sourceCanvas, cutoutRegion)')
+);
+assert(
+  "P39 local runtime has no CDN fallback",
+  !runtimeSource.includes("cdn.jsdelivr.net") && !runtimeSource.includes("REMOTE_MODELS")
+);
 
 const depth = new Float32Array(width * height);
 const depthAlpha = new Float32Array(width * height);
