@@ -27,6 +27,7 @@ import { dynamicVoxelBudget } from "@/lib/image/budget";
 import { sanitizeRaster } from "@/lib/prod/rasterSanitize";
 import { DECODE_TIMEOUT_MS, withTimeout } from "@/lib/prod/timeout";
 import { assertImportableFile } from "@/lib/prod/inputGuard";
+import { requestRemoteCutout } from "@/lib/image/remoteCutout";
 import {
   DEFAULT_PALETTE,
   MAX_RASTER_EDGE,
@@ -727,6 +728,38 @@ function cleanOutputMask(
   }
 
   return repairSilhouette(cleaned);
+}
+
+function hasFrameResidueRisk(mask: boolean[][]) {
+  const h = mask.length;
+  const w = mask[0]?.length ?? 0;
+  if (!w || !h) return false;
+
+  let foreground = 0;
+  let border = 0;
+  const band = Math.min(3, Math.max(1, Math.floor(Math.min(w, h) * 0.03)));
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (!mask[y]?.[x]) continue;
+      foreground += 1;
+      if (
+        x < band ||
+        y < band ||
+        x >= w - band ||
+        y >= h - band
+      ) {
+        border += 1;
+      }
+    }
+  }
+
+  if (!foreground || !border) return false;
+  const ratio = border / foreground;
+
+  // Small, thin border contamination is escalated. A large border ratio is
+  // more likely to mean the actual subject touches the frame, so preserve it.
+  return border >= 3 && border <= 128 && ratio <= 0.10;
 }
 
 function findBounds(mask: boolean[][]): Bounds | null {
@@ -2832,6 +2865,23 @@ export async function imageToVoxels(
   if (normalized.mode === "model" || useLocalAi) {
     mask = cleanModelMask(buildMask(raster, normalized.mode), raster, normalized.aiCategory);
   }
+
+  if (normalized.output === "2d" || normalized.output === "25d") {
+    mask = cleanOutputMask(mask, raster, normalized.output);
+    if (hasFrameResidueRisk(mask)) {
+      const remote = await requestRemoteCutout(file, normalized.output);
+      if (remote) {
+        const remoteRaster = await loadImage(remote);
+        raster = remoteRaster;
+        mask = cleanOutputMask(
+          buildMask(remoteRaster, normalized.mode),
+          remoteRaster,
+          normalized.output
+        );
+      }
+    }
+  }
+
   const bounds = findBounds(mask);
   if (!bounds) throw new Error("No visible subject found");
 
@@ -2955,6 +3005,24 @@ export async function imagesToVoxels(
   }
   applyCategoryProfile(normalized);
   normalized.useDepthThickness = Boolean(frontDepth) && normalized.useDepthThickness === true;
+
+  if (normalized.output === "2d" || normalized.output === "25d") {
+    masks = masks.map((mask, index) =>
+      cleanOutputMask(mask, rasters[index], normalized.output!)
+    );
+    if (hasFrameResidueRisk(masks[0])) {
+      const remote = await requestRemoteCutout(views.front, normalized.output);
+      if (remote) {
+        const remoteRaster = await loadImage(remote);
+        rasters[0] = remoteRaster;
+        masks[0] = cleanOutputMask(
+          buildMask(remoteRaster, normalized.mode),
+          remoteRaster,
+          normalized.output
+        );
+      }
+    }
+  }
 
   const palette = createPalette(
     rasters,
